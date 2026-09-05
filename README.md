@@ -122,6 +122,18 @@ For a Git-connected Cloudflare Pages project:
   existing marketing site's domain to this project.
 - Keep Cloudflare Web Analytics, Zaraz and other injected tracking disabled.
   Do not attach the older application's backend or authentication.
+- Disable Network Error Logging and Bot Fight Mode's JavaScript injection in
+  the domain settings. Keep the normal network-level DDoS protection enabled.
+- Verify the actual response headers, not just dashboard toggles: Pages can
+  supply its own reporting policy. For the production hostnames, set `NEL` to
+  `{"max_age":0}` and `Report-To` to
+  `{"group":"cf-nel","max_age":0,"endpoints":[]}` using a response-header
+  transform rule. These values also expire previously cached browser policies.
+  The static headers include the same opt-out for hosts that honor them.
+
+The provider-controlled `pages.dev` preview can have different reporting
+headers from the custom domain. Use the verified custom domain for training;
+do not assume disabling analytics also disables browser network-error reports.
 
 The root-domain build uses absolute asset and service-worker URLs so an old
 deep link can still open the SPA. The default build remains portable under
