@@ -9,8 +9,13 @@ test('Cloudflare configuration changes invalidate the cache without being precac
   const directory = await mkdtemp(join(tmpdir(), 'hybrid-offline-manifest-'))
   try {
     await mkdir(join(directory, 'assets'))
+    await mkdir(join(directory, 'app'))
+    await mkdir(join(directory, 'learn', 'example'), { recursive: true })
     for (const [name, content] of [
-      ['index.html', '<html>App</html>'],
+      ['index.html', '<html>Marketing</html>'],
+      ['app/index.html', '<html>App</html>'],
+      ['learn/example/index.html', '<html>Guide</html>'],
+      ['404.html', '<html>Not found</html>'],
       ['assets/app.js', 'export const ready = true'],
       ['favicon.svg', '<svg/>'],
       ['_headers', '/sw.js\n  Cache-Control: no-cache'],
@@ -19,7 +24,7 @@ test('Cloudflare configuration changes invalidate the cache without being precac
       ['sw.js', 'Old generated worker'],
     ]) await writeFile(join(directory, name), content)
     const before = await offlineManifest(directory)
-    assert.deepEqual(before.urls, ['./assets/app.js', './favicon.svg', './'])
+    assert.deepEqual(before.urls, ['./app/', './assets/app.js', './favicon.svg', './', './learn/example/'])
     assert.match(before.version, /^[a-f0-9]{16}$/)
     assert.deepEqual(await offlineManifest(directory), before)
     await writeFile(join(directory, '_headers'), '/*\n  Referrer-Policy: no-referrer')

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#ecdfd2"/>
+  <rect x="760" width="440" height="630" fill="#213885"/>
+  <g fill="none" stroke="#ecdfd2" opacity=".35"><circle cx="950" cy="340" r="220"/><circle cx="1080" cy="140" r="220"/><path d="M780 570l360-340M850 650l360-340"/></g>
+  <g transform="translate(66 54)"><rect width="54" height="54" rx="13" fill="#213885"/><path d="M16 14v26M38 14v26M16 31h4c7 0 7-9 14-9h4" stroke="#ecdfd2" stroke-width="5" fill="none" stroke-linecap="round"/><text x="69" y="36" fill="#081849" font-family="Arial,sans-serif" font-weight="700" font-size="31">Hybrid Coach</text></g>
+  <g fill="#081849"><text x="67" y="207" font-family="Arial,sans-serif" font-size="15" letter-spacing="3">FREE. OPEN SOURCE. LOCAL FIRST.</text><text x="62" y="308" font-family="Arial,sans-serif" font-size="76" font-weight="700" letter-spacing="-4">Running and lifting.</text><text x="65" y="405" font-family="Georgia,serif" font-size="75" font-style="italic" letter-spacing="-3">One plan that fits.</text><text x="67" y="556" font-family="Arial,sans-serif" font-size="23">hybridcoach.ai</text></g>
+  <g transform="translate(818 410)"><rect width="264" height="94" rx="12" fill="#ecdfd2"/><rect x="23" y="23" width="5" height="48" rx="2" fill="#893172"/><text x="46" y="42" fill="#081849" font-family="Arial,sans-serif" font-weight="700" font-size="17">Room for both.</text><text x="46" y="68" fill="#595b70" font-family="Arial,sans-serif" font-size="13">And the rest of your life.</text></g>
+</svg>

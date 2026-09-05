@@ -40,7 +40,7 @@ before building a personal campaign. Other goals use the same planning path.
   session before advancing. Unlogged sessions stay unknown, not completed.
 - Campaign data has a separate IndexedDB database, `hybrid-planner-campaign`.
   The original planner and its data are accessible under **Data & settings**
-  or `?view=legacy`. Nothing migrates or overwrites that archive automatically.
+  or `/app/?view=legacy`. Nothing migrates or overwrites that archive automatically.
 - Export and restore campaign JSON backups through settings. These are separate
   from original-planner backups. A revision check prevents cross-tab overwrites.
 
@@ -100,10 +100,56 @@ npm run preview
 ```
 
 Dev/preview serve static client files, not an application backend. Deploy `dist`
-to a static HTTPS host, including a subdirectory. There is no API or database
-server. A production service worker precaches only the app's own static files.
+to a static HTTPS host. For a subdirectory deployment, use an explicit base such
+as `npm run build -- --base=/planner/` and adapt the host's app fallback to match.
+There is no API or database server. A production service worker precaches only
+this site's own static files.
 After a successful installation, the same address can reopen offline. HTTPS
 or localhost is required; opening HTML via `file://` is not supported.
+
+## Public website and learning guides
+
+The public homepage is at `/`; the existing planner is at `/app/` on the same
+origin. IndexedDB names, records and backup formats are unchanged. There is no
+data migration or upload when a user opens the new planner address.
+
+- `/`: mobile-first product introduction, illustrative week, FAQ and planner links.
+- `/learn/`: a learning hub with original guides to hybrid planning, same-day
+  running/lifting, and busy schedules. Each guide links its research sources.
+- `/method/`: the engine's assumptions, AI boundaries and current limitations.
+- `/privacy/`: local storage, hosting, backups and optional AI data handling.
+- `/app/`: the complete planner, marked `noindex` rather than competing with the
+  public pages in search. Do not block crawler access to its noindex directive.
+
+The build renders complete HTML through [scripts/marketing.ts](scripts/marketing.ts).
+No React bundle, client-side content rendering, third-party fonts, analytics or
+backend is required to read the marketing pages. The tiny homepage script only
+forwards old `?view=legacy` and `#session/...` bookmarks to `/app/`, preserving
+their query and fragment. It does not inspect training records.
+
+Add or revise articles in [scripts/marketing-content.ts](scripts/marketing-content.ts).
+The hub, related articles, canonical links, Article/Breadcrumb structured data and
+sitemap are generated from this content. Keep the visible editorial date and
+structured dates accurate when changing published content. Use original writing,
+verified sources, and clearly labelled illustrative schedules, not invented
+credentials, testimonials, outcome guarantees or keyword-variation pages.
+
+The initial topic cluster answers three distinct reader questions: how to start a
+hybrid plan, how to arrange a shared training day, and how to adapt a constrained
+week. Future guides should answer a genuine unanswered question and link back to
+the relevant foundations. Review research and product claims before publishing.
+The social preview PNG is rendered at 1200 x 630 from
+[public/social-card.svg](public/social-card.svg); keep both files in sync.
+
+`robots.txt` and `sitemap.xml` are generated at build time. Public pages have
+unique descriptions, canonical URLs, social metadata and ordinary HTML links.
+Unknown public URLs return a real 404 instead of the app shell. Submit
+`https://hybridcoach.ai/sitemap.xml` in Google Search Console when domain ownership
+is verified; this requires no analytics script. Search Console ownership and
+sitemap submission are not configured by this build. Indexing and rankings are
+not guaranteed; use search impressions and actual queries to guide later content,
+not fabricated traffic estimates. See Google's
+[SEO Starter Guide](https://developers.google.com/search/docs/fundamentals/seo-starter-guide).
 
 ## Cloudflare deployment
 
@@ -120,8 +166,8 @@ For a Git-connected Cloudflare Pages project:
 - Node version: pinned by `.node-version`, also used by GitHub checks.
 - Set the domain's Browser Cache TTL to **Respect Existing Headers**, so
   Cloudflare does not replace the service worker's `no-cache` update policy.
-- Target domain: `hybridcoach.ai`. Verify the preview before switching the
-  existing marketing site's domain to this project.
+- Target domain: `hybridcoach.ai`, with the marketing site at `/` and planner at
+  `/app/`. The existing `app.hybridcoach.ai` application is unrelated and unchanged.
 - Keep Cloudflare Web Analytics, Zaraz and other injected tracking disabled.
   Do not attach the older application's backend or authentication.
 - Disable Network Error Logging, Bot Fight Mode, and the independent JavaScript
@@ -140,12 +186,21 @@ The provider-controlled `pages.dev` preview can have different reporting
 headers from the custom domain. Use the verified custom domain for training;
 do not assume disabling analytics also disables browser network-error reports.
 
-The root-domain build uses absolute asset and service-worker URLs so an old
-deep link can still open the SPA. The default build remains portable under
-static subdirectories. Cloudflare's normal SPA fallback is sufficient.
-The offline shell is precached at the scope root, not `index.html`: Pages
-redirects that filename, and browsers reject redirected navigation responses
-returned from the offline cache.
+The root-domain build uses absolute asset and service-worker URLs.
+`public/_redirects` limits the SPA fallback to `/app/*`; a generated root
+`404.html` disables Cloudflare's site-wide SPA fallback. Marketing routes are
+real directory-index HTML files, not client-side routes.
+
+The existing root-scoped `/sw.js` is deliberately retained so previously installed
+workers can update in place. Its new cache contains distinct canonical HTML
+responses for `/`, `/app/` and each public page. App navigation falls back only
+inside `/app/`; unknown public URLs go to the host's 404. Existing tabs keep their
+current screen until navigation, without forced reloads of a working log.
+Only obsolete caches from the same worker scope are removed; IndexedDB is untouched.
+Directory pages are cached at their trailing-slash URL, never `index.html`: Pages
+redirects that filename, and browsers reject redirected cached navigation
+responses. The 404 document is hashed but not fetched during precaching, because
+a non-success response would fail installation.
 `public/_headers` supplies response policies and service-worker revalidation.
 Configure the `www` alias as a Cloudflare zone-level redirect to
 `https://hybridcoach.ai`, preserving the path and query string with status 301.
