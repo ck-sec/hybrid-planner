@@ -118,6 +118,8 @@ For a Git-connected Cloudflare Pages project:
 - Build command: `npm run build -- --base=/`.
 - Output directory: `dist`; repository root as the working directory.
 - Node version: pinned by `.node-version`, also used by GitHub checks.
+- Set the domain's Browser Cache TTL to **Respect Existing Headers**, so
+  Cloudflare does not replace the service worker's `no-cache` update policy.
 - Target domain: `hybridcoach.ai`. Verify the preview before switching the
   existing marketing site's domain to this project.
 - Keep Cloudflare Web Analytics, Zaraz and other injected tracking disabled.
