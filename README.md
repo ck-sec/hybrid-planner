@@ -189,7 +189,9 @@ do not assume disabling analytics also disables browser network-error reports.
 The root-domain build uses absolute asset and service-worker URLs.
 `public/_redirects` limits the SPA fallback to `/app/*`; a generated root
 `404.html` disables Cloudflare's site-wide SPA fallback. Marketing routes are
-real directory-index HTML files, not client-side routes.
+real directory-index HTML files, not client-side routes. The app rewrite targets
+the canonical `/app/`, not `/app/index.html`: Cloudflare rejects the latter as a
+potential loop through its automatic extension-stripping redirect.
 
 The existing root-scoped `/sw.js` is deliberately retained so previously installed
 workers can update in place. Its new cache contains distinct canonical HTML

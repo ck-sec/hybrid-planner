@@ -106,3 +106,10 @@ test('the self-hosted social preview has the declared 1200 by 630 dimensions', a
   assert.equal(png.readUInt32BE(16), 1200)
   assert.equal(png.readUInt32BE(20), 630)
 })
+
+test('Cloudflare app rewrites target a canonical directory, not an index.html redirect loop', async () => {
+  const redirects = await readFile(new URL('../public/_redirects', import.meta.url), 'utf8')
+  assert.match(redirects, /^\/app \s*\/app\/ 301$/m)
+  assert.match(redirects, /^\/app\/\* \s*\/app\/ 200$/m)
+  assert.doesNotMatch(redirects, /index\.html|^\/\* /m)
+})
