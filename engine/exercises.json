@@ -1,0 +1,20 @@
+{
+  "version": "exercise-estimates-1",
+  "exercises": [
+    { "id": "back-squat", "name": "Back squat", "pattern": "knee_dominant", "equipment": ["barbell"], "coefficients": { "systemic": 35, "structural": 55 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "goblet-squat", "name": "Goblet squat", "pattern": "knee_dominant", "equipment": ["dumbbell"], "coefficients": { "systemic": 25, "structural": 35 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "bodyweight-squat", "name": "Bodyweight squat", "pattern": "knee_dominant", "equipment": ["bodyweight"], "coefficients": { "systemic": 20, "structural": 25 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "deadlift", "name": "Conventional deadlift", "pattern": "hip_dominant", "equipment": ["barbell"], "coefficients": { "systemic": 45, "structural": 65 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "romanian-deadlift", "name": "Romanian deadlift", "pattern": "hip_dominant", "equipment": ["barbell"], "coefficients": { "systemic": 30, "structural": 55 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "hip-thrust", "name": "Hip thrust", "pattern": "hip_dominant", "equipment": ["barbell"], "coefficients": { "systemic": 25, "structural": 35 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "bench-press", "name": "Bench press", "pattern": "horizontal_push", "equipment": ["barbell"], "coefficients": { "systemic": 25, "structural": 30 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "push-up", "name": "Push-up", "pattern": "horizontal_push", "equipment": ["bodyweight"], "coefficients": { "systemic": 20, "structural": 25 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "overhead-press", "name": "Overhead press", "pattern": "vertical_push", "equipment": ["barbell"], "coefficients": { "systemic": 25, "structural": 30 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "dumbbell-row", "name": "Dumbbell row", "pattern": "horizontal_pull", "equipment": ["dumbbell"], "coefficients": { "systemic": 20, "structural": 25 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "pull-up", "name": "Pull-up", "pattern": "vertical_pull", "equipment": ["bodyweight"], "coefficients": { "systemic": 25, "structural": 35 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "split-squat", "name": "Split squat", "pattern": "unilateral_lower", "equipment": ["dumbbell"], "coefficients": { "systemic": 30, "structural": 50 }, "competesWithRunning": true, "highSkill": false },
+    { "id": "band-rotation", "name": "Standing band rotation", "pattern": "rotational", "equipment": ["bands"], "coefficients": { "systemic": 15, "structural": 20 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "dead-bug", "name": "Dead bug", "pattern": "core", "equipment": ["bodyweight"], "coefficients": { "systemic": 10, "structural": 15 }, "competesWithRunning": false, "highSkill": false },
+    { "id": "snatch", "name": "Snatch (logging and costing only)", "pattern": "hip_dominant", "equipment": ["barbell"], "coefficients": { "systemic": 45, "structural": 55 }, "competesWithRunning": true, "highSkill": true }
+  ]
+}
