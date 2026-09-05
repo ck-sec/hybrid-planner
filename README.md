@@ -126,10 +126,12 @@ For a Git-connected Cloudflare Pages project:
 The root-domain build uses absolute asset and service-worker URLs so an old
 deep link can still open the SPA. The default build remains portable under
 static subdirectories. Cloudflare's normal SPA fallback is sufficient.
-`public/_headers` supplies response policies and service-worker revalidation;
-`public/_redirects` canonicalizes the `www` alias when it is attached to the
-same deployment. Hosting directives invalidate the offline cache version but
-are deliberately excluded from its fetchable asset list.
+`public/_headers` supplies response policies and service-worker revalidation.
+Configure the `www` alias as a Cloudflare zone-level redirect to
+`https://hybridcoach.ai`, preserving the path and query string with status 301.
+Pages `_redirects` files do not support domain-level source URLs. Hosting
+directives invalidate the offline cache version but are deliberately excluded
+from its fetchable asset list.
 
 Preview deployments, localhost and the live domain have **separate browser
 storage**. Export/import a campaign backup to move your own data between them;

@@ -14,7 +14,7 @@ test('Cloudflare configuration changes invalidate the cache without being precac
       ['assets/app.js', 'export const ready = true'],
       ['favicon.svg', '<svg/>'],
       ['_headers', '/sw.js\n  Cache-Control: no-cache'],
-      ['_redirects', 'https://www.example.test/* https://example.test/:splat 301'],
+      ['_redirects', '/old-path /new-path 301'],
       ['_routes.json', '{"version":1}'],
       ['sw.js', 'Old generated worker'],
     ]) await writeFile(join(directory, name), content)
