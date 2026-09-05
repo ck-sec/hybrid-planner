@@ -122,8 +122,11 @@ For a Git-connected Cloudflare Pages project:
   existing marketing site's domain to this project.
 - Keep Cloudflare Web Analytics, Zaraz and other injected tracking disabled.
   Do not attach the older application's backend or authentication.
-- Disable Network Error Logging and Bot Fight Mode's JavaScript injection in
-  the domain settings. Keep the normal network-level DDoS protection enabled.
+- Disable Network Error Logging, Bot Fight Mode, and the independent JavaScript
+  Detections setting (`enable_js: false`) in the domain's Bot Management config.
+  Turning off Bot Fight Mode alone can leave script injection enabled. Preserve
+  unrelated bot settings when updating this configuration. Keep the normal
+  network-level DDoS protection enabled.
 - Verify the actual response headers, not just dashboard toggles: Pages can
   supply its own reporting policy. For the production hostnames, set `NEL` to
   `{"max_age":0}` and `Report-To` to
@@ -138,6 +141,9 @@ do not assume disabling analytics also disables browser network-error reports.
 The root-domain build uses absolute asset and service-worker URLs so an old
 deep link can still open the SPA. The default build remains portable under
 static subdirectories. Cloudflare's normal SPA fallback is sufficient.
+The offline shell is precached at the scope root, not `index.html`: Pages
+redirects that filename, and browsers reject redirected navigation responses
+returned from the offline cache.
 `public/_headers` supplies response policies and service-worker revalidation.
 Configure the `www` alias as a Cloudflare zone-level redirect to
 `https://hybridcoach.ai`, preserving the path and query string with status 301.

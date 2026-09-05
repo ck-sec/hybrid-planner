@@ -19,7 +19,7 @@ test('Cloudflare configuration changes invalidate the cache without being precac
       ['sw.js', 'Old generated worker'],
     ]) await writeFile(join(directory, name), content)
     const before = await offlineManifest(directory)
-    assert.deepEqual(before.urls, ['./assets/app.js', './favicon.svg', './index.html'])
+    assert.deepEqual(before.urls, ['./assets/app.js', './favicon.svg', './'])
     assert.match(before.version, /^[a-f0-9]{16}$/)
     assert.deepEqual(await offlineManifest(directory), before)
     await writeFile(join(directory, '_headers'), '/*\n  Referrer-Policy: no-referrer')

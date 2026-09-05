@@ -13,7 +13,8 @@ export async function offlineManifest(directory: string): Promise<{ version: str
   const urls: string[] = []
   for (const file of files) {
     const path = relative(directory, file).replaceAll('\\', '/')
-    const url = `./${path}`
+    // Static hosts can redirect index.html; navigation needs an unredirected shell.
+    const url = path === 'index.html' ? './' : `./${path}`
     hash.update(url)
     hash.update(await readFile(file))
     // Hosting directives affect cached responses, but are not fetchable assets.

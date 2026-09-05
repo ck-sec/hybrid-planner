@@ -18,7 +18,7 @@ self.addEventListener('fetch', event => {
   event.respondWith(caches.open(CACHE).then(async cache => {
     // These are public, precached static files. Hosts may send Vary: Origin;
     // module requests carry Origin, while the precache requests may not.
-    if (event.request.mode === 'navigate') return (await cache.match('./index.html', { ignoreVary: true })) || fetch(event.request);
+    if (event.request.mode === 'navigate') return (await cache.match('./', { ignoreVary: true })) || fetch(event.request);
     return (await cache.match(event.request, { ignoreVary: true })) || fetch(event.request);
   }));
 });

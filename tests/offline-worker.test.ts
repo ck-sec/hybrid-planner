@@ -21,7 +21,7 @@ function worker() {
   let claimed = false
   let activated = false
   const cachedResponse = { body: 'cached app file' }
-  runInNewContext(offlineWorkerSource('new', ['./index.html', './assets/app.js']), {
+  runInNewContext(offlineWorkerSource('new', ['./', './assets/app.js']), {
     URL,
     self: {
       registration: { scope },
@@ -35,8 +35,8 @@ function worker() {
         cacheNames.push(name)
         return {
           addAll: async (urls: string[]) => { precached.push(...urls) },
-          match: async (_request: unknown, options: { ignoreVary?: boolean }) =>
-            options?.ignoreVary ? cachedResponse : undefined,
+          match: async (request: unknown, options: { ignoreVary?: boolean }) =>
+            options?.ignoreVary && (typeof request !== 'string' || request === './') ? cachedResponse : undefined,
         }
       },
       keys: async () => [currentCache, prefix + 'old', 'unrelated-cache', 'hybrid-planner-other-scope-old'],
@@ -62,12 +62,12 @@ test('precache and activation are scoped to this static app, leaving other cache
   const app = worker()
   await app.dispatch('install')
   await app.dispatch('activate')
-  assert.deepEqual(app.precached, ['./index.html', './assets/app.js'])
+  assert.deepEqual(app.precached, ['./', './assets/app.js'])
   assert.deepEqual(app.deleted, [app.currentCache.replace(/new$/, 'old')])
   assert.equal(app.isReady(), true)
 })
 
-test('offline navigation and module assets tolerate the static host Vary: Origin header', async () => {
+test('offline navigation uses the canonical scope root and assets tolerate Vary: Origin', async () => {
   const app = worker()
   for (const [url, mode] of [
     ['https://example.test/planner/', 'navigate'],
