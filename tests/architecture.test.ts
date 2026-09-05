@@ -30,7 +30,8 @@ test('the actual lint configuration enforces the engine boundary and determinist
     for (const fixture of cases) {
       const file = join('engine', fixture.file)
       writeFileSync(join(temporary, file), fixture.source)
-      const result = spawnSync(process.execPath, [join(project, 'node_modules', 'oxlint', 'bin', 'oxlint'), file], {
+      // GitHub's annotation formatter omits the custom restriction explanations.
+      const result = spawnSync(process.execPath, [join(project, 'node_modules', 'oxlint', 'bin', 'oxlint'), '--format', 'default', file], {
         cwd: temporary,
         encoding: 'utf8',
       })
