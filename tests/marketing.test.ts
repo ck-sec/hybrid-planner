@@ -72,6 +72,32 @@ test('setup collects context once and clearly distinguishes AI suggestions from 
   assert.doesNotMatch(method, /version-[12]|<code>customExercises<\/code>/)
 })
 
+test('the landing page explains chat friction before introducing the setup workflow', () => {
+  const home = marketingPages().find(page => page.path === '/')!.html
+  const problem = home.match(/<section[^>]*id="why-this-exists"[^>]*>([^]*?)<\/section>/)?.[1]
+  assert.ok(problem)
+  assert.match(home, /href="#why-this-exists">Why this exists/)
+  assert.match(problem, /id="why-heading"/)
+  assert.match(problem, /buried in a long thread/)
+  assert.match(problem, /Stop scrolling through drafts and revisions/)
+  assert.match(problem, /current kit, routine and goal/)
+  assert.match(problem, /fresh brief for the same chat or a different AI/)
+  assert.match(problem, /Update your equipment when it changes/)
+  assert.match(problem, /Record sets, weights, partial sessions and skips/)
+  assert.match(problem, /unlogged work stays unknown/)
+  const ownership = home.match(/<section class="ownership-section wrap">([^]*?)<\/section>/)?.[1]
+  assert.ok(ownership)
+  assert.match(ownership, /cloud AI conversation may need a connection/)
+  assert.match(ownership, /Once the app confirms its offline copy is ready/)
+  assert.match(ownership, /personal details and health flags/)
+  assert.match(ownership, /Preview the setup or weekly-review brief before deciding whether to send it/)
+  assert.ok(home.indexOf(problem) < home.indexOf(ownership))
+  assert.ok(home.indexOf(ownership) < home.indexOf('id="how-it-works"'))
+  assert.match(home, /Nothing is imported from your chat automatically/)
+  assert.match(home, /review and approve/)
+  assert.match(home, /Skip the copy and paste/)
+})
+
 test('exercise ownership and the actuals-to-next-week loop preserve previous work', () => {
   const pages = marketingPages()
   const home = pages.find(page => page.path === '/')!.html
