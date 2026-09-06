@@ -15,6 +15,7 @@ test('recommended onboarding offers a complete classic path and an explicit AI b
   const directory = new URL('./', import.meta.url).href
   const hooks = registerHooks({
     load(url, context, nextLoad) {
+      if (url.startsWith(directory) && url.endsWith('.css')) return { format: 'module', shortCircuit: true, source: '' }
       if (!url.startsWith(directory) || !url.endsWith('.tsx')) return nextLoad(url, context)
       return {
         format: 'module',
@@ -34,7 +35,7 @@ test('recommended onboarding offers a complete classic path and an explicit AI b
       const state = { ...emptyCampaign('2026-09-07'), step: 1 }
       const html = render(state)
       assert.match(html, /Classic run \+ lift/)
-      assert.match(html, /Build around my goal with AI/)
+      assert.match(html, /Build around my goal/)
       assert.doesNotMatch(html, /<textarea|type="password"|Give your goal a name|Event \/ review date/)
       assert.equal(state.draft.exercises.length, 0)
     })
@@ -47,7 +48,7 @@ test('recommended onboarding offers a complete classic path and an explicit AI b
       const html = render(state)
       assert.match(html, /<textarea/)
       assert.match(html, /What are you building toward/)
-      assert.match(html, /Connect AI &amp; shape my goal/)
+      assert.match(html, /Shape my goal/)
       assert.match(html, /Event \/ review date \(required before continuing\)/)
       assert.match(html, /<input type="date"[^>]*min="2026-09-07"[^>]*max="2027-09-05"[^>]*required=""/)
       assert.match(html, /including the year/)
@@ -89,8 +90,19 @@ test('recommended onboarding offers a complete classic path and an explicit AI b
         assert.ok(html.includes(exercise.name))
       }
       assert.match(html, /cf-recommendation-card/)
-      assert.match(html, /Add or change exercises with AI/)
-      assert.doesNotMatch(html, /<input|Add a familiar exercise|Last working weight|When was that session/)
+      assert.match(html, /Shape sessions with my AI/)
+      assert.match(html, /Customise Goblet squat/)
+      assert.match(html, /Personal notes &amp; unscheduled drill ideas/)
+      assert.doesNotMatch(html, /Last working weight|When was that session|type="number"/)
+    })
+    await t.test('equipment is an early step with cardio and sport resources, not invented exercise availability', () => {
+      const html = render({ ...emptyCampaign('2026-09-07'), step: 6 })
+      assert.match(html, /Your equipment/)
+      assert.match(html, /Rower/)
+      assert.match(html, /SkiErg/)
+      assert.match(html, /Dodgeballs/)
+      assert.match(html, /Every recommendation and AI brief uses this selection/)
+      assert.doesNotMatch(html, /type="password"|<textarea/)
     })
   } finally {
     hooks.deregister()

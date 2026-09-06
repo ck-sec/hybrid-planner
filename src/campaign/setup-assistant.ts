@@ -9,6 +9,7 @@ import {
   AssistantError, buildAssistantJsonBody, requestAssistantJson,
 } from './assistant.ts'
 import type { AssistantConfig } from './assistant.ts'
+import { exerciseAvailable, parseResources } from './equipment.ts'
 
 export const MAX_GOAL_TEXT_LENGTH = LIMITS.maxNotesLength
 export const MAX_EXERCISE_REFINEMENT_LENGTH = 500
@@ -91,7 +92,8 @@ export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '
     || draft.equipment.some(item => !equipmentKinds.includes(item))) {
     throw new AssistantError('Select your available equipment before asking for exercise suggestions.')
   }
-  const allowed = eligibleSetupExercises(draft.equipment)
+  const resources = draft.resources ? parseResources(draft.resources) : undefined
+  const allowed = eligibleSetupExercises(draft.equipment).filter(exercise => !resources || exerciseAvailable(exercise.id, resources))
   if (!allowed.length) {
     throw new AssistantError('No eligible exercise cards match this equipment. Review your equipment or use the classic setup.')
   }
@@ -104,6 +106,7 @@ export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '
     goalText: setup.goalText.trim(),
     requestText: requestText.trim(),
     equipment: [...new Set(draft.equipment)],
+    ...(resources ? { resources } : {}),
     currentExerciseIds: [...setup.exerciseIds],
     allowedCatalog: allowed.map(({ id, name, pattern, equipment }) => ({
       id, name, pattern, equipment: [...equipment],

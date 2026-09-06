@@ -1,0 +1,25 @@
+.cf-resource-picker { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 12px; }
+.cf-resource-picker > legend { padding: 0 0 12px; font-size: 14px; font-weight: 650; }
+.cf-resource-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cf-resource-presets button { min-width: 0; min-height: 68px; padding: 12px 8px; border: 1px solid var(--cf-control-line, #9ca3af); border-radius: 9px; background: var(--cf-surface, #fff); color: var(--cf-ink, #1f2937); font: inherit; cursor: pointer; }
+.cf-resource-presets strong, .cf-resource-presets span { display: block; }
+.cf-resource-presets strong { font-size: 14px; }
+.cf-resource-presets span { margin-top: 3px; font-size: 12px; color: var(--cf-muted, #4b5563); }
+.cf-resource-presets button[aria-pressed="true"] { border-color: var(--cf-lapis, #374f8c); background: var(--cf-lapis-soft, #eef2ff); box-shadow: inset 0 0 0 1px var(--cf-lapis, #374f8c); }
+.cf-resource-presets button:hover:not(:disabled) { border-color: var(--cf-lapis, #374f8c); }
+.cf-resource-picker .cf-resource-help { margin: 0; color: var(--cf-muted, #4b5563); font-size: 13px; line-height: 1.6; }
+.cf-resource-picker .cf-resource-summary { margin: 0; padding: 12px; border-radius: 8px; background: var(--cf-neutral-soft, #f3f4f6); color: var(--cf-ink, #1f2937); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.cf-resource-details { min-width: 0; border: 1px solid var(--cf-control-line, #9ca3af); border-radius: 9px; }
+.cf-resource-details > summary { min-height: 44px; padding: 12px; color: var(--cf-lapis, #374f8c); font-size: 14px; font-weight: 600; cursor: pointer; }
+.cf-resource-details > .cf-resource-help { padding: 0 12px; }
+.cf-resource-groups { display: grid; gap: 18px; padding: 16px 12px; }
+.cf-resource-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.cf-resource-group > legend { padding: 0 0 8px; color: var(--cf-ink, #1f2937); font-size: 13px; font-weight: 650; }
+.cf-resource-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
+.cf-resource-option { display: flex; align-items: center; gap: 9px; min-width: 0; min-height: 44px; color: var(--cf-ink, #1f2937); font-size: 13px; line-height: 1.4; cursor: pointer; }
+.cf-resource-option input[type="checkbox"] { width: 22px; height: 22px; min-height: 22px; flex: 0 0 22px; margin: 0; accent-color: var(--cf-lapis, #374f8c); }
+.cf-resource-picker :focus-visible { outline: 3px solid var(--cf-lapis, #374f8c); outline-offset: 3px; }
+.cf-resource-presets button:disabled, .cf-resource-picker:disabled .cf-resource-option { cursor: not-allowed; opacity: .65; }
+@media (max-width: 360px) {
+  .cf-resource-options { grid-template-columns: 1fr; }
+}

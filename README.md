@@ -4,13 +4,18 @@ An open, local-first training planner for people who run and lift.
 MIT licensed, no subscription, no accounts, no backend, no telemetry, no error
 reporting, or environment configuration. All training data is stored in the
 browser's IndexedDB. No LLM or API key is required. An optional, explicitly
-connected local model or HTTPS API can interpret a goal, propose compatible
-exercise cards before setup is committed, and select bounded session-content ideas.
+connected local model, HTTPS API, or external AI chat can interpret a goal,
+propose compatible exercises before setup is committed, and draft reference cards.
 
 ## Mobile campaign workspace
 
-Setup starts with two paths: a complete **classic run + lift** scheme without AI,
-or a **free-text goal** interpreted by an explicitly connected model. Both lead
+Setup starts with **equipment and space**: No kit, Home or Gym shortcuts, followed
+by editable strength, cardio and sport resources. Racks, benches and pull-up bars
+are explicit capabilities; owning a barbell does not imply a complete gym.
+Rower, SkiErg, court, dodgeballs and training partners are included in all coaching
+briefs. Selecting cardio equipment does not introduce unsupported running substitutions.
+Then choose a complete **classic run + lift** scheme without AI,
+or a **free-text goal** interpreted through an API or imported chat reply. Both lead
 through typical session length and frequency, recommended exercise cards,
 weekly commitments, and a calendar home. Weekly running minutes are calculated
 from a usual easy run and runs per week; users do not need to calculate totals.
@@ -20,6 +25,9 @@ same-pattern swaps. They are explicitly recommendations, **not invented historic
 observations**. No previous weights, sets, RPE ratings or exercise dates are
 required for this path. The engine prescribes a conservative first exposure;
 kilograms remain unset until the athlete finds and logs their own weight.
+Supported exercises can be added or removed before committing the block. Personal
+reference cards can be edited, reordered and linked to an exercise without renaming
+its canonical identity or changing its prescription.
 
 The Bangkok dodgeball example is explicitly sample data, including its dates
 and training rhythm. Confirm a real event/review date and recent training
@@ -50,7 +58,27 @@ scheduling and curated content; they do not justify invented sport-specific
 workloads. Garmin FIT and Apple Health activity import are not implemented yet,
 and are labelled accordingly in setup. There is no Garmin account connection.
 
-### Optional AI: goal interpretation and a bounded content layer
+### One coaching workspace: built-in, API or external chat
+
+**Shape your sessions** offers three methods using the same equipment profile:
+
+- **Built-in:** select compatible exercises in setup and edit local reference cards.
+- **Use my AI chat:** copy a coaching brief or download `hybrid-coach-brief.txt`,
+  give it to a chat such as Claude or ChatGPT, iterate there, and request the final
+  JSON. Paste that reply or upload its JSON/text file, review native cards, and apply.
+  No account integration or API key is needed. Provider upload and usage limits vary.
+- **Connect API:** configure an OpenAI-compatible endpoint once per open tab.
+  Explicit requests use the same instructions, versioned reply and validator as
+  the manual round trip. Nothing sends automatically.
+
+The `hybrid-coach-reply` version-1 envelope contains a context ID, bounded goal/
+exercise proposal, and optional reference cards. It is not a campaign backup.
+Context changes (equipment, goal, baseline, calendar or cards) invalidate
+old replies; copy a refreshed brief into the same conversation when this happens.
+Otherwise there is one export and one final import, not a file exchange every turn.
+Unknown fields, duplicate JSON keys, invalid exercise/resource IDs and oversized
+replies are rejected. Imports revalidate at Apply and never replace saved logs.
+Matching card IDs explicitly update those cards; unrelated cards are preserved.
 
 During setup, write a goal such as preparing for a dodgeball championship in
 Bangkok. AI may propose the goal classification, name, location, explicitly
@@ -62,8 +90,9 @@ Use the **Event / review date** picker beside the brief, including the year.
 This date is required before continuing setup: choose the event date or a progress
 review date within the displayed 52-week range. You may ask AI first and select the
 date after applying its suggestions. A separately selected date takes precedence
-when you explicitly confirm it in the AI review; it need not appear in the brief
-and is not sent to the model. Editing the brief clears the previous date.
+when you explicitly confirm it in the AI review; it need not appear in your goal
+wording. The selected date is included in the new, previewable coaching context.
+Editing the goal wording clears the previous date.
 Exercise-only requests preserve the already reviewed goal and date.
 
 AI cannot invent exercise metadata or prescribe sets, repetitions, RPE, weights,
@@ -74,17 +103,24 @@ safety floor. These suggestions cannot edit a committed block.
 
 Use a local OpenAI-compatible endpoint or a remote HTTPS `/chat/completions`
 endpoint. Configure it yourself and confirm the exact payload before sending.
-No request occurs merely by opening a panel. Setup endpoint, model and API key
-stay in memory for the open tab: disconnect, finish setup or reload to clear them. They are
-never included in training data or backups. Setup sends only the goal brief,
-exercise request, equipment, selected IDs and allowed catalog—not logs or files.
+No request occurs merely by opening a panel. Endpoint, model and API key stay in
+memory throughout the open tab, including after setup: disconnect or reload to
+clear them. They are never included in training data, chat briefs or backups.
+The previewable brief includes the goal/date, resources, baseline session amounts,
+availability/practices, selected exercise IDs, eligible catalog, reference cards
+and relevant planned sessions. It excludes logs, imported activity files and keys.
+Copying/downloading is local; sharing with another service is your explicit action.
 
-Inside an already planned session, the separate session assistant selects
-compatible focus cues from an approved content catalog. It cannot change the
-session's exercise selection or prescription. Its configuration is cleared
-when that panel closes. Raw model prose never becomes workout instructions.
-Without AI, recommended exercises, curated content and every planning/logging
-function remain available. Arbitrary exercise authoring is not supported.
+**Custom cards are not a new planning authority.** Title, purpose, setup/instructions,
+cues and equipment needs are editable local content, separate from prescriptions.
+Novel sport drills (for example a throwing idea) remain **unscheduled** because their
+technique and workload are not validated by this engine. AI prose always remains
+an **unverified draft**, including after edits; it cannot approve itself as safe.
+Missing equipment is shown on the card. No quantity parser or keyword filter can
+prove arbitrary prose safe, so it never becomes executable planning input.
+The committed baseline and anchors remain frozen; cards do not add training or
+rewrite history. Reference cards are campaign-wide, not historical session snapshots.
+Cards, edits and old-format backups work offline; asking a remote model does not.
 
 The browser connects directly to the chosen endpoint, with no proxy or
 application backend. CORS, mixed-content and local-network restrictions still

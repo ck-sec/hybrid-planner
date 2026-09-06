@@ -1,4 +1,6 @@
 import type { Day, Equipment, ExerciseObservation, PlanWeekInput, Quality, Session, SessionLog, WeekPlan } from '../../engine/types.ts'
+import type { ResourceId } from './equipment.ts'
+import type { WorkoutCard } from './workout-cards.ts'
 
 export type GoalKind = 'dodgeball' | 'running' | 'hybrid' | 'custom'
 export interface RecommendedSetup {
@@ -26,6 +28,7 @@ export interface CampaignDraft {
   liftDurationMin: number
   weeklyTimeBudgetMin: number
   equipment: Equipment[]
+  resources?: ResourceId[]
   exercises: ExerciseObservation[]
   confirmed: boolean
   recommendedSetup?: RecommendedSetup
@@ -59,6 +62,7 @@ export interface CampaignState {
   weeks: CampaignWeek[]
   selectedWeek: number
   setDrafts: Record<string, SetDraft>
+  cards?: WorkoutCard[]
 }
 
 export type CalendarAction =

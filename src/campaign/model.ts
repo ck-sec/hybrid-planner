@@ -16,6 +16,8 @@ import type {
 } from '../../engine/types.ts'
 import { parseAthlete, parsePlanWeekInput, parseSession, parseSessionLog } from '../../engine/validation.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
+import { equipmentForResources, exerciseAvailable, parseResources } from './equipment.ts'
+import { parseWorkoutCards } from './workout-cards.ts'
 import type { CalendarAction, CampaignDraft, CampaignState, CampaignWeek, RecommendedSetup, SetDraft, WorkoutContent } from './types.ts'
 
 const EQUIPMENT: readonly Equipment[] = ['barbell', 'dumbbell', 'kettlebell', 'machine', 'cable', 'bodyweight', 'bands', 'none']
@@ -73,7 +75,7 @@ function unique<T>(values: T[], label: string): T[] {
   if (new Set(values).size !== values.length) fail(`${label} contains duplicates.`)
   return values
 }
-function stable(value: unknown): string {
+export function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
   if (value !== null && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`).join(',')}}`
   return JSON.stringify(value) ?? 'undefined'
@@ -183,7 +185,7 @@ export function prepareRecommendedSetup(state: CampaignState): CampaignState {
 
 function parseDraft(value: unknown, ready = false): CampaignDraft {
   const candidate = object(value, 'Campaign draft')
-  const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...(Object.hasOwn(candidate, 'recommendedSetup') ? ['recommendedSetup'] : [])])
+  const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...['recommendedSetup', 'resources'].filter(key => Object.hasOwn(candidate, key))])
   const draftNumber = (value: unknown, label: string, min: number, max: number, integer = false): number =>
     ready ? number(value, label, min, max, integer) : number(value, label, -1_000_000, 1_000_000)
   const draftDate = (value: unknown, label: string): string =>
@@ -234,9 +236,11 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
     liftDurationMin: draftNumber(raw.liftDurationMin, 'Lift duration', 0, 180),
     weeklyTimeBudgetMin: draftNumber(raw.weeklyTimeBudgetMin, 'Weekly time budget', 0, 10080),
     equipment: unique(array(raw.equipment, 'Equipment', EQUIPMENT.length).map(value => choice(value, 'Equipment', EQUIPMENT)), 'Equipment'),
+    ...(Object.hasOwn(raw, 'resources') ? { resources: parseResources(raw.resources) } : {}),
     exercises, confirmed: boolean(raw.confirmed, 'Baseline confirmation'),
     ...(recommendedSetup ? { recommendedSetup } : {}),
   }
+  if (result.resources) equal(result.equipment.toSorted(), equipmentForResources(result.resources).toSorted(), 'Equipment capabilities')
   if (ready && recommendedSetup) {
     const derived = normalizeRecommendedDraft(result)
     equal(result.weeklyRunMinutes, derived.weeklyRunMinutes, 'Derived weekly running time')
@@ -245,6 +249,9 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
       const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === id)!
       if (!exercise.equipment.every(item => item === 'none' || result.equipment.includes(item))) {
         fail(`Your equipment does not support the selected ${exercise.name}. Choose another card or correct the available equipment.`)
+      }
+      if (result.resources && !exerciseAvailable(id, result.resources)) {
+        fail(`Your equipment or space does not support ${exercise.name}. Review the card or equipment before planning.`)
       }
     }
   }
@@ -566,7 +573,8 @@ function parseWeek(value: unknown): CampaignWeek {
 }
 
 export function parseCampaign(value: unknown): CampaignState {
-  const raw = object(value, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts'])
+  const candidate = object(value, 'Campaign')
+  const raw = object(candidate, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts', ...(Object.hasOwn(candidate, 'cards') ? ['cards'] : [])])
   if (raw.version !== 1) fail('Unsupported campaign version; saved data has not been replaced.')
   const setupComplete = boolean(raw.setupComplete, 'Setup complete')
   const draft = parseDraft(raw.draft, setupComplete)
@@ -600,6 +608,7 @@ export function parseCampaign(value: unknown): CampaignState {
     version: 1, step: number(raw.step, 'Setup step', 0, 10, true), setupComplete,
     sample: boolean(raw.sample, 'Sample flag'), draft, weeks,
     selectedWeek: number(raw.selectedWeek, 'Selected week', 0, Math.max(0, weeks.length - 1), true), setDrafts,
+    ...(Object.hasOwn(raw, 'cards') ? { cards: parseWorkoutCards(raw.cards) } : {}),
   }
 }
 
