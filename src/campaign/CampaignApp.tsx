@@ -131,8 +131,8 @@ export default function CampaignApp() {
   const week = state?.weeks[state.selectedWeek]
   const session = week?.plan.sessions.find(item => item.id === sessionId) ?? week?.removed.find(item => item.id === sessionId)
   const showHome = state?.setupComplete
-  function applyGoal(proposal: GoalProposal, purpose: GoalProposalPurpose) {
-    update(previous => applySetupProposal(previous, proposal, purpose))
+  function applyGoal(proposal: GoalProposal, purpose: GoalProposalPurpose, confirmedDate?: string) {
+    update(previous => applySetupProposal(previous, proposal, purpose, confirmedDate))
     setPanel(null)
   }
 

@@ -323,6 +323,26 @@ export interface AssistantJsonRequest {
   signal?: AbortSignal
 }
 
+function httpFailureAdvice(status: number): string {
+  switch (status) {
+    case 401:
+    case 403:
+      return 'Check the API key and endpoint permissions.'
+    case 429:
+      return 'Check the endpoint quota or rate limit, then try again later.'
+    case 503:
+      return 'The AI service is unavailable or overloaded. Wait before retrying; if this continues, check the provider status or choose another model available to your account. This status does not identify a JSON-parameter error. No suggestions were applied, and the app did not retry automatically.'
+    case 500:
+    case 502:
+      return 'The AI service or its gateway could not complete the request. Wait before retrying; if this continues, check the provider status or choose another available model. No suggestions were applied, and the app did not retry automatically.'
+    case 408:
+    case 504:
+      return 'The endpoint or its gateway timed out. Try again later or choose a faster available model. No suggestions were applied, and the app did not retry automatically.'
+    default:
+      return 'Check the endpoint path, model and support for JSON output with max_completion_tokens.'
+  }
+}
+
 export async function requestAssistantJson(
   input: AssistantJsonRequest, fetcher: typeof fetch = globalThis.fetch,
 ): Promise<string> {
@@ -353,10 +373,7 @@ export async function requestAssistantJson(
     })
     if (response.redirected) throw new AssistantError('Redirects are blocked. Configure the final HTTPS or local loopback endpoint directly.')
     if (response.status !== 200) {
-      const advice = response.status === 401 || response.status === 403 ? 'Check the API key and endpoint permissions.'
-        : response.status === 429 ? 'Check the endpoint quota or rate limit, then try again later.'
-          : 'Check the endpoint path, model and support for JSON output with max_completion_tokens.'
-      throw new AssistantError(`Endpoint returned HTTP ${response.status}. ${advice}`)
+      throw new AssistantError(`Endpoint returned HTTP ${response.status}. ${httpFailureAdvice(response.status)}`)
     }
     const envelope = await readBoundedResponse(response)
     if (controller.signal.aborted) throw new AssistantError('Request canceled.')

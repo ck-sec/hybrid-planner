@@ -48,6 +48,12 @@ test('recommended onboarding offers a complete classic path and an explicit AI b
       assert.match(html, /<textarea/)
       assert.match(html, /What are you building toward/)
       assert.match(html, /Connect AI &amp; shape my goal/)
+      assert.match(html, /Event \/ review date \(required before continuing\)/)
+      assert.match(html, /<input type="date"[^>]*min="2026-09-07"[^>]*max="2027-09-05"[^>]*required=""/)
+      assert.match(html, /including the year/)
+      assert.match(html, /You can ask AI first, but a date is required to continue/)
+      assert.match(html, /For a later event, choose an earlier review date/)
+      assert.match(html, /Editing the brief clears this choice/)
       assert.doesNotMatch(html, /cf-goal-grid|Give your goal a name/)
     })
     await t.test('rhythm asks about sessions, not calculated weekly totals', () => {

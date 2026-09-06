@@ -1,9 +1,12 @@
 import { normalizeRecommendedDraft, prepareRecommendedSetup } from './model.ts'
 import { parseGoalProposal } from './setup-assistant.ts'
 import type { GoalProposal, GoalProposalPurpose } from './setup-assistant.ts'
+import { validateSetupDate } from './setup-dates.ts'
 import type { CampaignState } from './types.ts'
 
-export function applySetupProposal(state: CampaignState, proposal: GoalProposal, purpose: GoalProposalPurpose): CampaignState {
+export function applySetupProposal(
+  state: CampaignState, proposal: GoalProposal, purpose: GoalProposalPurpose, confirmedDate?: string,
+): CampaignState {
   if (state.setupComplete) throw new Error('Exercise suggestions cannot change a committed block.')
   if (purpose !== 'interpret_goal' && purpose !== 'suggest_exercises') throw new Error('Choose a supported setup request.')
   const prepared = prepareRecommendedSetup(state)
@@ -15,7 +18,7 @@ export function applySetupProposal(state: CampaignState, proposal: GoalProposal,
     goalKind: reviewed.goalKind,
     goalLabel: reviewed.label,
     location: reviewed.location,
-    eventDate: reviewed.eventDate ?? draft.eventDate,
+    eventDate: confirmedDate ? validateSetupDate(draft.startDate, confirmedDate) : reviewed.eventDate ?? '',
     priorities: reviewed.priorities,
   } : {}
   return {

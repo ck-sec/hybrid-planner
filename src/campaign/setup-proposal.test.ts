@@ -4,6 +4,7 @@ import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { emptyCampaign, normalizeRecommendedDraft, parseCampaign } from './model.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import { applySetupProposal } from './setup-proposal.ts'
+import { parseGoalProposalForReview } from './setup-assistant.ts'
 import type { GoalProposal } from './setup-assistant.ts'
 
 function draft() {
@@ -56,8 +57,39 @@ test('goal interpretation updates only reviewed intent and exercise identities',
   assert.deepEqual(next.draft.exercises, [])
   assert.deepEqual(next.weeks, [])
   const unknownDate = draft()
-  unknownDate.draft.eventDate = ''
+  unknownDate.draft.eventDate = '2026-12-06'
   assert.equal(applySetupProposal(unknownDate, { ...proposal(), eventDate: null }, 'interpret_goal').draft.eventDate, '')
+})
+
+test('a separately confirmed picker date overrides AI dates without requiring date wording in the goal', () => {
+  const state = draft()
+  state.draft.recommendedSetup!.goalText = 'dodgeball word championship 4. dec bangkok'
+  const review = parseGoalProposalForReview(JSON.stringify({ ...proposal(), eventDate: '2026-12-04' }), state.draft)
+  assert.equal(review.proposal.eventDate, null)
+  const before = structuredClone(state)
+  const noConfirmation = applySetupProposal(state, review.proposal, 'interpret_goal')
+  assert.equal(noConfirmation.draft.eventDate, '')
+  const confirmed = applySetupProposal(state, review.proposal, 'interpret_goal', '2026-12-04')
+  assert.equal(confirmed.draft.eventDate, '2026-12-04')
+  assert.equal(confirmed.draft.goalLabel, proposal().label)
+  assert.deepEqual(confirmed.draft.recommendedSetup!.exerciseIds, proposal().exerciseIds)
+  assert.deepEqual(state, before)
+  assert.doesNotThrow(() => parseCampaign(JSON.parse(JSON.stringify(confirmed))))
+  assert.equal(applySetupProposal(draft(), proposal(), 'interpret_goal', '2026-12-06').draft.eventDate, '2026-12-06')
+})
+
+test('picker overrides are validated locally, cannot bypass schema checks and never change exercise-only dates', () => {
+  const state = draft()
+  const before = structuredClone(state)
+  for (const date of ['2026-02-30', '04/12/2026', '2026-09-06', '2027-09-06']) {
+    assert.throws(() => applySetupProposal(state, proposal(), 'interpret_goal', date), /date/i)
+  }
+  for (const date of ['2026-09-07', '2027-09-05']) {
+    assert.equal(applySetupProposal(state, proposal(), 'interpret_goal', date).draft.eventDate, date)
+  }
+  assert.throws(() => applySetupProposal(state, { ...proposal(), ...{ sets: 100 } }, 'interpret_goal', '2026-12-04'), /only/)
+  assert.equal(applySetupProposal(state, proposal(), 'suggest_exercises', '2026-12-04').draft.eventDate, state.draft.eventDate)
+  assert.deepEqual(state, before)
 })
 
 test('proposal application revalidates against current equipment and never edits committed blocks', () => {

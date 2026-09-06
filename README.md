@@ -55,9 +55,16 @@ and are labelled accordingly in setup. There is no Garmin account connection.
 During setup, write a goal such as preparing for a dodgeball championship in
 Bangkok. AI may propose the goal classification, name, location, explicitly
 specified event date, priorities, and equipped exercise-library IDs. Review the
-interpretation and added/removed cards before applying. Missing dates are not
-filled by guessing; confirm them separately. Exercise-only requests preserve
-the already reviewed goal and date.
+interpretation and added/removed cards before applying. Write the brief naturally;
+no special date format is needed. A missing, guessed, invalid or out-of-range AI
+date stays unset while valid goal and exercise suggestions remain reviewable.
+Use the **Event / review date** picker beside the brief, including the year.
+This date is required before continuing setup: choose the event date or a progress
+review date within the displayed 52-week range. You may ask AI first and select the
+date after applying its suggestions. A separately selected date takes precedence
+when you explicitly confirm it in the AI review; it need not appear in the brief
+and is not sent to the model. Editing the brief clears the previous date.
+Exercise-only requests preserve the already reviewed goal and date.
 
 AI cannot invent exercise metadata or prescribe sets, repetitions, RPE, weights,
 durations, weekly volume or placement. Unknown fields, unknown/high-skill
@@ -85,6 +92,34 @@ apply; the endpoint must support browser use. A phone's `localhost` means the
 phone, not a computer running a model. For another device, use an explicitly
 configured HTTPS endpoint rather than expecting LAN HTTP to work. No model is
 bundled, and API usage may be charged by the selected provider.
+
+### Connection troubleshooting
+
+- HTTP 401/403: check the key, API permissions and account access.
+- HTTP 429: check the provider's quota/rate limits.
+- HTTP 500/502/503: the service or gateway could not complete the request.
+  A 503 does **not** establish that JSON mode or `max_completion_tokens` is wrong.
+  Wait before retrying; if it persists, check provider status or select another
+  model available to your account.
+- HTTP 408/504, or the app's 20-second timeout: consider a faster available model.
+
+The app never automatically retries or switches models. Failed requests do not
+apply suggestions, and raw provider error bodies are deliberately not displayed
+because they may contain private details.
+
+For Google AI Studio, use Google's
+[OpenAI-compatible endpoint](https://ai.google.dev/gemini-api/docs/openai):
+`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`.
+Choose a model your project can access. Google's
+[`gemini-3.1-flash-lite`](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)
+is a documented low-latency option for classification and structured extraction,
+not a guarantee of account availability or a successful live call. See Google's
+[troubleshooting guidance](https://ai.google.dev/gemini-api/docs/troubleshooting).
+
+Password masking does not hide a browser-held key from automation or every
+accessibility snapshot. Use fake keys and mocked endpoints for shared automated
+tests. Run real-key checks in a separate browser/profile not connected to the
+automation, and share only sanitized errors, never request headers or keys.
 
 ## Run
 

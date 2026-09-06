@@ -292,7 +292,7 @@ test('consent and configuration failures happen before any fetch', async () => {
 })
 
 test('bad HTTP responses and arbitrary network errors never echo provider text or secrets', async () => {
-  for (const status of [301, 400, 401, 403, 429, 500]) {
+  for (const status of [301, 400, 401, 403, 408, 429, 500, 501, 502, 503, 504]) {
     await assert.rejects(requestAssistantIdeas(requestInput(), async () => jsonResponse({
       error: `PRIVATE ${config.apiKey}`,
     }, status)), (error: unknown) => {
@@ -313,6 +313,40 @@ test('bad HTTP responses and arbitrary network errors never echo provider text o
   const redirected = jsonResponse()
   Object.defineProperty(redirected, 'redirected', { value: true })
   await assert.rejects(requestAssistantIdeas(requestInput(), async () => redirected), /Redirects are blocked/)
+})
+
+test('service failures give status-specific guidance without changing the request or retrying', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  for (const [status, expected] of [
+    [500, /service or its gateway/],
+    [502, /service or its gateway/],
+    [503, /unavailable or overloaded/],
+    [408, /timed out/],
+    [504, /timed out/],
+  ] as const) {
+    const input = requestInput()
+    const before = structuredClone(input)
+    let calls = 0
+    await assert.rejects(requestAssistantIdeas(input, async (_url, options) => {
+      calls++
+      const body = JSON.parse(String(options?.body))
+      assert.equal(body.model, config.model)
+      assert.equal(body.max_completion_tokens, 256)
+      assert.deepEqual(body.response_format, { type: 'json_object' })
+      return jsonResponse({ error: `PRIVATE ${config.apiKey}` }, status)
+    }), (error: unknown) => {
+      assert.ok(error instanceof AssistantError)
+      assert.match(error.message, new RegExp(`HTTP ${status}`))
+      assert.match(error.message, expected)
+      assert.match(error.message, /No suggestions were applied/)
+      assert.match(error.message, /did not retry automatically/)
+      assert.doesNotMatch(error.message, /Check the endpoint path|max_completion_tokens|PRIVATE|secret-test-key/)
+      return true
+    })
+    t.mock.timers.tick(60_000)
+    assert.equal(calls, 1)
+    assert.deepEqual(input, before)
+  }
 })
 
 test('strict response envelope and finish status reject partial, streamed, tool and prose answers', async () => {

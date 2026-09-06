@@ -11,7 +11,7 @@ import { AssistantError, ASSISTANT_TIMEOUT_MS } from './assistant.ts'
 import {
   applyGoalProposal, buildGoalProposalRequest, buildSetupAssistantContext, eligibleSetupExercises,
   MAX_EXERCISE_REFINEMENT_LENGTH, MAX_GOAL_TEXT_LENGTH, MAX_PROPOSED_EXERCISES,
-  parseGoalProposal, proposalExerciseChanges, requestGoalProposal,
+  parseGoalProposal, parseGoalProposalForReview, proposalExerciseChanges, requestGoalProposal,
 } from './setup-assistant.ts'
 import type { GoalProposal, GoalProposalPurpose } from './setup-assistant.ts'
 import type { CampaignDraft } from './types.ts'
@@ -19,7 +19,7 @@ import type { CampaignDraft } from './types.ts'
 function draft(): CampaignDraft {
   return {
     goalKind: 'hybrid', goalLabel: 'PRIVATE prior goal', location: 'PRIVATE home address',
-    eventDate: '2031-01-01', startDate: '2026-09-07', priorities: ['aerobic_base'],
+    eventDate: '2031-01-01', startDate: '2030-09-02', priorities: ['aerobic_base'],
     availableDays: [0, 1, 3, 5], practiceDays: [1], practiceTime: '18:30', practiceDuration: 60,
     weeklyRunMinutes: 120, runsPerWeek: 2, liftsPerWeek: 2, liftDurationMin: 30,
     weeklyTimeBudgetMin: 240, equipment: ['bodyweight', 'dumbbell', 'bands'],
@@ -52,6 +52,27 @@ function response(value: unknown = proposal()): Response {
   }), { headers: { 'Content-Type': 'application/json' } })
 }
 
+test('Gemini service-unavailable failures preserve the goal and never expose provider details', async () => {
+  const input = draft()
+  const before = structuredClone(input)
+  let calls = 0
+  await assert.rejects(requestGoalProposal({
+    draft: input,
+    config: { ...config, endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions' },
+    consent: true,
+  }, async () => {
+    calls++
+    return new Response(`PRIVATE ${config.apiKey}`, { status: 503 })
+  }), (error: unknown) => {
+    assert.ok(error instanceof AssistantError)
+    assert.match(error.message, /HTTP 503.*unavailable or overloaded/)
+    assert.doesNotMatch(error.message, /max_completion_tokens|PRIVATE|private-test-key/)
+    return true
+  })
+  assert.equal(calls, 1)
+  assert.deepEqual(input, before)
+})
+
 test('Bangkok free-text goal becomes a bounded proposal with useful compatible additions', () => {
   const input = draft()
   const before = structuredClone(input)
@@ -83,8 +104,8 @@ test('exercise requests use latest gear and selected IDs, and can propose swaps 
   const result = await requestGoalProposal({
     draft: input, config, consent: true, purpose: 'suggest_exercises',
   }, fetcher)
-  assert.deepEqual(result.exerciseIds, suggested.exerciseIds)
-  assert.ok(proposalExerciseChanges(input, result).some(item => item.exercise.id === 'goblet-squat' && item.change === 'removed'))
+  assert.deepEqual(result.proposal.exerciseIds, suggested.exerciseIds)
+  assert.ok(proposalExerciseChanges(input, result.proposal).some(item => item.exercise.id === 'goblet-squat' && item.change === 'removed'))
 })
 
 test('unknown keys and numerical prescription overrides reject the entire response', () => {
@@ -180,6 +201,7 @@ test('calendar dates must be real, canonical, not before the start and match a c
   assert.throws(() => parseGoalProposal(JSON.stringify(proposal()), noYear), /complete explicit date/)
   assert.equal(parseGoalProposal(JSON.stringify({ ...proposal(), eventDate: null }), noYear).eventDate, null)
   const leap = draft()
+  leap.startDate = '2028-01-03'
   leap.recommendedSetup!.goalText = 'Dodgeball event in Bangkok on 29 February 2028.'
   assert.equal(parseGoalProposal(JSON.stringify({ ...proposal(), eventDate: '2028-02-29' }), leap).eventDate, '2028-02-29')
   const boundary = draft()
@@ -200,6 +222,7 @@ test('partial dates, ambiguous numeric dates and invented explicit days or month
     'Dodgeball in Bangkok on 2026-11-28.',
   ]) {
     const input = draft()
+    input.startDate = '2026-09-07'
     input.recommendedSetup!.goalText = goalText
     assert.throws(() => parseGoalProposal(JSON.stringify({ ...proposal(), eventDate }), input), /Provide YYYY-MM-DD/)
     assert.equal(parseGoalProposal(JSON.stringify({ ...proposal(), eventDate: null }), input).eventDate, null)
@@ -214,6 +237,7 @@ test('complete Bangkok dates support ISO, English month order and optional ordin
     '29November2026',
   ]) {
     const input = draft()
+    input.startDate = '2026-09-07'
     input.recommendedSetup!.goalText = `Dodgeball championship on ${explicitDate} / Bangkok.`
     const next = { ...proposal(), location: 'Bangkok', eventDate }
     assert.equal(parseGoalProposal(JSON.stringify(next), input).eventDate, eventDate)
@@ -221,6 +245,57 @@ test('complete Bangkok dates support ISO, English month order and optional ordin
     applyGoalProposal(input, next, value => { applied = true; assert.equal(value.eventDate, eventDate) })
     assert.equal(applied, true)
   }
+})
+
+test('review keeps useful suggestions but unsets guessed, invalid, past and out-of-range AI dates', async () => {
+  const cases = [
+    { text: 'dodgeball word championship 4. dec bangkok', date: '2026-12-04', issue: 'not_explicit' },
+    { text: 'A dodgeball championship in Bangkok', date: '2026-12-04', issue: 'not_explicit' },
+    { text: 'Dodgeball in Bangkok, November 2026', date: '2026-11-29', issue: 'not_explicit' },
+    { text: 'Dodgeball in Bangkok, 04/12/2026', date: '2026-12-04', issue: 'not_explicit' },
+    { text: 'Dodgeball in Bangkok, 4 December 2026', date: '2026-12-05', issue: 'not_explicit' },
+    { text: 'Dodgeball in Bangkok, 30 February 2027', date: '2027-02-30', issue: 'invalid' },
+    { text: 'Dodgeball in Bangkok, 6 September 2026', date: '2026-09-06', issue: 'before_start' },
+    { text: 'Dodgeball in Bangkok, 6 September 2027', date: '2027-09-06', issue: 'outside_block' },
+    { text: 'A dodgeball championship in Bangkok', date: '', issue: 'invalid' },
+    { text: 'A dodgeball championship in Bangkok', date: null, issue: null },
+  ]
+  for (const { text, date, issue } of cases) {
+    const input = draft()
+    input.startDate = '2026-09-07'
+    input.recommendedSetup!.goalText = text
+    const before = structuredClone(input)
+    const suggested = { ...proposal(), eventDate: date }
+    const review = await requestGoalProposal({ draft: input, config, consent: true }, async () => response(suggested))
+    assert.deepEqual(review, { proposal: { ...suggested, eventDate: null }, dateIssue: issue }, text)
+    assert.deepEqual(input, before)
+    let applied = false
+    applyGoalProposal(input, review.proposal, value => {
+      applied = true
+      assert.equal(value.eventDate, null)
+      assert.equal(value.location, 'Bangkok')
+    })
+    assert.equal(applied, true)
+  }
+  assert.deepEqual(parseGoalProposalForReview(JSON.stringify(proposal()), draft()), { proposal: proposal(), dateIssue: null })
+})
+
+test('date recovery never permits invalid types, extra fields or incompatible exercise suggestions', () => {
+  const input = draft()
+  input.recommendedSetup!.goalText = 'dodgeball word championship 4. dec bangkok'
+  for (const invalid of [
+    { ...proposal(), eventDate: 2026 }, { ...proposal(), eventDate: {} },
+    { ...proposal(), eventDate: null, sets: 100 },
+    { ...proposal(), eventDate: null, goalKind: 'unknown' },
+    { ...proposal(), exerciseIds: ['snatch'] },
+    { ...proposal(), exerciseIds: ['unavailable-card'] },
+    { ...proposal(), priorities: ['unknown'] },
+  ]) {
+    assert.throws(() => parseGoalProposalForReview(JSON.stringify(invalid), input), AssistantError)
+  }
+  assert.throws(() => parseGoalProposalForReview(
+    JSON.stringify(proposal()).replace(/}$/, ',"eventDate":null}'), input,
+  ), /repeats a field/i)
 })
 
 test('request minimizes data to goal text, gear, current IDs and the non-prescriptive allowed catalog', () => {
@@ -234,6 +309,7 @@ test('request minimizes data to goal text, gear, current IDs and the non-prescri
     assert.equal(body.messages.length, 2)
     assert.match(body.messages[0].content, /four-digit year/)
     assert.match(body.messages[0].content, /Never infer a missing day, month or year/)
+    assert.match(body.messages[0].content, /separate date picker/)
     assert.match(body.messages[0].content, /Baseline quantities remain user-entered/)
     const context = JSON.parse(body.messages[1].content)
     assert.deepEqual(Object.keys(context).sort(), ['allowedCatalog', 'currentExerciseIds', 'equipment', 'goalText', 'requestText'])
@@ -245,7 +321,7 @@ test('request minimizes data to goal text, gear, current IDs and the non-prescri
       assert.notEqual(item.id, 'snatch')
     }
     const text = JSON.stringify(body)
-    for (const hidden of ['PRIVATE', '2026-09-07', '2031-01-01', '2026-08-01', '18:30', config.apiKey, config.endpoint]) {
+    for (const hidden of ['PRIVATE', input.startDate, '2031-01-01', '2026-08-01', '18:30', config.apiKey, config.endpoint]) {
       assert.equal(text.includes(hidden), false, hidden)
     }
   }
@@ -294,7 +370,7 @@ test('exercise refinements are explicit bounded data, with empty requests meanin
     assert.equal(JSON.parse(payload.messages[1].content).requestText, requestText)
     return response()
   })
-  assert.deepEqual(result.exerciseIds, proposal().exerciseIds)
+  assert.deepEqual(result.proposal.exerciseIds, proposal().exerciseIds)
   assert.deepEqual(input, before)
 })
 
@@ -336,7 +412,7 @@ test('mocked setup requests reuse secure transport and return data without apply
     assert.equal(String(options?.body).includes(config.apiKey), false)
     return response()
   }
-  assert.deepEqual(await requestGoalProposal({ draft: input, config, consent: true }, fetcher), proposal())
+  assert.deepEqual(await requestGoalProposal({ draft: input, config, consent: true }, fetcher), { proposal: proposal(), dateIssue: null })
   assert.equal(calls, 1)
   assert.deepEqual(input, before)
   assert.doesNotMatch(JSON.stringify(input), /private-test-key/)
@@ -384,7 +460,7 @@ test('explicit apply alone invokes the callback with a validated copy and no num
   const input = draft()
   const before = structuredClone(input)
   const applied: GoalProposal[] = []
-  const result = await requestGoalProposal({ draft: input, config, consent: true }, async () => response())
+  const { proposal: result } = await requestGoalProposal({ draft: input, config, consent: true }, async () => response())
   assert.equal(applied.length, 0)
   applyGoalProposal(input, result, next => applied.push(next))
   assert.equal(applied.length, 1)
@@ -464,7 +540,7 @@ test('SSR shows no broken form for missing input, and a human-readable, escaped 
     assert.match(exerciseMode, /What exercise-card changes would you like/)
     assert.match(exerciseMode, /<option value="suggest_exercises" selected=""/)
     assert.match(exerciseMode, /I agree to send my goal, change request, equipment and exercise selection/)
-    const review = renderToStaticMarkup(createElement(GoalProposalReview, { draft: draft(), proposal: proposal() }))
+    const review = renderToStaticMarkup(createElement(GoalProposalReview, { draft: { ...draft(), eventDate: '' }, proposal: proposal() }))
     assert.match(review, /Bangkok/)
     assert.match(review, /20 November 2030/)
     assert.match(review, /Change of direction/)
@@ -480,6 +556,18 @@ test('SSR shows no broken form for missing input, and a human-readable, escaped 
     }))
     assert.match(exerciseReview, /your approved goal and date stay unchanged/)
     assert.doesNotMatch(exerciseReview, /<dl\b|20 November 2030|Bangkok/)
+    const uncertain = renderToStaticMarkup(createElement(GoalProposalReview, {
+      draft: { ...draft(), eventDate: '' }, proposal: { ...proposal(), eventDate: null }, dateIssue: 'not_explicit',
+    }))
+    assert.match(uncertain, /role="status"/)
+    assert.match(uncertain, /date was not used/)
+    assert.match(uncertain, /suggestions are still available/)
+    assert.match(uncertain, /date picker before continuing/)
+    assert.doesNotMatch(uncertain, /20 November 2030/)
+    const chosen = renderToStaticMarkup(createElement(GoalProposalReview, { draft: draft(), proposal: proposal() }))
+    assert.match(chosen, /1 January 2031/)
+    assert.match(chosen, /from your date picker/)
+    assert.match(chosen, /confirm before applying/)
     const escaped = renderToStaticMarkup(createElement(GoalProposalReview, {
       draft: draft(), proposal: { ...proposal(), label: '<script>bad()</script>', location: '<img src=x>' },
     }))
@@ -512,8 +600,9 @@ test('setup config stays in memory, transport is shared, and apply is only an ex
   assert.equal(panel.match(/onConnect\?\.\(/g)?.length, 1)
   assert.match(request, /setConsentFor\(null\)/)
   assert.match(panel, /onClick=\{apply\}/)
-  assert.match(panel, /applyGoalProposal\(draft, proposal, next => onApply\(next, purpose\)\)/)
-  assert.match(panel, /JSON\.stringify\(\[context, draft\.startDate, purpose\]\)/)
+  assert.match(panel, /applyGoalProposal\(draft, proposal, next => onApply\(next, purpose, confirmedDate\)\)/)
+  assert.match(panel, /JSON\.stringify\(\[context, draft\.startDate, draft\.eventDate, purpose\]\)/)
+  assert.match(panel, /validateSetupDate\(draft\.startDate, draft\.eventDate\)/)
   assert.match(panel, /buildSetupAssistantContext\(draft, purpose === 'suggest_exercises' \? requestText : ''\)/)
   assert.match(panel, /setRequestText\(event\.target\.value\); setConsentFor\(null\)/)
   assert.match(panel, /role="alert"/)

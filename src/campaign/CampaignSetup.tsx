@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import type { FormEvent } from 'react'
 import { addDays } from '../../engine/dates.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
@@ -6,6 +6,7 @@ import { recommendedExercises, recommendationForExercise } from '../../engine/re
 import type { Equipment, MovementPattern } from '../../engine/types.ts'
 import { buildCampaign, exampleCampaign, normalizeRecommendedDraft, prepareRecommendedSetup } from './model.ts'
 import { MAX_GOAL_TEXT_LENGTH } from './setup-assistant.ts'
+import { eventDateBounds, validateSetupDate } from './setup-dates.ts'
 import type { CampaignDraft, CampaignState, RecommendedSetup } from './types.ts'
 import { CourtArt, DayPicker, NumberField } from './components.tsx'
 import Icon from './Icons.tsx'
@@ -25,12 +26,6 @@ function QuickChoice({ label, value, options, onChange, unit = '' }: { label: st
   return <fieldset className="cf-quick-choice"><legend>{label}</legend><div>{options.map(option => <button type="button" key={option} aria-pressed={value === option} onClick={() => onChange(option)}><strong>{option}</strong><span>{option === 1 ? unit.replace(/s$/, '') : unit}</span></button>)}</div></fieldset>
 }
 
-function eventDateBounds(start: string): { max?: string; issue?: string } {
-  try { return { max: addDays(start, 363) } } catch (error) {
-    return { issue: `Confirm your block start in Your week. ${error instanceof Error ? error.message : 'The start date is incomplete.'}` }
-  }
-}
-
 export default function CampaignSetup({ state, update, onAI, connected, onDisconnect }: {
   state: CampaignState
   update: (change: (state: CampaignState) => CampaignState) => void
@@ -39,6 +34,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
   onDisconnect: () => void
 }) {
   const [issue, setIssue] = useState('')
+  const dateHelpId = useId()
   const [swapping, setSwapping] = useState<string | null>(null)
   const prepared = prepareRecommendedSetup(state)
   const draft = prepared.draft
@@ -66,6 +62,12 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
     if (state.step === 1 && setup?.mode === 'assisted' && !draft.goalLabel.trim()) {
       setIssue('Use AI to review your goal, or choose the classic run + lift plan. Nothing is sent automatically.')
       return
+    }
+    if (state.step === 1 && setup?.mode === 'assisted') {
+      try { validateSetupDate(draft.startDate, draft.eventDate) } catch (error) {
+        setIssue(error instanceof Error ? error.message : 'Review your event or review date before continuing.')
+        return
+      }
     }
     if (state.step === 2 && (!setup?.typicalRunMinutes || !draft.runsPerWeek || !draft.liftsPerWeek || !draft.liftDurationMin)) {
       setIssue('Choose your usual run length, run frequency, lift frequency and session length.')
@@ -101,10 +103,13 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
         </div>
         {setup.mode === 'classic' ? <div className="cf-classic-base"><div className="cf-classic-symbols"><Icon name="run" size={28} /><span>+</span><Icon name="dumbbell" size={28} /></div><h2>Run comfortably.<br />Lift consistently.</h2><p>Easy running, a recommended strength routine and room to recover. Just tell us what a normal training session looks like.</p><span className="cf-small">We choose the exercises. You find your starting weights when you train.</span></div> : <>
           <label className="cf-field cf-goal-prompt"><span>What are you building toward?</span><textarea rows={5} maxLength={MAX_GOAL_TEXT_LENGTH} placeholder="I'm preparing for the Dodgeball World Championships in Bangkok. I want to keep running and lifting around team practice..." value={setup.goalText} onChange={event => patch({ goalLabel: '', location: '', eventDate: '' }, { goalText: event.target.value })} /></label>
+          <label className="cf-field"><span>Event / review date (required before continuing)</span><input type="date" value={draft.eventDate} min={draft.startDate} max={dateBounds.max} required aria-describedby={dateHelpId} onChange={event => patch({ eventDate: event.target.value })} /></label>
+          <p id={dateHelpId} className="cf-small">Choose the full date, including the year. No event yet? Choose a progress review date. You can ask AI first, but a date is required to continue. Editing the brief clears this choice.{dateBounds.max && ` Available: ${draft.startDate} to ${dateBounds.max}. For a later event, choose an earlier review date.`}</p>
+          {dateBounds.issue && <p role="status">{dateBounds.issue}</p>}
           <button className="cf-button cf-primary" type="button" disabled={!setup.goalText.trim()} onClick={onAI}><Icon name="spark" />{draft.goalLabel ? 'Refine my goal with AI' : 'Connect AI & shape my goal'}<Icon name="arrow" size={18} /></button>
           <p className="cf-small">{connected ? 'AI connection is held in this tab only. Nothing is sent without confirmation.' : 'Use a local model or your own API. You review its interpretation before anything is applied.'}</p>
           {connected && <button className="cf-text-button" type="button" onClick={onDisconnect}>Disconnect AI</button>}
-          {draft.goalLabel && <div className="cf-goal-review"><p className="cf-kicker">{state.sample ? 'SAMPLE GOAL BRIEF' : 'YOUR REVIEWED GOAL'}</p><h2>{draft.goalLabel}</h2>{draft.location && <p>{draft.location}</p>}<label className="cf-field">Confirm event / review date<input type="date" value={draft.eventDate} min={draft.startDate} max={dateBounds.max} required onChange={event => patch({ eventDate: event.target.value })} /></label>{dateBounds.issue && <p role="status">{dateBounds.issue}</p>}</div>}
+          {draft.goalLabel && <div className="cf-goal-review"><p className="cf-kicker">{state.sample ? 'SAMPLE GOAL BRIEF' : 'YOUR REVIEWED GOAL'}</p><h2>{draft.goalLabel}</h2>{draft.location && <p>{draft.location}</p>}<p className="cf-small">Review your goal and the date selected above before continuing.</p></div>}
         </>}
       </section>}
       {state.step === 2 && <section className="cf-stack">

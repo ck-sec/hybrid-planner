@@ -1,5 +1,5 @@
 import { LIMITS, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
-import { parseISODate } from '../../engine/dates.ts'
+import { dayNumber, parseISODate } from '../../engine/dates.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { recommendationForExercise } from '../../engine/recommendations.ts'
 import type { Equipment, Exercise, Quality } from '../../engine/types.ts'
@@ -22,6 +22,13 @@ export interface GoalProposal {
   eventDate: string | null
   priorities: Quality[]
   exerciseIds: string[]
+}
+
+export type GoalDateIssue = 'invalid' | 'before_start' | 'outside_block' | 'not_explicit'
+
+export interface GoalProposalReviewResult {
+  proposal: GoalProposal
+  dateIssue: GoalDateIssue | null
 }
 
 export type GoalProposalPurpose = 'interpret_goal' | 'suggest_exercises'
@@ -128,6 +135,7 @@ export function buildGoalProposalRequest(
         'eventDate must be null unless the user text explicitly supplies a complete, unambiguous calendar date INCLUDING a four-digit year.',
         'Supported explicit dates are YYYY-MM-DD, day English-month year, or English-month day year; ordinal day suffixes are allowed. Other date wording requires null.',
         'Never infer a missing day, month or year, resolve “next year”, or guess between ambiguous numeric date formats. Otherwise return the explicit date as YYYY-MM-DD for the user to review.',
+        'The app provides a separate date picker. A partial date or no date must not prevent interpreting the goal or suggesting exercise cards; return eventDate:null and continue with the other fields.',
         `priorities must contain distinct IDs from: ${Object.keys(SETUP_QUALITY_LABELS).join(', ')}.`,
         `exerciseIds must contain one to ${MAX_PROPOSED_EXERCISES} unique IDs drawn ONLY from allowedCatalog. Return the complete proposed selection, not just the changes.`,
         'You may select compatible library cards not currently selected. You may add, keep or swap cards, but cannot invent exercises or include high-skill/ineligible entries.',
@@ -192,7 +200,9 @@ function hasExplicitGoalDate(goalText: string, eventDate: string): boolean {
   return false
 }
 
-export function parseGoalProposal(content: string, draft: CampaignDraft): GoalProposal {
+function parseProposal(
+  content: string, draft: CampaignDraft, deferUncertainDate: boolean,
+): GoalProposalReviewResult {
   if (typeof content !== 'string' || content.length > MAX_PROPOSAL_LENGTH) {
     throw new AssistantError('The goal proposal is oversized or not text. Only a small JSON proposal is accepted.')
   }
@@ -223,22 +233,46 @@ export function parseGoalProposal(content: string, draft: CampaignDraft): GoalPr
     throw new AssistantError(`Choose one to ${MAX_PROPOSED_EXERCISES} unique, equipped library exercise IDs. Unknown, high-skill and incompatible exercises are rejected.`)
   }
   let eventDate: string | null = null
+  let dateIssue: GoalDateIssue | null = null
+  let dateError = ''
   if (value.eventDate !== null) {
+    if (typeof value.eventDate !== 'string') {
+      throw new AssistantError('The proposed event date must be a date string or null.')
+    }
     try { eventDate = parseISODate(value.eventDate) } catch {
-      throw new AssistantError('The proposed event date is not a valid calendar date. Ask for an explicit YYYY-MM-DD date or no date.')
+      dateIssue = 'invalid'
+      dateError = 'The proposed event date is not a valid calendar date. Ask for an explicit YYYY-MM-DD date or no date.'
     }
-    if (eventDate < validatedStartDate(draft)) {
-      throw new AssistantError('The proposed event date is before your block starts. Review the dates in your goal text.')
-    }
-    if (!hasExplicitGoalDate(context.goalText, eventDate)) {
-      throw new AssistantError('The proposed date must match a complete explicit date in your goal. Provide YYYY-MM-DD or a complete date with an English month name, or ask for no date and confirm it separately.')
+    if (eventDate !== null) {
+      if (eventDate < validatedStartDate(draft)) {
+        dateIssue = 'before_start'
+        dateError = 'The proposed event date is before your block starts. Review the dates in your goal text.'
+      } else if (!hasExplicitGoalDate(context.goalText, eventDate)) {
+        dateIssue = 'not_explicit'
+        dateError = 'The proposed date must match a complete explicit date in your goal. Provide YYYY-MM-DD or a complete date with an English month name, or ask for no date and confirm it separately.'
+      } else if (dayNumber(eventDate) - dayNumber(draft.startDate) >= LIMITS.maxWeeks * 7) {
+        dateIssue = 'outside_block'
+        dateError = 'The proposed date is beyond the supported 52-week block. Choose an earlier review date with the date picker.'
+      }
     }
   }
+  if (dateIssue && !deferUncertainDate) throw new AssistantError(dateError)
   return {
-    goalKind: value.goalKind as GoalKind, label, location, eventDate,
-    priorities: [...value.priorities] as Quality[],
-    exerciseIds: [...value.exerciseIds] as string[],
+    proposal: {
+      goalKind: value.goalKind as GoalKind, label, location, eventDate: dateIssue ? null : eventDate,
+      priorities: [...value.priorities] as Quality[],
+      exerciseIds: [...value.exerciseIds] as string[],
+    },
+    dateIssue,
   }
+}
+
+export function parseGoalProposal(content: string, draft: CampaignDraft): GoalProposal {
+  return parseProposal(content, draft, false).proposal
+}
+
+export function parseGoalProposalForReview(content: string, draft: CampaignDraft): GoalProposalReviewResult {
+  return parseProposal(content, draft, true)
 }
 
 export interface GoalProposalRequest {
@@ -252,14 +286,14 @@ export interface GoalProposalRequest {
 
 export async function requestGoalProposal(
   input: GoalProposalRequest, fetcher: typeof fetch = globalThis.fetch,
-): Promise<GoalProposal> {
+): Promise<GoalProposalReviewResult> {
   if (input.consent !== true) throw new AssistantError('Review the data-sharing notice and consent before connecting.')
   const body = buildGoalProposalRequest(input.draft, input.config.model, input.purpose, input.requestText)
   const content = await requestAssistantJson({
     config: input.config, consent: input.consent, signal: input.signal,
     messages: body.messages, maxCompletionTokens: body.max_completion_tokens,
   }, fetcher)
-  return parseGoalProposal(content, input.draft)
+  return parseGoalProposalForReview(content, input.draft)
 }
 
 export function applyGoalProposal(
