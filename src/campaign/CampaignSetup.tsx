@@ -6,7 +6,7 @@ import { recommendationForExercise } from '../../engine/recommendations.ts'
 import { LIMITS, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { recommendProgram } from '../../engine/program.ts'
 import type { MovementPattern } from '../../engine/types.ts'
-import { buildCampaign, exampleCampaign, normalizeRecommendedDraft, prepareRecommendedSetup } from './model.ts'
+import { buildCampaign, confirmSetupEquipment, exampleCampaign, normalizeRecommendedDraft, prepareRecommendedSetup } from './model.ts'
 import { GOAL_KIND_LABELS, MAX_GOAL_TEXT_LENGTH, SETUP_QUALITY_LABELS } from './setup-assistant.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import { eventDateBounds, validateSetupDate } from './setup-dates.ts'
@@ -21,7 +21,7 @@ import { parseWorkoutCards } from './workout-cards.ts'
 import ExerciseGuide from './ExerciseGuide.tsx'
 import { exerciseGuidance } from './exercise-guidance.ts'
 import ExercisePoolEditor from './ExercisePoolEditor.tsx'
-import { programmingChoices, selectProgramExercises } from './programming.ts'
+import { programGoalForKind, programmingChoices, selectProgramExercises } from './programming.ts'
 import { ConditioningOptions, PracticeBlockOptions, ProgrammingChoice } from './ProgrammingOptions.tsx'
 
 const stepOrder = [6, 1, 2, 3, 4, 5]
@@ -59,7 +59,12 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
       const current = prepareRecommendedSetup(previous)
       const currentSetup = current.draft.recommendedSetup
       if (!currentSetup) throw new Error('Recommended setup is unavailable for this draft.')
-      return { ...current, draft: normalizeRecommendedDraft({ ...current.draft, ...change, recommendedSetup: { ...currentSetup, ...preference }, confirmed: false }) }
+      return { ...current, draft: normalizeRecommendedDraft({
+        ...current.draft, ...change,
+        ...(current.draft.program && change.goalKind && change.goalKind !== current.draft.goalKind
+          ? { program: { ...current.draft.program, goal: programGoalForKind(change.goalKind) } } : {}),
+        recommendedSetup: { ...currentSetup, ...preference }, confirmed: false,
+      }) }
     })
   }
   const changeResources = (selected: ResourceId[]) => {
@@ -111,10 +116,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
     setIssue('')
     update(previous => {
       const current = prepareRecommendedSetup(previous)
-      if (current.step === 6) return {
-        ...current, step: 1, draft: { ...current.draft, resources, equipment: equipmentForResources(resources),
-          recommendedSetup: { ...current.draft.recommendedSetup!, exerciseIds: current.draft.recommendedSetup!.exerciseIds.filter(id => current.draft.program ? programmingChoices(current.draft).some(item => item.exercise.id === id) : exerciseAvailable(id, resources)) } },
-      }
+      if (current.step === 6) return { ...confirmSetupEquipment(current, resources), step: 1 }
       return current.step === 5 ? buildCampaign(current) : { ...current, step: current.step + 1 }
     })
   }
@@ -124,7 +126,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
       <h1>A big goal.<br />A real life.<br /><em>Room for both.</em></h1>
       <p className="cf-lead">Start with your equipment and a run + lift base.<br />Make it yours offline, through an API or with your usual AI chat.</p>
       <button className="cf-button cf-primary cf-hero-cta" onClick={() => update(previous => ({ ...prepareRecommendedSetup(previous), step: 6 }))}>Find my starting point <Icon name="arrow" /></button>
-      <button className="cf-text-button" onClick={() => update(previous => ({ ...exampleCampaign(previous.draft.startDate), step: 1 }))}>Explore the Bangkok example <Icon name="chevron" size={17} /></button>
+      <button className="cf-text-button" onClick={() => update(previous => confirmSetupEquipment(exampleCampaign(previous.draft.startDate), ['dumbbell', 'floor_space']))}>Explore the Bangkok example <Icon name="chevron" size={17} /></button>
       <div className="cf-welcome-trust"><Icon name="lock" size={16} /><span>No account. No subscription. Just your device.</span></div>
     </div>
     <div className="cf-welcome-visual"><CourtArt /><div className="cf-visual-caption"><span>01 / THE CAMPAIGN</span><strong>A plan, not a blank page.</strong><p>Recommended exercises. A flexible calendar. Your own weights.</p></div></div>
@@ -137,8 +139,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
       {state.step === 6 && <section className="cf-stack">
         <div><p className="cf-kicker">START WITH WHAT YOU HAVE</p><h1>Your space.<br /><em>Your equipment.</em></h1><p className="cf-lead">Choose a starting point, then adjust the details. Every recommendation and AI brief uses this selection.</p></div>
         <EquipmentPicker value={resources} onChange={changeResources} />
-        <ProgrammingChoice draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
-        <p className="cf-small">Equipment never adds training by itself. Template programming can include rowing, cycling or SkiErg work only after you confirm an established routine for that modality.</p>
+        <p className="cf-small">The expanded exercise library is included. Continue to use these resources for your offline plan and AI brief. Confirm floor space and any supports you use; owning equipment never adds training by itself.</p>
       </section>}
       {state.step === 1 && <section className="cf-stack">
         <div><p className="cf-kicker">CHOOSE YOUR STARTING POINT</p><h1>A ready-made base.<br /><em>Or your own brief.</em></h1></div>

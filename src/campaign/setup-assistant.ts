@@ -165,7 +165,7 @@ export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '
     try {
       recommendProgram(program.resources, program.goal, DEFAULT_LIBRARY, setup.exerciseIds, program.includeMobility)
     } catch {
-      throw new AssistantError('Review your selected program exercises; the selection must form an equipped three-movement program.')
+      throw new AssistantError(`Choose ${PROGRAM_POLICY.minSelectedExercises}-${PROGRAM_POLICY.maxSelectedExercises} equipped movements for your active routine.`)
     }
   }
   return {

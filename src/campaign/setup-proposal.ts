@@ -3,6 +3,7 @@ import { parseGoalProposal } from './setup-assistant.ts'
 import type { GoalProposal, GoalProposalPurpose } from './setup-assistant.ts'
 import { validateSetupDate } from './setup-dates.ts'
 import type { CampaignState } from './types.ts'
+import { programGoalForKind } from './programming.ts'
 
 export function applySetupProposal(
   state: CampaignState, proposal: GoalProposal, purpose: GoalProposalPurpose, confirmedDate?: string,
@@ -25,6 +26,8 @@ export function applySetupProposal(
     ...prepared,
     draft: normalizeRecommendedDraft({
       ...draft, ...goal, confirmed: false,
+      ...(draft.program && purpose === 'interpret_goal' && reviewed.goalKind !== draft.goalKind
+        ? { program: { ...draft.program, goal: programGoalForKind(reviewed.goalKind) } } : {}),
       recommendedSetup: { ...setup, mode: 'assisted', exerciseIds: [...reviewed.exerciseIds] },
     }),
   }

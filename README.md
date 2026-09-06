@@ -60,14 +60,19 @@ scheduling and curated content; they do not justify invented sport-specific
 workloads. Garmin FIT and Apple Health activity import are not implemented yet,
 and are labelled accordingly in setup. There is no Garmin account connection.
 
-### Opt-in exercise templates
+### Equipment-aware exercise templates
 
-Choose **Use template-based sessions** during setup, or **Revise next week's
-exercises** in settings for an existing campaign. The versioned library includes
+Confirm equipment during setup to use the expanded library automatically.
+An unfinished draft from an older release asks for equipment confirmation inside
+the AI workspace before sharing a new brief. Existing campaigns retain their old
+prescriptions: choose **Change next week's exercises** in the coaching workspace
+or **Revise next week's exercises** in settings to review an upgrade. The library includes
 kettlebell movements, carries, mobility and supported execution variants.
 Choose four to seven equipped exercises; complementary A/B sessions cover the
 selected pool rather than repeating the same bundle. Unavailable movements are
 excluded, and excessive work is omitted rather than forced past the safety floor.
+The four-to-seven limit is the active routine size, not the library size. The
+coaching workspace shows how many movements match the confirmed equipment.
 
 Each exercise has **How, focus & why** guidance and editable personal notes.
 Controlled repetitions, slow lowering and fast concentric intent use distinct
@@ -109,8 +114,10 @@ units do not use artificial repetitions or RIR.
 
 - **Built-in:** select compatible exercises in setup and edit local reference cards.
 - **Use my AI chat:** copy a coaching brief or download `hybrid-coach-brief.txt`,
-  give it to a chat such as Claude or ChatGPT, iterate there, and request the final
-  JSON. Paste that reply or upload its JSON/text file, review native cards, and apply.
+  give it to a chat such as Claude or ChatGPT, discuss the choices in ordinary
+  language, then ask for the **final app reply**. Paste that JSON reply or upload its
+  JSON/text file, review native cards, and apply. The brief asks the AI to keep
+  schema keys and date-handling details out of the conversation, not the final export.
   No account integration or API key is needed. Provider upload and usage limits vary.
 - **Connect API:** configure an OpenAI-compatible endpoint once per open tab.
   Explicit requests use the same instructions, versioned reply and validator as
@@ -120,6 +127,8 @@ The `hybrid-coach-reply` version-1 envelope contains a context ID, bounded goal/
 exercise proposal, and optional reference cards. It is not a campaign backup.
 Context changes (equipment, goal, baseline, calendar or cards) invalidate
 old replies; copy a refreshed brief into the same conversation when this happens.
+An external chat cannot see an app update: paste the fresh brief and ask it to
+replace the earlier one if it still describes the old catalog.
 Otherwise there is one export and one final import, not a file exchange every turn.
 Unknown fields, duplicate JSON keys, invalid exercise/resource IDs and oversized
 replies are rejected. Imports revalidate at Apply and never replace saved logs.

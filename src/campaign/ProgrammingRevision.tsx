@@ -5,7 +5,7 @@ import type { AssistantConfig } from './assistant.ts'
 import { applyHandoff } from './handoff.ts'
 import { equipmentForResources, programResources, resourcesForEquipment } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
-import { nextCampaignWeek, normalizeRecommendedDraft, stable, workoutContent } from './model.ts'
+import { confirmSetupEquipment, nextCampaignWeek, normalizeRecommendedDraft, stable, workoutContent } from './model.ts'
 import type { CampaignDraft, CampaignState } from './types.ts'
 import { programmingChoices, selectProgramExercises } from './programming.ts'
 import { ProgrammingChoice, PracticeBlockOptions } from './ProgrammingOptions.tsx'
@@ -52,6 +52,10 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
   }
 
   if (showAI) return <CoachingWorkbench state={working} scope={scope} config={config} onConnect={onConnect}
+    onConfirmEquipment={resources => {
+      const next = confirmSetupEquipment(working, resources)
+      setWorking(next); setPreview(null); return true
+    }}
     onCards={cards => { setWorking(previous => ({ ...previous, cards: parseWorkoutCards(cards) })); setPreview(null) }}
     onApply={(review, request, date) => {
       try { setWorking(applyHandoff(working, review, scope, request, date)); setPreview(null); return true }

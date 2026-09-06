@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { recommendedExercises } from '../../engine/recommendations.ts'
-import { emptyCampaign, normalizeRecommendedDraft } from './model.ts'
+import { buildCampaign, confirmSetupEquipment, emptyCampaign, exampleCampaign, normalizeRecommendedDraft } from './model.ts'
 import type { CampaignState } from './types.ts'
 
 test('recommended onboarding offers a complete classic path and an explicit AI brief', async t => {
@@ -105,7 +105,39 @@ test('recommended onboarding offers a complete classic path and an explicit AI b
       assert.match(html, /SkiErg/)
       assert.match(html, /Dodgeballs/)
       assert.match(html, /Every recommendation and AI brief uses this selection/)
+      assert.match(html, /expanded exercise library is included/)
+      assert.doesNotMatch(html, /Use template-based sessions/)
       assert.doesNotMatch(html, /type="password"|<textarea/)
+    })
+    const { default: CoachingWorkbench } = await import('./CoachingWorkbench.tsx')
+    const workspace = (state: CampaignState) => renderToStaticMarkup(createElement(CoachingWorkbench, {
+      state, scope: { purpose: 'interpret_goal' }, onConnect() {}, onApply: () => true,
+      onCards() {}, onClose() {}, onConfirmEquipment: () => true, onRevise() {},
+    }))
+    await t.test('old unfinished drafts cannot silently export the small catalog', () => {
+      const html = workspace(exampleCampaign('2026-09-07'))
+      assert.match(html, /Use the expanded exercise library/)
+      assert.match(html, /Use this equipment &amp; continue/)
+      assert.doesNotMatch(html, /Copy coaching brief|Download brief|Paste final AI reply|Request suggestions/)
+    })
+    await t.test('the normal confirmed equipment path exposes an expanded, clearly labelled brief', () => {
+      const state = confirmSetupEquipment(exampleCampaign('2026-09-07'), ['kettlebell', 'floor_space', 'carry_space'])
+      const html = workspace(state)
+      assert.match(html, /Expanded exercise library/)
+      assert.match(html, /equipped movements/)
+      assert.match(html, /not the library size/)
+      assert.match(html, /Copy coaching brief/)
+      assert.match(html, /older brief/)
+      assert.doesNotMatch(html, /Use this equipment &amp; continue/)
+    })
+    await t.test('existing plans keep their library and offer a direct future-week revision', () => {
+      const sample = exampleCampaign('2026-09-07')
+      const state = buildCampaign({ ...sample, draft: { ...sample.draft, confirmed: true } })
+      const before = structuredClone(state)
+      const html = workspace(state)
+      assert.match(html, /plan still uses the original exercise library/)
+      assert.match(html, /Change next week&#x27;s exercises/)
+      assert.deepEqual(state, before)
     })
   } finally {
     hooks.deregister()

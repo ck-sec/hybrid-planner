@@ -4,7 +4,7 @@ import { availableExerciseMetadata, exerciseMetadata, recommendProgram } from '.
 import type { ProgramGoal } from '../../engine/types.ts'
 import { equipmentForResources, parseResources, programResources, resourcesForEquipment } from './equipment.ts'
 import type { ExerciseChoice } from './ExercisePoolEditor.tsx'
-import type { CampaignDraft } from './types.ts'
+import type { CampaignDraft, GoalKind } from './types.ts'
 
 const VARIANT_FAMILIES: Readonly<Record<string, string>> = {
   'back-squat-slow-lowering': 'back-squat',
@@ -20,11 +20,15 @@ export const PROGRAM_GOAL_LABELS: Readonly<Record<ProgramGoal, string>> = {
   dodgeball: 'Dodgeball support',
 }
 
+export function programGoalForKind(kind: GoalKind): ProgramGoal {
+  return kind === 'dodgeball' ? 'dodgeball' : kind === 'running' ? 'endurance' : 'balanced'
+}
+
 export function enableTemplateProgramming(draft: CampaignDraft): CampaignDraft {
   if (!draft.recommendedSetup) throw new Error('Set up a recommended exercise selection before enabling templates.')
   const resources = parseResources(draft.resources ?? resourcesForEquipment(draft.equipment))
   const capabilities = programResources(resources)
-  const goal: ProgramGoal = draft.goalKind === 'dodgeball' ? 'dodgeball' : draft.goalKind === 'running' ? 'endurance' : 'balanced'
+  const goal = programGoalForKind(draft.goalKind)
   const recommendation = recommendProgram(capabilities, goal)
   return {
     ...draft, resources: [...resources], equipment: equipmentForResources(resources), confirmed: false,

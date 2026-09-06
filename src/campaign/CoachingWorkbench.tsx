@@ -3,6 +3,8 @@ import type { AssistantConfig } from './assistant.ts'
 import { buildHandoff, exportHandoff, HANDOFF_LIMIT, parseHandoffReply, requestHandoff } from './handoff.ts'
 import type { HandoffReview, HandoffScope } from './handoff.ts'
 import { resourcesForEquipment } from './equipment.ts'
+import type { ResourceId } from './equipment.ts'
+import EquipmentPicker from './EquipmentPicker.tsx'
 import { GoalProposalReview } from './SetupAssistantPanel.tsx'
 import { validateSetupDate } from './setup-dates.ts'
 import type { CampaignState } from './types.ts'
@@ -17,9 +19,11 @@ interface Props {
   onApply: (review: HandoffReview, request: string, confirmedDate?: string) => boolean
   onCards: (cards: WorkoutCard[]) => void
   onClose: () => void
+  onConfirmEquipment: (resources: readonly ResourceId[]) => boolean
+  onRevise?: () => void
 }
 
-export default function CoachingWorkbench({ state, scope, config, onConnect, onApply, onCards, onClose }: Props) {
+export default function CoachingWorkbench({ state, scope, config, onConnect, onApply, onCards, onClose, onConfirmEquipment, onRevise }: Props) {
   const id = useId()
   const [method, setMethod] = useState<'builtin' | 'chat' | 'api'>(config ? 'api' : state.setupComplete ? 'builtin' : 'chat')
   const [request, setRequest] = useState('')
@@ -32,14 +36,18 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
   const [apiKey, setApiKey] = useState(config?.apiKey ?? '')
   const [consent, setConsent] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [equipment, setEquipment] = useState(() => state.draft.resources ?? resourcesForEquipment(state.draft.equipment))
   const controller = useRef<AbortController | null>(null)
   const importSequence = useRef(0)
   const resultElement = useRef<HTMLDivElement>(null)
   let unavailable = ''
   let contextId = ''
   let brief = ''
+  let catalog: ReturnType<typeof buildHandoff>['context']['catalog'] | undefined
   try {
-    contextId = JSON.stringify([buildHandoff(state, scope, request).contextId, request])
+    const handoff = buildHandoff(state, scope, request)
+    catalog = handoff.context.catalog
+    contextId = JSON.stringify([handoff.contextId, request])
     brief = exportHandoff(state, scope, request)
   } catch (cause) { unavailable = cause instanceof Error ? cause.message : 'Review your setup before sharing a brief.' }
   const currentContext = useRef(contextId)
@@ -114,13 +122,31 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
       {([['builtin', 'Built-in'], ['chat', 'Use my AI chat'], ['api', 'Connect API']] as const).map(([value, label]) => <button className={`cf-button ${method === value ? 'cf-primary' : 'cf-secondary'}`} type="button" key={value} disabled={busy} aria-pressed={method === value} onClick={() => { setMethod(value); setError(''); setNotice('') }}>{label}</button>)}
     </div>
     <p className="cf-small">The engine owns prescriptions and the calendar. Your notes and novel drills stay separate; importing a card never adds training.</p>
+    {state.setupComplete && <div className="cf-card cf-stack">
+      <p>Your current week is locked. This workspace edits notes, not its exercise lineup. {state.draft.program ? 'Changes to the lineup start next week.' : 'This plan still uses the original exercise library.'}</p>
+      {onRevise && <button type="button" className="cf-button cf-secondary" disabled={busy} onClick={onRevise}>Change next week's exercises</button>}
+    </div>}
     {method === 'builtin' ? <>
-      <p>Edit your reference cards here. Exercise swaps are available in Your base before the block is committed.</p>
+      <p>Edit your reference cards here. Choose and swap movements in Your base during setup, or in a reviewed next-week revision.</p>
       <WorkoutCards cards={state.cards ?? []} resources={resources} program={state.draft.program} onChange={onCards} />
-    </> : unavailable ? <p role="status">{unavailable}</p> : <>
+    </> : !state.setupComplete && !state.draft.program ? <div className="cf-stack">
+      <h3>Use the expanded exercise library</h3>
+      <p>This draft started with the older exercise list. Confirm your equipment to include kettlebell movements, carries and execution styles where supported. Your goal, dates and notes stay; review the refreshed exercise lineup before building.</p>
+      <EquipmentPicker value={equipment} onChange={setEquipment} />
+      <button type="button" className="cf-button cf-primary" onClick={() => {
+        try {
+          if (onConfirmEquipment(equipment)) setError('')
+          else setError('The equipment confirmation was not saved. Resolve the local save issue before continuing.')
+        } catch (cause) { setError(cause instanceof Error ? cause.message : 'Review the equipment needed for your exercise lineup.') }
+      }}>Use this equipment & continue</button>
+    </div> : unavailable ? <p role="status">{unavailable}</p> : <>
+      {catalog && <p role="status" className="cf-small">{catalog.label}: {catalog.availableExerciseCount} equipped movements.
+        {state.setupComplete ? ' Current-week identities stay unchanged.' : ` Choose ${catalog.minimumSelection}-${catalog.maximumSelection} for your active routine; this is not the library size.`}
+      </p>}
       <label className="cf-field">What would you like to refine?<textarea maxLength={500} rows={2} value={request} disabled={busy} placeholder="Keep my strength base; suggest a dodgeball throwing drill idea using my equipment." onChange={event => setRequest(event.target.value)} /></label>
       {method === 'chat' ? <>
-        <p>Copy once. Work in your usual AI chat. Ask it for the final JSON when ready, then paste it below. No API key needed.</p>
+        <p>Copy the brief into your AI chat and discuss your exercises in ordinary language. When ready, ask for the final app reply and paste it below. No API key needed.</p>
+        <p className="cf-small">Already using an older brief? Paste this fresh one into the same chat and ask it to replace the old brief. The AI cannot see app updates on its own.</p>
         <div className="cf-inline">
           <button type="button" className="cf-button cf-primary" onClick={() => {
             setError('')

@@ -8,7 +8,7 @@ import { currentMonday, formatDay, formatWeek } from '../dates.ts'
 import BrandMark from '../BrandMark.tsx'
 import { observeOfflineWorker } from '../offline.ts'
 import type { OfflineStatus } from '../offline.ts'
-import { adaptCampaign, campaignDraftForWeek, campaignSessionOnHold, completeCampaignSession, emptyCampaign, logCampaignSet, nextCampaignWeek, parseCampaign, prepareRecommendedSetup, workoutContent } from './model.ts'
+import { adaptCampaign, campaignDraftForWeek, campaignSessionOnHold, completeCampaignSession, confirmSetupEquipment, emptyCampaign, logCampaignSet, nextCampaignWeek, parseCampaign, prepareRecommendedSetup, workoutContent } from './model.ts'
 import { loadCampaign, persistCampaign } from './storage.ts'
 import type { CalendarAction, CampaignState, GoalKind, SetDraft } from './types.ts'
 import Icon from './Icons.tsx'
@@ -181,6 +181,11 @@ export default function CampaignApp() {
     <dialog className="cf-dialog" ref={dialog} onCancel={() => setPanel(null)} onClose={() => setPanel(null)}>
       {(panel === 'ai' || panel === 'setup-ai') && state && <CoachingWorkbench
         state={state} scope={coachingScope} config={setupConnection} onConnect={setSetupConnection}
+        onConfirmEquipment={resources => {
+          const next = confirmSetupEquipment(state, resources)
+          return update(() => next)
+        }}
+        onRevise={state.setupComplete && state.draft.recommendedSetup ? () => setPanel('revision') : undefined}
         onCards={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards) })) }}
         onApply={(review, request, date) => update(previous => applyHandoff(previous, review, coachingScope, request, date))}
         onClose={() => setPanel(null)}

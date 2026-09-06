@@ -83,6 +83,22 @@ test('brief is deterministic, equipment-aware and excludes logs, secrets and unr
   assert.doesNotMatch(exportHandoff(state, scope), /apiKey|setDrafts|actualEffort|"logs"|costMultiplier/)
 })
 
+test('conversation instructions put ordinary coaching before the unchanged transfer contract', () => {
+  const state = programState()
+  const { instructions, context, example } = buildHandoff(state, scope)
+  assert.ok(instructions.indexOf('HOW TO TALK WITH THE ATHLETE') < instructions.indexOf('APP TRANSFER CONTRACT'))
+  assert.match(instructions, /Do not show JSON keys, enum IDs, null values/)
+  assert.match(instructions, /one useful reason per movement/)
+  assert.match(instructions, /Do not explain eventDate:null or ask for the date again/)
+  assert.match(instructions, /active-routine selection limit is not the size/)
+  assert.match(instructions, /replace the old equipment, catalog and context/)
+  assert.match(instructions, /Only return the final JSON when they ask for it/)
+  assert.equal(context.goal.date, '2026-12-04')
+  assert.equal(context.catalog.label, 'Expanded exercise library')
+  assert.ok(context.catalog.availableExerciseCount >= context.currentExerciseIds.length)
+  assert.equal(example.proposal?.eventDate, null)
+  assert.equal(parseHandoffReply(JSON.stringify(example), state, scope).dateIssue, null)
+})
 test('chat reply accepts JSON fences, salvages the missing year, and imports cards without inventing a calendar', () => {
   const state = draft()
   const before = structuredClone(state)

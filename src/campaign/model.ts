@@ -19,6 +19,8 @@ import { parseAthlete, parseBlockLog, parsePlanWeekInput, parseProgramConfig, pa
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import { equipmentForResources, exerciseAvailable, parseResources, programResources, resourcesForEquipment } from './equipment.ts'
 import { parseWorkoutCards } from './workout-cards.ts'
+import { enableTemplateProgramming } from './programming.ts'
+import type { ResourceId } from './equipment.ts'
 import type { CalendarAction, CampaignDraft, CampaignRevision, CampaignState, CampaignWeek, RecommendedSetup, SetDraft, WorkoutContent } from './types.ts'
 
 const EQUIPMENT: readonly Equipment[] = ['barbell', 'dumbbell', 'kettlebell', 'machine', 'cable', 'bodyweight', 'bands', 'none']
@@ -128,6 +130,14 @@ export function exampleCampaign(startMonday: string): CampaignState {
       },
     }),
   }
+}
+
+export function confirmSetupEquipment(state: CampaignState, resources: readonly ResourceId[]): CampaignState {
+  if (state.setupComplete || state.weeks.length) fail('Existing plans can only change through a reviewed next-week revision.')
+  const prepared = prepareRecommendedSetup(state)
+  const selected = parseResources([...resources])
+  const draft = { ...prepared.draft, resources: selected, equipment: equipmentForResources(selected), confirmed: false }
+  return { ...prepared, draft: normalizeRecommendedDraft(draft.program ? draft : enableTemplateProgramming(draft)) }
 }
 
 /** Only recommended drafts derive totals; legacy observed drafts are returned unchanged. */

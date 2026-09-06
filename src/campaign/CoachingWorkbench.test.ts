@@ -5,7 +5,7 @@ import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
-import { exampleCampaign } from './model.ts'
+import { confirmSetupEquipment, exampleCampaign } from './model.ts'
 import { moveWorkoutCard } from './workout-cards.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 
@@ -25,9 +25,9 @@ test('workspace offers a key-free chat roundtrip and does not connect on render'
   try {
     const { default: CoachingWorkbench } = await import('./CoachingWorkbench.tsx')
     const props = {
-      state: exampleCampaign('2026-09-07'), scope: { purpose: 'interpret_goal' as const },
+      state: confirmSetupEquipment(exampleCampaign('2026-09-07'), ['floor_space', 'dumbbell']), scope: { purpose: 'interpret_goal' as const },
       onConnect() { assert.fail('Rendering cannot connect') }, onApply() { assert.fail('Rendering cannot apply'); return false },
-      onCards() {}, onClose() {},
+      onCards() {}, onClose() {}, onConfirmEquipment() { assert.fail('Rendering cannot confirm equipment') },
     }
     const chat = renderToStaticMarkup(createElement(CoachingWorkbench, props))
     assert.match(chat, /Copy coaching brief/)
