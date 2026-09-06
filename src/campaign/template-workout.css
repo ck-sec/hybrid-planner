@@ -1,0 +1,5 @@
+.cf-template-execution { margin: 12px 0 0; color: var(--cf-lapis); font-size: .85rem; }
+.cf-template-amount { display: grid; gap: 12px; margin-top: 16px; }
+.cf-template-block > .cf-details { margin-top: 16px; }
+.cf-session-workout .cf-sport-icon { color: var(--cf-plum); background: var(--cf-plum-soft); }
+.cf-session-conditioning .cf-sport-icon { color: var(--cf-lapis); background: var(--cf-lapis-soft); }

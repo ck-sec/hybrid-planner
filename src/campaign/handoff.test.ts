@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { PROGRAM_LIBRARY_VERSION } from '../../engine/constants.ts'
+import { recommendProgram } from '../../engine/program.ts'
 import { applyHandoff, buildHandoff, exportHandoff, HANDOFF_LIMIT, parseHandoffReply, requestHandoff } from './handoff.ts'
 import { buildCampaign, exampleCampaign, normalizeRecommendedDraft, parseCampaign } from './model.ts'
-import { equipmentForResources, parseResources } from './equipment.ts'
+import { equipmentForResources, parseResources, programResources } from './equipment.ts'
 import type { HandoffScope } from './handoff.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 
@@ -30,6 +32,38 @@ function reply(state = draft(), task = scope) {
   } : null }
 }
 
+function programState() {
+  const state = draft()
+  const resources = parseResources([
+    'kettlebell', 'floor_space', 'carry_space', 'dodgeballs', 'court', 'safe_target', 'rower',
+  ])
+  const exact = programResources(resources)
+  const recommendation = recommendProgram(exact, 'dodgeball')
+  const exerciseIds = [...recommendation.exerciseIds].sort()
+  state.draft = normalizeRecommendedDraft({
+    ...state.draft,
+    resources,
+    equipment: equipmentForResources(resources),
+    goalKind: 'dodgeball',
+    goalLabel: 'Dodgeball championship',
+    eventDate: '2026-12-04',
+    program: {
+      version: 1,
+      libraryVersion: PROGRAM_LIBRARY_VERSION,
+      goal: 'dodgeball',
+      resources: exact,
+      conditioningBaselines: [{ modality: 'row', weeklyMinutes: 40, longestSessionMinutes: 40, sessionsPerWeek: 1 }],
+      selectedExerciseIds: exerciseIds,
+      comfortableThrowsPerPractice: 60,
+    },
+    recommendedSetup: {
+      ...state.draft.recommendedSetup!,
+      exerciseIds,
+    },
+  })
+  return state
+}
+
 test('brief is deterministic, equipment-aware and excludes logs, secrets and unrelated profile data', () => {
   const state = draft()
   const before = structuredClone(state)
@@ -42,6 +76,8 @@ test('brief is deterministic, equipment-aware and excludes logs, secrets and unr
   assert.match(brief.instructions, /quantities, loads, effort, placement and safety/)
   assert.match(brief.instructions, /unverified, unscheduled drafts/)
   assert.match(brief.instructions, /No AI-generated drill is automatically scheduled/)
+  assert.match(brief.instructions, /instructions describe how to perform that exact catalog variant/)
+  assert.match(brief.instructions, /never change tempo, effort or movement through prose/)
   assert.match(exportHandoff(state, scope), /Only return the final JSON when they ask for it/)
   assert.deepEqual(state, before)
   assert.doesNotMatch(exportHandoff(state, scope), /apiKey|setDrafts|actualEffort|"logs"|costMultiplier/)
@@ -111,6 +147,10 @@ test('invalid schemas and hidden prescriptions cannot enter through either reply
     { ...valid, version: 2 }, { ...valid, sets: 100 }, { ...valid, durationMin: 80 },
     { ...valid, proposal: { ...valid.proposal, weeklyRunMinutes: 999 } },
     { ...valid, cards: [{ ...card, sets: 99 }] },
+    { ...valid, cards: [{ ...card, executionStyle: 'explosive' }] },
+    { ...valid, cards: [{ ...card, tempo: '5-0-1' }] },
+    { ...valid, cards: [{ ...card, profile: { unit: 'reps' } }] },
+    { ...valid, cards: [{ ...card, dose: { sets: 3 } }] },
     { ...valid, cards: [{ ...card, source: 'user', status: 'reference' }] },
     { ...valid, cards: [{ ...card, source: 'ai', status: 'reference' }] },
     { ...valid, cards: [{ ...card, exerciseId: 'back-squat' }] },
@@ -123,6 +163,52 @@ test('invalid schemas and hidden prescriptions cannot enter through either reply
   assert.throws(() => parseHandoffReply('Here is my plan: ' + JSON.stringify(valid), state, scope), /final JSON/)
 })
 
+test('program handoff exposes compatible templates and canonical variants without costs or AI capabilities', () => {
+  const state = programState()
+  assert.deepEqual(state.draft.program?.resources, [
+    'bodyweight', 'carry_space', 'court_space', 'dodgeball', 'floor_space', 'kettlebell', 'safe_target',
+  ])
+  assert.equal(state.draft.program?.comfortableThrowsPerPractice, 60)
+  const brief = buildHandoff(state, scope)
+  const catalog = brief.context.allowedCatalog
+  assert.ok(catalog.some(item => item.id === 'kettlebell-goblet-squat'))
+  assert.ok(catalog.some(item => item.id === 'kettlebell-suitcase-carry'))
+  assert.ok(catalog.some(item => item.id === 'dodgeball-controlled-target-throw'
+    && 'kind' in item && item.kind === 'sport_drill'))
+  assert.ok(catalog.every(item => !('kind' in item) || item.kind !== 'exercise'
+    || ('unit' in item && 'profile' in item && 'execution' in item && 'description' in item && 'focus' in item && 'purpose' in item)))
+  assert.doesNotMatch(JSON.stringify(brief.context), /costMultiplier|schedulingEstimate|actualEffort|"logs"/)
+  assert.match(brief.instructions, /Fast concentric intent is controlled and non-ballistic/)
+  assert.match(brief.instructions, /Do not automatically favor an overhead press over a bench press/)
+  assert.match(brief.instructions, /only the deterministic engine may allocate it within an existing fixed practice/)
+  const linkedDrill = {
+    ...card,
+    exerciseId: 'dodgeball-controlled-target-throw',
+    resources: ['dodgeballs', 'court', 'safe_target'] as const,
+  }
+  assert.doesNotThrow(() => parseHandoffReply(JSON.stringify({
+    ...brief.example,
+    cards: [linkedDrill],
+  }), state, scope))
+})
+
+test('program handoff exports real locked workout blocks and conditioning prescriptions', () => {
+  const state = programState()
+  const built = buildCampaign({
+    ...state,
+    draft: { ...state.draft, confirmed: true },
+  })
+  const brief = buildHandoff(built, { purpose: 'suggest_exercises' })
+  const workouts = brief.context.sessions.filter(session => session.kind === 'workout')
+  const conditioning = brief.context.sessions.filter(session => session.kind === 'conditioning')
+  assert.ok(workouts.length > 0)
+  assert.ok(workouts.every(session => 'lockedWorkoutBlocks' in session
+    && Array.isArray(session.lockedWorkoutBlocks) && session.lockedWorkoutBlocks.length > 0))
+  assert.ok(conditioning.length > 0)
+  assert.ok(conditioning.every(session => 'conditioningPrescription' in session))
+  assert.doesNotMatch(JSON.stringify(brief.context.sessions), /actualEffort|blockLogs|painFlag/)
+})
+
 test('stale equipment, goal, baseline, calendar and card context require a refreshed brief', () => {
   const state = draft()
   const text = JSON.stringify(reply(state))
@@ -132,6 +218,7 @@ test('stale equipment, goal, baseline, calendar and card context require a refre
     { ...state, draft: { ...state.draft, liftDurationMin: 30 } },
     { ...state, draft: { ...state.draft, availableDays: [1, 3] as typeof state.draft.availableDays } },
     { ...state, cards: [card] },
+    { ...state, revisions: [{ weekIndex: 1, draft: structuredClone(state.draft) }] },
   ]
   for (const changed of changedStates) assert.throws(() => parseHandoffReply(text, changed, scope), /changed since this brief/)
   assert.doesNotThrow(() => parseHandoffReply(text, state, scope, 'An externally refined request'))

@@ -42,9 +42,11 @@ export function scoreSessions(input: PlanWeekInput, sessions: readonly Session[]
   const durations = new Map<Session, number>()
   const running = (session: Session): boolean => session.discipline === 'run'
   const competingLift = (session: Session): boolean => session.discipline === 'strength'
-    && (session.kind === 'commitment' || (session.kind === 'strength'
-      && session.strengthPrescription.some(item =>
-        input.library.exercises.find(exercise => exercise.id === item.exerciseId)?.competesWithRunning)))
+    && (session.kind === 'commitment'
+      || (session.kind === 'strength' && session.strengthPrescription.some(item =>
+        input.library.exercises.find(exercise => exercise.id === item.exerciseId)?.competesWithRunning))
+      || (session.kind === 'workout' && session.blocks.some(block => block.unit !== 'throws'
+        && input.library.exercises.find(exercise => exercise.id === block.exerciseId)?.competesWithRunning)))
   for (const session of combined) {
     const record = currentIds.has(session.id) ? undefined
       : input.context.recentSessions.find(item => item.session.id === session.id)

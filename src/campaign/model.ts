@@ -3,22 +3,23 @@ import {
   adaptCalendarWeek, applyCalendarPainHold, calendarSafety, calendarSessionLabel,
   followingCommitments, nextCalendarInput,
 } from '../../engine/calendar.ts'
-import { CAMPAIGN_POLICY, LIMITS, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { CAMPAIGN_POLICY, LIMITS, MAX_LOGGED_SETS_PER_BLOCK, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from '../../engine/dates.ts'
-import { DEFAULT_LIBRARY } from '../../engine/library.ts'
+import { DEFAULT_LIBRARY, LEGACY_LIBRARY, libraryForVersion } from '../../engine/library.ts'
 import { predictSessionLoad } from '../../engine/load.ts'
 import { fixedSessions, planWeek, requestedSessions } from '../../engine/planner.ts'
 import { recommendationForExercise, recommendedExercises } from '../../engine/recommendations.ts'
+import { availableExerciseMetadata, exerciseDefaultPrescription } from '../../engine/program.ts'
 import { scoreSessions } from '../../engine/scoring.ts'
 import type {
-  AthleteState, Day, Equipment, ExerciseObservation, Goal, PlanWeekInput, Quality,
-  Session, SessionLog, SetLog, TargetRPE, WeekPlan,
+  AthleteState, BlockLog, Day, Equipment, ExerciseObservation, Goal, PlanWeekInput, Quality,
+  Session, SessionLog, SetLog, TargetRPE, WeekPlan, WorkoutSession,
 } from '../../engine/types.ts'
-import { parseAthlete, parsePlanWeekInput, parseSession, parseSessionLog } from '../../engine/validation.ts'
+import { parseAthlete, parseBlockLog, parsePlanWeekInput, parseProgramConfig, parseSession, parseSessionLog, validateBlockLogs } from '../../engine/validation.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
-import { equipmentForResources, exerciseAvailable, parseResources } from './equipment.ts'
+import { equipmentForResources, exerciseAvailable, parseResources, programResources, resourcesForEquipment } from './equipment.ts'
 import { parseWorkoutCards } from './workout-cards.ts'
-import type { CalendarAction, CampaignDraft, CampaignState, CampaignWeek, RecommendedSetup, SetDraft, WorkoutContent } from './types.ts'
+import type { CalendarAction, CampaignDraft, CampaignRevision, CampaignState, CampaignWeek, RecommendedSetup, SetDraft, WorkoutContent } from './types.ts'
 
 const EQUIPMENT: readonly Equipment[] = ['barbell', 'dumbbell', 'kettlebell', 'machine', 'cable', 'bodyweight', 'bands', 'none']
 const QUALITIES: readonly Quality[] = ['aerobic_base', 'threshold', 'vo2max', 'repeat_sprint', 'change_of_direction', 'max_strength', 'power', 'strength_endurance', 'shoulder_durability']
@@ -135,9 +136,18 @@ export function normalizeRecommendedDraft(draft: CampaignDraft): CampaignDraft {
   const weeklyRunMinutes = draft.recommendedSetup.typicalRunMinutes * draft.runsPerWeek
   const weeklyTimeBudgetMin = weeklyRunMinutes + draft.liftsPerWeek * draft.liftDurationMin
     + draft.practiceDays.length * draft.practiceDuration
+    + (draft.program?.conditioningBaselines.reduce((sum, item) => sum + (item.modality.startsWith('run_') ? 0 : item.weeklyMinutes), 0) ?? 0)
   number(weeklyRunMinutes, 'Derived weekly running time', -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
   number(weeklyTimeBudgetMin, 'Derived normal training time', -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
-  const normalized = { ...draft, weeklyRunMinutes, weeklyTimeBudgetMin }
+  const normalized: CampaignDraft = {
+    ...draft, weeklyRunMinutes, weeklyTimeBudgetMin,
+    ...(draft.program ? { program: {
+      ...draft.program,
+      resources: programResources(draft.resources ?? resourcesForEquipment(draft.equipment)),
+      selectedExerciseIds: draft.recommendedSetup.exerciseIds.toSorted(),
+      conditioningBaselines: draft.program.conditioningBaselines.toSorted((a, b) => a.modality.localeCompare(b.modality)),
+    } } : {}),
+  }
   if (draft.recommendedSetup.mode === 'classic') {
     normalized.goalKind = 'hybrid'
     normalized.priorities = [...RECOMMENDATION_POLICY.classicQualityBias]
@@ -145,6 +155,12 @@ export function normalizeRecommendedDraft(draft: CampaignDraft): CampaignDraft {
       normalized.eventDate = addDays(draft.startDate, RECOMMENDATION_POLICY.classicReviewOffsetDays)
     } catch {
       normalized.eventDate = ''
+    }
+  }
+  if (normalized.program) {
+    normalized.program = parseProgramConfig(normalized.program)
+    if (normalized.program.comfortableThrowsPerPractice !== undefined && (normalized.goalKind !== 'dodgeball' || !normalized.practiceDays.length)) {
+      fail('Remove the generated throwing block before removing its established dodgeball practice or changing sport.')
     }
   }
   return normalized
@@ -185,7 +201,8 @@ export function prepareRecommendedSetup(state: CampaignState): CampaignState {
 
 function parseDraft(value: unknown, ready = false): CampaignDraft {
   const candidate = object(value, 'Campaign draft')
-  const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...['recommendedSetup', 'resources'].filter(key => Object.hasOwn(candidate, key))])
+  const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...['recommendedSetup', 'resources', 'program'].filter(key => Object.hasOwn(candidate, key))])
+  const program = Object.hasOwn(raw, 'program') ? parseProgramConfig(raw.program) : undefined
   const draftNumber = (value: unknown, label: string, min: number, max: number, integer = false): number =>
     ready ? number(value, label, min, max, integer) : number(value, label, -1_000_000, 1_000_000)
   const draftDate = (value: unknown, label: string): string =>
@@ -194,9 +211,10 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
   if (Object.hasOwn(raw, 'recommendedSetup')) {
     const setup = object(raw.recommendedSetup, 'Recommended setup', ['version', 'mode', 'goalText', 'typicalRunMinutes', 'exerciseIds'])
     if (setup.version !== 1) fail('Unsupported recommended setup version.')
-    const exerciseIds = unique(array(setup.exerciseIds, 'Recommended exercises', RECOMMENDATION_POLICY.maxExercises).map(value => {
+    const exerciseIds = unique(array(setup.exerciseIds, 'Recommended exercises', program ? LIMITS.maxProgramExercises : RECOMMENDATION_POLICY.maxExercises).map(value => {
       const id = text(value, 'Recommended exercise ID', 80)
-      recommendationForExercise(id)
+      if (program) exerciseDefaultPrescription(id)
+      else recommendationForExercise(id)
       return id
     }), 'Recommended exercises')
     if (ready && !exerciseIds.length) fail('Choose at least one recommended exercise.')
@@ -237,10 +255,29 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
     weeklyTimeBudgetMin: draftNumber(raw.weeklyTimeBudgetMin, 'Weekly time budget', 0, 10080),
     equipment: unique(array(raw.equipment, 'Equipment', EQUIPMENT.length).map(value => choice(value, 'Equipment', EQUIPMENT)), 'Equipment'),
     ...(Object.hasOwn(raw, 'resources') ? { resources: parseResources(raw.resources) } : {}),
+    ...(program ? { program } : {}),
     exercises, confirmed: boolean(raw.confirmed, 'Baseline confirmation'),
     ...(recommendedSetup ? { recommendedSetup } : {}),
   }
   if (result.resources) equal(result.equipment.toSorted(), equipmentForResources(result.resources).toSorted(), 'Equipment capabilities')
+  if (program) {
+    equal(program.resources.toSorted(), programResources(result.resources ?? resourcesForEquipment(result.equipment)).toSorted(), 'Program resource capabilities')
+    equal(program.selectedExerciseIds?.toSorted(), recommendedSetup?.exerciseIds.toSorted(), 'Program exercise selection')
+    if (program.comfortableThrowsPerPractice !== undefined && (result.goalKind !== 'dodgeball' || !result.practiceDays.length)) {
+      fail('Throwing blocks need an established dodgeball practice, not a standalone extra session.')
+    }
+    for (const baseline of program.conditioningBaselines) {
+      const resource = baseline.modality === 'row' ? 'rower' : baseline.modality === 'ski_erg' ? 'ski_erg' : baseline.modality.startsWith('bike_') ? 'bike' : null
+      if (resource && !result.resources?.includes(resource)) fail(`The ${baseline.modality} baseline requires its explicitly selected equipment.`)
+      if (baseline.modality.startsWith('run_')) {
+        equal(baseline, {
+          modality: baseline.modality, weeklyMinutes: result.weeklyRunMinutes,
+          longestSessionMinutes: recommendedSetup?.typicalRunMinutes,
+          sessionsPerWeek: result.runsPerWeek,
+        }, 'Program running baseline')
+      }
+    }
+  }
   if (ready && recommendedSetup) {
     const derived = normalizeRecommendedDraft(result)
     equal(result.weeklyRunMinutes, derived.weeklyRunMinutes, 'Derived weekly running time')
@@ -250,7 +287,10 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
       if (!exercise.equipment.every(item => item === 'none' || result.equipment.includes(item))) {
         fail(`Your equipment does not support the selected ${exercise.name}. Choose another card or correct the available equipment.`)
       }
-      if (result.resources && !exerciseAvailable(id, result.resources)) {
+      if (program && !availableExerciseMetadata(program.resources).some(item => item.id === id)) {
+        fail(`Your equipment or space does not support ${exercise.name}. Review its template requirements before planning.`)
+      }
+      if (!program && result.resources && !exerciseAvailable(id, result.resources)) {
         fail(`Your equipment or space does not support ${exercise.name}. Review the card or equipment before planning.`)
       }
     }
@@ -292,7 +332,7 @@ function baselineForDraft(draft: CampaignDraft): AthleteState {
     defaultStartTime: '07:00', aggressiveness: 'conservative',
     residual: { asOfDate: draft.startDate, asOfTime: '00:00', load: { systemic: 0, structural: 0 } },
     safetyHold: null,
-    ...(draft.recommendedSetup ? { recommendedExerciseIds: draft.recommendedSetup.exerciseIds } : {}),
+    ...(draft.program ? { program: draft.program } : draft.recommendedSetup ? { recommendedExerciseIds: draft.recommendedSetup.exerciseIds } : {}),
   })
 }
 
@@ -321,7 +361,9 @@ function assumptionsForDraft(draft: CampaignDraft): readonly string[] {
   return draft.recommendedSetup ? [
     'Running totals and the normal training-time budget come from your confirmed usual session lengths and frequencies, not a separate weekly-minute estimate.',
     ...ASSUMPTIONS.slice(1),
-    `Exercise recommendations use policy ${RECOMMENDATION_POLICY.version}. They are not observations; kilograms are never invented, including for bodyweight movements.`,
+    draft.program
+      ? 'Exercise templates have separate doses, logging units and execution styles. Scheduling coefficients are hand-authored estimates, not measured fatigue or injury risk. No starting kilograms are invented.'
+      : `Exercise recommendations use policy ${RECOMMENDATION_POLICY.version}. They are not observations; kilograms are never invented, including for bodyweight movements.`,
   ] : ASSUMPTIONS
 }
 
@@ -329,11 +371,7 @@ export function buildCampaign(state: CampaignState): CampaignState {
   if (state.weeks.length || state.setupComplete) fail('An existing campaign cannot be overwritten. Start a new campaign to confirm a new baseline.')
   if (!state.draft.confirmed) fail('Confirm that these are your recent, comfortable training inputs before creating a calendar.')
   const draft = parseDraft(normalizeRecommendedDraft(parseDraft(state.draft)), true)
-  const athlete = baselineForDraft(draft)
-  const block = generateBlock(athlete, goalForDraft(draft), draft.startDate, DEFAULT_LIBRARY)
-  let input: PlanWeekInput = { athlete, block, weekIndex: 0, library: DEFAULT_LIBRARY,
-    context: { recentSessions: [], completedWeeks: [], neighboringSessions: [], pinnedSessions: [] } }
-  input = parsePlanWeekInput({ ...input, context: { ...input.context, neighboringSessions: followingCommitments(input) } })
+  const input = initialCampaignInput(draft)
   const planned = campaignPlanCopy(planWeek(input))
   if (!planned.safety.passed) fail(`No safe calendar can be saved: ${planned.safety.violations.map(item => item.message).join(' ')}`)
   const plan = { ...planned, warnings: [...planned.warnings, ...assumptionsForDraft(draft),
@@ -342,6 +380,47 @@ export function buildCampaign(state: CampaignState): CampaignState {
   ] }
   return { ...state, draft, setupComplete: true, step: 5, selectedWeek: 0,
     weeks: [{ input, plan, logs: {}, removed: [], changes: [{ id: 'change-0-1', message: 'Created a baseline-bounded calendar. Fixed practices are pinned; no workouts are logged automatically.' }] }] }
+}
+
+function initialCampaignInput(draft: CampaignDraft): PlanWeekInput {
+  const athlete = baselineForDraft(draft)
+  const library = draft.program ? DEFAULT_LIBRARY : LEGACY_LIBRARY
+  const block = generateBlock(athlete, goalForDraft(draft), draft.startDate, library)
+  const input: PlanWeekInput = { athlete, block, weekIndex: 0, library,
+    context: { recentSessions: [], completedWeeks: [], neighboringSessions: [], pinnedSessions: [] } }
+  return parsePlanWeekInput({ ...input, context: { ...input.context, neighboringSessions: followingCommitments(input) } })
+}
+
+export function campaignDraftForWeek(state: CampaignState, weekIndex = state.selectedWeek): CampaignDraft {
+  return state.revisions?.findLast(revision => revision.weekIndex <= weekIndex)?.draft ?? state.draft
+}
+
+function revisedCampaignInput(weeks: CampaignWeek[], previousDraft: CampaignDraft, draft: CampaignDraft): PlanWeekInput {
+  const fixedFields = [
+    'goalKind', 'goalLabel', 'location', 'eventDate', 'startDate', 'priorities', 'availableDays',
+    'practiceDays', 'practiceTime', 'practiceDuration', 'weeklyRunMinutes', 'runsPerWeek',
+    'liftsPerWeek', 'liftDurationMin', 'weeklyTimeBudgetMin', 'exercises',
+  ] as const
+  for (const key of fixedFields) equal(draft[key], previousDraft[key], `Revision ${key}`)
+  if (!draft.recommendedSetup || !previousDraft.recommendedSetup) fail('Revisions require a recommended exercise selection.')
+  equal(draft.recommendedSetup.typicalRunMinutes, previousDraft.recommendedSetup.typicalRunMinutes, 'Revision running baseline')
+  const carried = nextCalendarInput(weeks)
+  if (carried.athlete.safetyHold) fail('A health hold blocks programming revisions. It cannot be cleared by selecting different exercises.')
+  const initial = initialCampaignInput(draft)
+  const athlete = {
+    ...initial.athlete,
+    baseline: carried.athlete.baseline,
+    residual: carried.athlete.residual,
+    calibration: carried.athlete.calibration,
+    safetyHold: carried.athlete.safetyHold,
+  }
+  const block = { ...generateBlock(athlete, goalForDraft(draft), draft.startDate, initial.library), phases: carried.block.phases }
+  const input: PlanWeekInput = { ...carried, athlete, block, library: initial.library }
+  const weekStart = addDays(block.startDate, input.weekIndex * 7)
+  return parsePlanWeekInput({ ...input, context: { ...input.context, neighboringSessions: [
+    ...carried.context.neighboringSessions.filter(session => session.date < weekStart),
+    ...followingCommitments(input),
+  ] } })
 }
 
 function activeWeek(state: CampaignState): CampaignWeek {
@@ -408,6 +487,54 @@ export function logCampaignSet(
   return { ...replaceWeek(state, { ...week, logs: { ...week.logs, [sessionId]: log } }), setDrafts }
 }
 
+function editableWorkout(state: CampaignState, sessionId: string): { week: CampaignWeek; session: WorkoutSession } {
+  const week = editableWeek(state)
+  const session = week.plan.sessions.find(item => item.id === sessionId)
+  if (!session || session.kind !== 'workout') fail('Block logs require a visible template workout.')
+  if (campaignSessionOnHold(state, session)) fail('A health hold blocks further workout logging as a recommendation.')
+  const previous = week.logs[sessionId]
+  if (previous && previous.status !== 'partial') fail('Only a not-yet-completed workout can accept block logs.')
+  return { week, session }
+}
+
+function saveCampaignBlock(state: CampaignState, session: WorkoutSession, week: CampaignWeek, blockLog: BlockLog, draftKey: string): CampaignState {
+  const previous = week.logs[session.id]
+  const blockLogs = [...(previous?.blockLogs ?? []).filter(item => item.blockIndex !== blockLog.blockIndex), blockLog]
+    .sort((a, b) => a.blockIndex - b.blockIndex)
+  const log = parseSessionLog({ ...previous, sessionId: session.id, status: 'partial', blockLogs, painFlag: previous?.painFlag ?? false, notes: previous?.notes ?? '' })
+  validateSets(session, log)
+  const setDrafts = { ...state.setDrafts }
+  delete setDrafts[draftKey]
+  return { ...replaceWeek(state, { ...week, logs: { ...week.logs, [session.id]: log } }), setDrafts }
+}
+
+export function logCampaignBlockSet(state: CampaignState, sessionId: string, blockIndex: number, setIndex: number, value: SetDraft): CampaignState {
+  const { week, session } = editableWorkout(state, sessionId)
+  const block = session.blocks[blockIndex]
+  if (!block || block.unit !== 'reps') fail('Choose a repetition block before logging a set.')
+  number(setIndex, 'Set index', 0, MAX_LOGGED_SETS_PER_BLOCK - 1, true)
+  const previous = week.logs[sessionId]?.blockLogs?.find(item => item.blockIndex === blockIndex)
+  const sets = previous?.unit === 'reps' ? [...previous.sets] : []
+  if (setIndex > sets.length) fail('Log sets in order; no unrecorded performance is filled automatically.')
+  const draft = parseSetDraft(value)
+  sets[setIndex] = {
+    exerciseId: block.exerciseId, weightKg: typedNumber(draft.weight, 'Actual weight'),
+    reps: typedNumber(draft.reps, 'Actual repetitions'), actualRPE: typedNumber(draft.effort, 'Actual set RPE') as TargetRPE,
+  }
+  return saveCampaignBlock(state, session, week, parseBlockLog({ unit: 'reps', blockIndex, exerciseId: block.exerciseId, sets }), `${sessionId}:block-${blockIndex}:${setIndex}`)
+}
+
+export function logCampaignBlockAmount(state: CampaignState, sessionId: string, blockIndex: number, amount: string, weight?: string): CampaignState {
+  const { week, session } = editableWorkout(state, sessionId)
+  const block = session.blocks[blockIndex]
+  if (!block || block.unit === 'reps') fail('Choose a timed or throwing block before logging its total.')
+  const actual = typedNumber(amount, block.unit === 'seconds' ? 'Actual total seconds' : 'Actual practice throws')
+  const entry = block.unit === 'seconds'
+    ? { unit: 'seconds', blockIndex, exerciseId: block.exerciseId, seconds: actual, ...(weight !== undefined ? { weightKg: typedNumber(weight, 'Actual carry weight') } : {}) }
+    : { unit: 'throws', blockIndex, drillId: block.drillId, throws: actual }
+  return saveCampaignBlock(state, session, week, parseBlockLog(entry), `${sessionId}:block-${blockIndex}:total`)
+}
+
 export function completeCampaignSession(
   state: CampaignState, sessionId: string, actualDuration: number, effort: number, pain: boolean,
 ): CampaignState {
@@ -429,30 +556,39 @@ export function completeCampaignSession(
   return replaceWeek(state, pain ? applyCalendarPainHold(updated, sessionId) : updated)
 }
 
-export function nextCampaignWeek(state: CampaignState): CampaignState {
+export function nextCampaignWeek(state: CampaignState, revisionDraft?: CampaignDraft): CampaignState {
   const current = editableWeek(state)
   if (Object.values(current.logs).some(log => log.status === 'partial')) {
     fail('Finish each in-progress session in this week before building the next week. Your logged sets remain saved and editable.')
   }
-  const input = nextCalendarInput(state.weeks)
+  const draft = revisionDraft ? parseDraft(normalizeRecommendedDraft(revisionDraft), true) : state.draft
+  const input = revisionDraft ? revisedCampaignInput(state.weeks, state.draft, draft) : nextCalendarInput(state.weeks)
   if (input.athlete.safetyHold) fail('Pain or another unresolved health hold blocks the next week. Confirm an appropriate new baseline before further planning; no return-to-training advice is inferred.')
   const planned = campaignPlanCopy(planWeek(input))
   if (!planned.safety.passed) fail(`The next week has no safe calendar: ${planned.safety.violations.map(item => item.message).join(' ')}`)
   const fatigue = state.weeks.some(week => Object.values(week.logs).some(log => log.skipReason === 'too_tired'))
-  const plan = { ...planned, warnings: [...planned.warnings, ...assumptionsForDraft(state.draft),
+  const plan = { ...planned, warnings: [...planned.warnings, ...assumptionsForDraft(draft),
     ...(fatigue ? ['A fatigue skip keeps future optional workload conservatively capped until a newly confirmed baseline; ordinary time skips do not signal fatigue.'] : []),
     ...(input.athlete.safetyHold ? ['An unresolved health hold blocks generated running and lifting. Fixed practices are only existing commitments, not advice to continue them.'] : []),
     'Unlogged prior sessions remain unlogged. Recovery uses entered completed/partial history; neighboring planned sessions retain conservative timing checks.',
   ] }
-  return { ...state, selectedWeek: state.weeks.length,
+  const revisions: CampaignRevision[] | undefined = revisionDraft
+    ? [...(state.revisions ?? [{ weekIndex: 0, draft: state.draft }]), { weekIndex: state.weeks.length, draft }]
+    : state.revisions
+  return { ...state, draft, selectedWeek: state.weeks.length, ...(revisions ? { revisions } : {}),
     weeks: [...state.weeks, { input, plan, logs: {}, removed: [], changes: [{ id: `change-${input.weekIndex}-1`,
-      message: 'Created the next week from the unchanged observed baseline, carried recovery/history, and conservative workload caps. Earlier weeks are preserved.' }] }] }
+      message: revisionDraft
+        ? 'Applied the reviewed exercise revision to this week. Earlier prescriptions and logs are unchanged; recovery, fatigue and health holds carry forward.'
+        : 'Created the next week from the unchanged observed baseline, carried recovery/history, and conservative workload caps. Earlier weeks are preserved.' }] }] }
 }
 
 function strings(value: unknown, label: string, max = 1000): string[] {
   return array(value, label, max).map(item => text(item, label, 8000))
 }
 function validateSets(session: Session, log: SessionLog): void {
+  if (log.blockLogs) {
+    validateBlockLogs(session, log)
+  }
   if (!log.sets) return
   if (session.kind !== 'strength') fail('Non-strength sessions cannot contain set logs.')
   let previousIndex = -1
@@ -470,7 +606,7 @@ function validateSets(session: Session, log: SessionLog): void {
 function parseWeek(value: unknown): CampaignWeek {
   const raw = object(value, 'Campaign week', ['input', 'plan', 'logs', 'removed', 'changes'])
   const input = parsePlanWeekInput(raw.input)
-  equal(input.library, DEFAULT_LIBRARY, 'Stored exercise library')
+  equal(input.library, libraryForVersion(input.library.version), 'Stored exercise library')
   equal(input.athlete.calibration, { version: 1, costMultiplier: 1, observationCount: 0 }, 'Disabled calibration')
   const p = object(raw.plan, 'Stored plan', ['engineVersion', 'policyVersion', 'libraryVersion', 'weekIndex', 'weekStart', 'phase', 'intent', 'sessions', 'totalScore', 'penalties', 'warnings', 'omitted', 'feasibility', 'safety', 'audit'])
   const sessions = array(p.sessions, 'Scheduled sessions', 20).map(parseSession)
@@ -492,6 +628,23 @@ function parseWeek(value: unknown): CampaignWeek {
       })
     }
     if (session.kind === 'run' && template.kind === 'run') equal(session.endurancePrescription, template.endurancePrescription, 'Stored run prescription')
+    if (session.kind === 'conditioning' && template.kind === 'conditioning') equal(session.conditioningPrescription, template.conditioningPrescription, 'Stored conditioning prescription')
+    if (session.kind === 'workout' && template.kind === 'workout') {
+      equal(session.label, template.label, 'Stored workout label')
+      equal(session.sourceCommitmentId, template.sourceCommitmentId, 'Stored practice identity')
+      if (session.blocks.length !== template.blocks.length) fail('Stored workout blocks do not match the engine template.')
+      session.blocks.forEach((block, index) => {
+        const expected = template.blocks[index]!
+        if (block.unit === 'reps' && expected.unit === 'reps') {
+          if (block.sets > expected.sets) fail('Stored work exceeds the engine set ceiling.')
+          equal({ ...block, sets: expected.sets }, expected, 'Stored repetition block')
+        } else if (block.unit === 'seconds' && expected.unit === 'seconds') {
+          if (block.seconds > expected.seconds || block.sets > expected.sets) fail('Stored timed work exceeds the engine ceiling.')
+          equal({ ...block, sets: expected.sets, seconds: expected.seconds }, expected, 'Stored timed block')
+        } else equal(block, expected, 'Stored throwing block')
+      })
+      if (session.sourceCommitmentId) equal({ ...session, date: template.date, startTime: template.startTime, reason: template.reason }, template, 'Stored practice workload')
+    }
     if (session.kind === 'commitment' && template.kind === 'commitment') {
       equal({ ...session, date: template.date, startTime: template.startTime, reason: template.reason }, template, 'Stored fixed commitment workload')
     }
@@ -516,7 +669,7 @@ function parseWeek(value: unknown): CampaignWeek {
   unique(omitted.map(item => item.sessionId), 'Omitted session IDs')
   for (const template of templates) if (!sessions.some(item => item.id === template.id) && !omitted.some(item => item.sessionId === template.id)) fail('Stored calendar silently dropped requested work.')
   for (const session of removed) if (!omitted.some(item => item.sessionId === session.id)) fail('A removal is missing its durable omission record.')
-  for (const template of templates.filter(item => item.kind === 'commitment')) {
+  for (const template of templates.filter(item => item.kind === 'commitment' || (item.kind === 'workout' && item.sourceCommitmentId))) {
     if (!sessions.some(item => item.id === template.id) && !removed.some(item => item.id === template.id)) fail('A fixed commitment is missing without a retained removal record.')
   }
   const penalties = scoreSessions(input, sessions)
@@ -574,28 +727,43 @@ function parseWeek(value: unknown): CampaignWeek {
 
 export function parseCampaign(value: unknown): CampaignState {
   const candidate = object(value, 'Campaign')
-  const raw = object(candidate, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts', ...(Object.hasOwn(candidate, 'cards') ? ['cards'] : [])])
+  const raw = object(candidate, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts', ...['cards', 'revisions'].filter(key => Object.hasOwn(candidate, key))])
   if (raw.version !== 1) fail('Unsupported campaign version; saved data has not been replaced.')
   const setupComplete = boolean(raw.setupComplete, 'Setup complete')
   const draft = parseDraft(raw.draft, setupComplete)
   const weeks = array(raw.weeks, 'Campaign weeks', LIMITS.maxWeeks).map(parseWeek)
+  const revisions: CampaignRevision[] | undefined = Object.hasOwn(raw, 'revisions')
+    ? array(raw.revisions, 'Programming revisions', LIMITS.maxWeeks).map(value => {
+      const item = object(value, 'Programming revision', ['weekIndex', 'draft'])
+      return { weekIndex: number(item.weekIndex, 'Revision week', 0, weeks.length - 1, true), draft: parseDraft(item.draft, true) }
+    }) : undefined
+  if (revisions) {
+    if (revisions.length < 2 || revisions[0]?.weekIndex !== 0) fail('Programming revisions must preserve the original setup and at least one explicit change.')
+    for (let index = 1; index < revisions.length; index++) {
+      if (revisions[index]!.weekIndex <= revisions[index - 1]!.weekIndex) fail('Programming revisions must be in ascending week order.')
+    }
+    equal(draft, revisions.at(-1)!.draft, 'Latest reviewed setup')
+  }
   if (setupComplete !== (weeks.length > 0)) fail('Saved setup status conflicts with the calendar.')
   if (weeks.length) {
-    const athlete = baselineForDraft(draft)
-    const expected = generateBlock(athlete, goalForDraft(draft), draft.startDate, DEFAULT_LIBRARY)
-    const initial: PlanWeekInput = { athlete, block: expected, weekIndex: 0, library: DEFAULT_LIBRARY,
-      context: { recentSessions: [], completedWeeks: [], neighboringSessions: [], pinnedSessions: [] } }
-    equal(weeks[0]!.input, parsePlanWeekInput({ ...initial, context: {
-      ...initial.context, neighboringSessions: followingCommitments(initial),
-    } }), 'Initial confirmed planning input')
+    const firstDraft = revisions?.[0]?.draft ?? draft
+    const initial = initialCampaignInput(firstDraft)
+    equal(weeks[0]!.input, initial, 'Initial confirmed planning input')
+    let expected = initial.block
+    let activeDraft = firstDraft
     for (const [index, week] of weeks.entries()) {
+      const revision = revisions?.find(item => item.weekIndex === index && index > 0)
+      if (revision) {
+        const input = revisedCampaignInput(weeks.slice(0, index), activeDraft, revision.draft)
+        equal(week.input, input, 'Reviewed programming revision')
+        expected = input.block
+        activeDraft = revision.draft
+      } else if (index > 0) equal(week.input, nextCalendarInput(weeks.slice(0, index)), 'Next-week history and safety context')
       if (week.input.weekIndex !== index || week.input.block.id !== expected.id) fail('Stored campaign weeks are missing, duplicated or belong to another goal.')
-      equal(week.input.athlete.baseline, athlete.baseline, 'Confirmed baseline')
+      equal(week.input.athlete.baseline, baselineForDraft(activeDraft).baseline, 'Confirmed baseline')
       equal(week.input.block.goal, expected.goal, 'Confirmed goal')
       equal(week.input.block.anchors, expected.anchors, 'Confirmed exercise anchors')
     }
-    // Recompute each transition to verify carried history, residual, holds and caps.
-    for (let index = 1; index < weeks.length; index++) equal(weeks[index]!.input, nextCalendarInput(weeks.slice(0, index)), 'Next-week history and safety context')
   }
   const setDrafts: Record<string, SetDraft> = {}
   const drafts = object(raw.setDrafts, 'Unsubmitted set drafts')
@@ -609,6 +777,7 @@ export function parseCampaign(value: unknown): CampaignState {
     sample: boolean(raw.sample, 'Sample flag'), draft, weeks,
     selectedWeek: number(raw.selectedWeek, 'Selected week', 0, Math.max(0, weeks.length - 1), true), setDrafts,
     ...(Object.hasOwn(raw, 'cards') ? { cards: parseWorkoutCards(raw.cards) } : {}),
+    ...(revisions ? { revisions } : {}),
   }
 }
 
@@ -645,6 +814,20 @@ export function workoutContent(state: CampaignState, session: Session): WorkoutC
   if (session.kind === 'run') return {
     title: state.draft.goalKind === 'dodgeball' ? 'Easy aerobic support' : state.draft.goalKind === 'running' ? 'Conversational run' : 'Easy aerobic run',
     focus: focus.run, cues: ['Keep a pace at which you can speak comfortably.', 'Use relaxed shoulders and a natural stride; do not force speed to match the goal.', `Priorities: ${priorities}. Duration and effort are exactly the engine prescription.`],
+  }
+  if (session.kind === 'conditioning') return {
+    title: session.modality === 'row' ? 'Easy rowing' : session.modality === 'ski_erg' ? 'Easy SkiErg' : 'Easy conditioning',
+    focus: 'Comfortable aerobic work from your explicit baseline for this modality, not converted from running.',
+    cues: ['Keep a conversational effort.', 'Use only the displayed duration; this does not add work outside the weekly budget.', 'Running and non-running modalities retain separate scheduling estimates.'],
+  }
+  if (session.kind === 'workout') return {
+    title: session.label,
+    focus: session.sourceCommitmentId
+      ? 'Controlled target throws are allocated inside your established practice, not added to it. The usual throw count is an exposure ceiling, not a validated injury-safe dose.'
+      : `${session.label} uses complementary movement slots for ${state.draft.goalLabel}. Each block keeps its own execution, dose and logging unit.`,
+    cues: session.sourceCommitmentId
+      ? ['Keep technique deliberate and submaximal.', 'Count all throws in the practice, not only target-drill attempts.', 'Pain or a health hold is not cleared by a count being below its ceiling.']
+      : ['A slower lowering phase and fast upward intent are separate supported variants, not interchangeable notes.', 'Starting weights come only from your own compatible, same-variant records.', 'Timed work is logged in seconds, not fabricated repetitions or RIR.'],
   }
   const patterns = session.strengthPrescription.map(item => DEFAULT_LIBRARY.exercises.find(exercise => exercise.id === item.exerciseId)?.pattern)
   return {

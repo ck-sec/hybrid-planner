@@ -6,20 +6,22 @@ import { createElement, isValidElement } from 'react'
 import type { ChangeEvent, ReactElement, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
-import { RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { recommendationForExercise } from '../../engine/recommendations.ts'
-import type { Equipment } from '../../engine/types.ts'
+import type { Equipment, ProgramConfigV1 } from '../../engine/types.ts'
 import {
-  equipmentForResources, exerciseAvailable, parseResources, recommendForResources,
+  availableProgramExercises, equipmentAvailable, equipmentForResources, exerciseAvailable,
+  maxExerciseSelection, parseResources, programResources, recommendForResources,
   RESOURCE_CATALOG, RESOURCE_PRESETS, resourceLabels, resourcesForEquipment,
 } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 
 test('resource catalog covers explicit strength, cardio and sport capabilities, not implicit bodyweight', () => {
   assert.deepEqual(RESOURCE_CATALOG.map(resource => resource.id).sort(), [
-    'bands', 'barbell', 'bench', 'bike', 'cable', 'cones', 'court', 'dodgeballs', 'dumbbell',
-    'kettlebell', 'machine', 'open_space', 'partner', 'pull_up_bar', 'rack', 'rower', 'ski_erg', 'treadmill', 'wall',
+    'anchor_point', 'bands', 'barbell', 'bench', 'bike', 'cable', 'carry_space', 'cones', 'court',
+    'dodgeballs', 'dumbbell', 'floor_space', 'kettlebell', 'machine', 'open_space', 'partner',
+    'pull_up_bar', 'rack', 'rower', 'safe_target', 'ski_erg', 'stable_step', 'treadmill', 'wall',
   ])
   assert.deepEqual([...new Set(RESOURCE_CATALOG.map(resource => resource.group))], ['strength', 'cardio', 'sport'])
   assert.equal(new Set(RESOURCE_CATALOG.map(resource => resource.label)).size, RESOURCE_CATALOG.length)
@@ -84,8 +86,8 @@ test('resource labels describe only explicit selections, including rower and Ski
 
 test('no-kit, home and gym presets are explicit canonical selections, with supports selected separately', () => {
   assert.deepEqual(RESOURCE_PRESETS.map(preset => preset.label), ['No kit', 'Home', 'Gym'])
-  assert.deepEqual(RESOURCE_PRESETS[0].resources, [])
-  assert.deepEqual(RESOURCE_PRESETS[1].resources, ['bands', 'dumbbell'])
+  assert.deepEqual(RESOURCE_PRESETS[0].resources, ['floor_space'])
+  assert.deepEqual(RESOURCE_PRESETS[1].resources, ['bands', 'dumbbell', 'floor_space'])
   assert.ok(RESOURCE_PRESETS[2].resources.includes('barbell'))
   for (const preset of RESOURCE_PRESETS) {
     const resources: readonly ResourceId[] = preset.resources
@@ -95,7 +97,7 @@ test('no-kit, home and gym presets are explicit canonical selections, with suppo
   }
 })
 
-test('specific supports must be selected as well as each exercise’s broad gear', () => {
+test('legacy support guards remain exact while program mode follows stricter profile requirements', () => {
   for (const [id, support] of [
     ['back-squat', 'rack'], ['bench-press', 'bench'], ['hip-thrust', 'bench'],
   ] as const) {
@@ -103,12 +105,21 @@ test('specific supports must be selected as well as each exercise’s broad gear
     assert.equal(exerciseAvailable(id, ['barbell']), false)
     assert.equal(exerciseAvailable(id, [support]), false)
     assert.equal(exerciseAvailable(id, ['barbell', support]), true)
+    assert.equal(exerciseAvailable(id, ['barbell'], true), false)
   }
+  assert.equal(exerciseAvailable('back-squat', ['barbell', 'rack'], true), true)
+  assert.equal(exerciseAvailable('hip-thrust', ['barbell', 'bench'], true), true)
+  assert.equal(exerciseAvailable('bench-press', ['barbell', 'bench'], true), false)
+  assert.equal(exerciseAvailable('bench-press', ['barbell', 'bench', 'rack'], true), true)
   assert.equal(exerciseAvailable('back-squat', ['barbell', 'bench']), false)
   assert.equal(exerciseAvailable('bench-press', ['barbell', 'rack']), false)
   assert.equal(exerciseAvailable('pull-up', []), false)
   assert.equal(exerciseAvailable('pull-up', ['barbell', 'rack', 'bench']), false)
   assert.equal(exerciseAvailable('pull-up', ['pull_up_bar']), true)
+  assert.equal(exerciseAvailable('back-squat', ['barbell', 'bench'], true), false)
+  assert.equal(exerciseAvailable('bench-press', ['barbell', 'rack'], true), false)
+  assert.equal(exerciseAvailable('pull-up', [], true), false)
+  assert.equal(exerciseAvailable('pull-up', ['pull_up_bar'], true), true)
 })
 
 test('availability follows the checked library, without inferred substitutions or unknown exercises', () => {
@@ -140,6 +151,37 @@ test('recommendations preserve the routine with equipped or bodyweight fallbacks
     ['goblet-squat', 'romanian-deadlift', 'push-up', 'dumbbell-row', 'dead-bug'])
   assert.deepEqual(recommendForResources(['barbell', 'rack', 'bench', 'dumbbell']),
     ['back-squat', 'romanian-deadlift', 'bench-press', 'dumbbell-row', 'dead-bug'])
+})
+
+test('program helpers use exact engine resources, profiles and the program exercise ceiling without AI', t => {
+  t.mock.method(globalThis, 'fetch', () => assert.fail('Resource capability helpers must never contact AI'))
+  assert.deepEqual(programResources(['rower', 'kettlebell', 'floor_space', 'carry_space']), [
+    'bodyweight', 'carry_space', 'floor_space', 'kettlebell',
+  ])
+  assert.deepEqual(programResources(['dodgeballs', 'court', 'open_space', 'rower']), [
+    'bodyweight', 'court_space', 'dodgeball',
+  ])
+  assert.equal(equipmentAvailable(['kettlebell', 'floor_space'], ['bodyweight', 'kettlebell']), false)
+  assert.equal(equipmentAvailable(['kettlebell', 'floor_space'], ['bodyweight', 'kettlebell', 'floor_space']), true)
+  assert.equal(exerciseAvailable('dodgeball-controlled-target-throw', ['dodgeballs', 'court']), false)
+  assert.equal(exerciseAvailable('dodgeball-controlled-target-throw', ['dodgeballs', 'court', 'safe_target']), true)
+  const program: ProgramConfigV1 = {
+    version: 1 as const,
+    libraryVersion: PROGRAM_LIBRARY_VERSION,
+    goal: 'dodgeball' as const,
+    resources: ['bodyweight', 'floor_space', 'kettlebell', 'carry_space'] as const,
+    conditioningBaselines: [],
+  }
+  const metadata = availableProgramExercises([], program)
+  const exact = new Set(program.resources)
+  assert.ok(metadata.some(item => item.id === 'kettlebell-goblet-squat'))
+  assert.ok(metadata.some(item => item.template === 'carry' && item.unit === 'seconds'))
+  assert.ok(metadata.every(item => item.requirements.every(resource => exact.has(resource))))
+  const ids = recommendForResources([], program)
+  assert.ok(ids.some(id => id.startsWith('kettlebell-')))
+  assert.ok(ids.every(id => metadata.some(item => item.id === id)))
+  assert.equal(maxExerciseSelection(), RECOMMENDATION_POLICY.maxExercises)
+  assert.equal(maxExerciseSelection(program), PROGRAM_POLICY.maxSelectedExercises)
 })
 
 test('every strength-capability combination produces deterministic, supported and available recommendations', () => {

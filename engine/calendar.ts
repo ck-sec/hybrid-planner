@@ -29,8 +29,10 @@ const sortSessions = (sessions: readonly Session[]): Session[] =>
 const logged = (log: SessionLog | undefined): boolean => log?.status === 'completed' || log?.status === 'partial'
 
 export function calendarSessionLabel(session: Session): string {
-  const name = session.kind === 'commitment' ? session.label : session.kind === 'strength' ? 'strength session'
-    : session.endurancePrescription.intent === 'long' ? 'long run' : 'easy run'
+  const name = session.kind === 'commitment' || session.kind === 'workout' ? session.label
+    : session.kind === 'strength' ? 'strength session'
+      : session.kind === 'conditioning' ? `easy ${session.modality.replace('_', ' ')}`
+        : session.endurancePrescription.intent === 'long' ? 'long run' : 'easy run'
   return `${DAY_NAMES[dayOfWeek(session.date)]}'s ${name} (${session.date})`
 }
 
@@ -60,7 +62,7 @@ export function calendarSafety(
     ...input,
     block: { ...input.block, goal: { ...input.block.goal, fixedCommitments: [] } },
     context: { ...input.context, pinnedSessions: sessions.filter(session => session.pinned) },
-  }, sessions)
+  }, sessions, { sourceCommitments: input.block.goal.fixedCommitments })
   const painDates = sessions.filter(session => logs[session.id]?.painFlag).map(position).sort()
   const cutoff = painDates[0]
   const held = cutoff === undefined ? [] : sessions.filter(session =>
@@ -99,7 +101,7 @@ export function assessCalendarPlan(
 }
 
 function reduced(session: Session, input: PlanWeekInput): Session | null {
-  if (session.kind === 'commitment') return session
+  if (session.kind === 'commitment' || (session.kind === 'workout' && session.sourceCommitmentId)) return session
   const durationMin = Math.floor(session.durationMin * CAMPAIGN_POLICY.fatigueVolumeFraction)
   if (durationMin < 1) return null
   let result: Session = { ...session, durationMin }
@@ -110,6 +112,13 @@ function reduced(session: Session, input: PlanWeekInput): Session | null {
     // Shortening the clock without reducing any sets is not less strength work.
     if (strengthPrescription.every((item, index) => item.sets === session.strengthPrescription[index]!.sets)) return null
     result = { ...session, durationMin, strengthPrescription }
+  }
+  if (session.kind === 'workout') {
+    const blocks = session.blocks.map(block => block.unit === 'throws' ? block
+      : { ...block, sets: Math.max(1, Math.floor(block.sets * CAMPAIGN_POLICY.fatigueVolumeFraction)) })
+    if (blocks.every((block, index) => block.unit === 'throws'
+      || block.sets === (session.blocks[index] as Exclude<typeof session.blocks[number], { unit: 'throws' }>).sets)) return null
+    result = { ...session, durationMin, blocks }
   }
   return {
     ...result, predictedLoad: predictSessionLoad(result, input.athlete, input.library),
@@ -122,7 +131,8 @@ function rearrange(
 ): { plan: WeekPlan; additionallyRemoved: Session[] } {
   const { input, logs } = week
   const mandatory = sessions.filter(session =>
-    session.pinned || session.kind === 'commitment' || logged(logs[session.id]) || position(session) < cutoff)
+    session.pinned || session.kind === 'commitment' || (session.kind === 'workout' && session.sourceCommitmentId)
+      || logged(logs[session.id]) || position(session) < cutoff)
   const mandatoryIds = new Set(mandatory.map(session => session.id))
   const movable = sortSessions(sessions.filter(session => !mandatoryIds.has(session.id)))
   const start = week.plan.weekStart
@@ -135,7 +145,8 @@ function rearrange(
   let best: { sessions: Session[]; score: number; key: string } | undefined
   for (let count = movable.length; count >= 0 && !best && !exhausted; count--) {
     const current = [...mandatory]
-    const usedDays = new Set(mandatory.filter(session => session.kind !== 'commitment').map(session => session.date))
+    const usedDays = new Set(mandatory.filter(session => session.kind !== 'commitment'
+      && !(session.kind === 'workout' && session.sourceCommitmentId)).map(session => session.date))
     const visit = (index: number, retained: number): void => {
       if (exhausted) return
       if (retained === count) {
@@ -226,7 +237,8 @@ export function adaptCalendarWeek(
       : `${calendarSessionLabel(target)} was skipped ${fatigue ? 'for fatigue' : 'for lack of time'}. Record retained; no catch-up.` })
     if (fatigue) {
       sessions = sessions.flatMap(session => {
-        if (position(session) < cutoff || session.pinned || session.kind === 'commitment' || logged(logs[session.id])) return [session]
+        if (position(session) < cutoff || session.pinned || session.kind === 'commitment'
+          || (session.kind === 'workout' && session.sourceCommitmentId) || logged(logs[session.id])) return [session]
         const lighter = reduced(session, week.input)
         if (lighter) return [lighter]
         removed.push(session)

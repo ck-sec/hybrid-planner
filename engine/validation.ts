@@ -1,10 +1,15 @@
-import { COST_MULTIPLIER_RANGE, ENGINE_VERSION, LIBRARY_VERSION, LIMITS, POLICY_VERSION, RECOMMENDATION_POLICY } from './constants.ts'
+import {
+  COST_MULTIPLIER_RANGE, ENGINE_VERSION, LEGACY_EXERCISE_IDS, LIBRARY_VERSION, LIMITS,
+  MAX_LOGGED_SETS_PER_BLOCK, POLICY_VERSION,
+  PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY, PROGRAM_POLICY_VERSION, RECOMMENDATION_POLICY,
+} from './constants.ts'
+import canonicalProgramLibrary from './exercises-v1.json' with { type: 'json' }
 import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from './dates.ts'
 import type {
-  AnchorAssignment, AthleteState, Block, CompletedWeek, Day, Discipline, Equipment,
+  AnchorAssignment, AthleteState, Block, BlockLog, CompletedWeek, ConditioningBaseline, Day, Discipline, Equipment,
   Exercise, ExerciseLibrary, ExerciseObservation, FixedCommitment, Goal, Load,
-  Modality, MovementPattern, Phase, PlanWeekInput, PlanningContext, Quality,
-  RecentSession, Session, SessionLog, SetLog, StrengthPrescription, TargetRPE,
+  Modality, MovementPattern, Phase, PlanWeekInput, PlanningContext, ProgramConfigV1, Quality, Resource,
+  RecentSession, Session, SessionLog, SetLog, StrengthPrescription, TargetRPE, WorkoutBlock,
 } from './types.ts'
 
 export class InputError extends Error {
@@ -22,6 +27,10 @@ const PATTERNS: readonly MovementPattern[] = [
   'horizontal_pull', 'vertical_pull', 'unilateral_lower', 'carry', 'core', 'rotational',
 ]
 const EQUIPMENT: readonly Equipment[] = ['barbell', 'dumbbell', 'kettlebell', 'machine', 'cable', 'bodyweight', 'bands', 'none']
+const RESOURCES: readonly Resource[] = [
+  ...EQUIPMENT, 'bench', 'rack', 'pull_up_bar', 'stable_step', 'floor_space', 'anchor_point',
+  'carry_space', 'dodgeball', 'court_space', 'safe_target',
+]
 const DISCIPLINES: readonly Discipline[] = ['run', 'bike', 'swim', 'strength', 'sport', 'mobility']
 const MODALITIES: readonly Modality[] = ['run_road', 'run_trail', 'bike_road', 'bike_gravel', 'swim', 'row', 'ski_erg', 'lifting', 'court_sport', 'other']
 const QUALITIES: readonly Quality[] = ['aerobic_base', 'threshold', 'vo2max', 'repeat_sprint', 'change_of_direction', 'max_strength', 'power', 'strength_endurance', 'shoulder_durability']
@@ -29,6 +38,20 @@ const SESSION_FIELDS = ['id', 'date', 'startTime', 'durationMin', 'predictedLoad
 const compareText = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
 const MAX_DURATION = 1440
 const MAX_COST = 1_000_000
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    const items = value.map(item => canonical(item))
+    if (value.every(item => typeof item === 'string')
+      || value.every(item => item !== null && typeof item === 'object' && 'id' in item)) items.sort()
+    return `[${items.join(',')}]`
+  }
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value).sort(([left], [right]) => compareText(left, right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'undefined'
+}
 
 class Validator {
   readonly issues: string[] = []
@@ -189,6 +212,71 @@ class Validator {
     return result.sort(compareText)
   }
 
+  resources(value: unknown, path: string): Resource[] {
+    const result = this.array(value, path, 1, RESOURCES.length)
+      .map((item, index) => this.enum(item, `${path}[${index}]`, RESOURCES))
+    this.unique(result, item => item, path)
+    return result.sort(compareText)
+  }
+
+  program(value: unknown, path: string): ProgramConfigV1 {
+    const data = this.object(value, path, [
+      'version', 'libraryVersion', 'goal', 'resources', 'conditioningBaselines',
+      'selectedExerciseIds', 'comfortableThrowsPerPractice', 'includeMobility',
+    ])
+    if (data.version !== 1) this.issue(`${path}.version`, 'must be 1')
+    const baselines = this.array(data.conditioningBaselines, `${path}.conditioningBaselines`, 0, LIMITS.maxConditioningBaselines)
+      .map((entry, index): ConditioningBaseline => {
+        const p = `${path}.conditioningBaselines[${index}]`
+        const baseline = this.object(entry, p, ['modality', 'weeklyMinutes', 'longestSessionMinutes', 'sessionsPerWeek'])
+        return {
+          modality: this.enum(baseline.modality, `${p}.modality`,
+            ['run_road', 'run_trail', 'bike_road', 'bike_gravel', 'row', 'ski_erg'] as const),
+          weeklyMinutes: this.number(baseline.weeklyMinutes, `${p}.weeklyMinutes`, 1, LIMITS.maxWeeklyRunMinutes),
+          longestSessionMinutes: this.number(baseline.longestSessionMinutes, `${p}.longestSessionMinutes`, 1, LIMITS.maxRunMinutes),
+          sessionsPerWeek: this.number(baseline.sessionsPerWeek, `${p}.sessionsPerWeek`, 1, LIMITS.maxRuns, true),
+        }
+      })
+    this.unique(baselines, baseline => baseline.modality, `${path}.conditioningBaselines`)
+    for (const [index, baseline] of baselines.entries()) {
+      if (baseline.longestSessionMinutes > baseline.weeklyMinutes) {
+        this.issue(`${path}.conditioningBaselines[${index}].longestSessionMinutes`, 'cannot exceed weeklyMinutes')
+      }
+    }
+    const result: ProgramConfigV1 = {
+      version: 1,
+      libraryVersion: this.enum(data.libraryVersion, `${path}.libraryVersion`, [PROGRAM_LIBRARY_VERSION]),
+      goal: this.enum(data.goal, `${path}.goal`, ['balanced', 'endurance', 'strength', 'dodgeball'] as const),
+      resources: this.resources(data.resources, `${path}.resources`),
+      conditioningBaselines: baselines.sort((a, b) => compareText(a.modality, b.modality)),
+    }
+    if (Object.hasOwn(data, 'selectedExerciseIds')) {
+      const ids = this.array(data.selectedExerciseIds, `${path}.selectedExerciseIds`,
+        PROGRAM_POLICY.minSelectedExercises, PROGRAM_POLICY.maxSelectedExercises)
+        .map((id, index) => this.id(id, `${path}.selectedExerciseIds[${index}]`))
+      this.unique(ids, id => id, `${path}.selectedExerciseIds`)
+      result.selectedExerciseIds = ids.sort(compareText)
+    }
+    if (Object.hasOwn(data, 'comfortableThrowsPerPractice')) {
+      result.comfortableThrowsPerPractice = this.number(data.comfortableThrowsPerPractice,
+        `${path}.comfortableThrowsPerPractice`, 1, 500, true)
+    }
+    if (Object.hasOwn(data, 'includeMobility')) {
+      result.includeMobility = this.boolean(data.includeMobility, `${path}.includeMobility`)
+    }
+    if (result.goal === 'dodgeball' && result.comfortableThrowsPerPractice !== undefined) {
+      for (const requirement of ['dodgeball', 'court_space', 'safe_target'] as const) {
+        if (!result.resources.includes(requirement)) {
+          this.issue(`${path}.resources`, `dodgeball requires explicit ${requirement}`)
+        }
+      }
+    }
+    if (result.goal !== 'dodgeball' && result.comfortableThrowsPerPractice !== undefined) {
+      this.issue(`${path}.comfortableThrowsPerPractice`, 'is supported only for the dodgeball program')
+    }
+    return result
+  }
+
   compatible(discipline: Discipline, modality: Modality, path: string): void {
     const required: Partial<Record<Modality, Discipline>> = {
       run_road: 'run', run_trail: 'run', bike_road: 'bike', bike_gravel: 'bike',
@@ -201,12 +289,15 @@ class Validator {
 
   library(value: unknown, path: string): ExerciseLibrary {
     const data = this.object(value, path, ['version', 'exercises'])
-    const version = this.enum(data.version, `${path}.version`, [LIBRARY_VERSION])
+    const version = this.enum(data.version, `${path}.version`, [LIBRARY_VERSION, PROGRAM_LIBRARY_VERSION])
+    const extensible = version === PROGRAM_LIBRARY_VERSION
     const exercises = this.array(data.exercises, `${path}.exercises`, 1, LIMITS.maxLibraryExercises)
       .map((value, index): Exercise => {
         const p = `${path}.exercises[${index}]`
-        const item = this.object(value, p, ['id', 'name', 'pattern', 'equipment', 'coefficients', 'competesWithRunning', 'highSkill'])
-        return {
+        const fields = ['id', 'name', 'pattern', 'equipment', 'coefficients', 'competesWithRunning', 'highSkill',
+          ...(extensible ? ['requirements', 'label', 'template', 'profile'] : [])]
+        const item = this.object(value, p, fields)
+        const exercise: Exercise = {
           id: this.id(item.id, `${p}.id`),
           name: this.text(item.name, `${p}.name`, 1, 80, true),
           pattern: this.enum(item.pattern, `${p}.pattern`, PATTERNS),
@@ -215,9 +306,55 @@ class Validator {
           competesWithRunning: this.boolean(item.competesWithRunning, `${p}.competesWithRunning`),
           highSkill: this.boolean(item.highSkill, `${p}.highSkill`),
         }
+        if (extensible) {
+          const requirements = this.array(item.requirements, `${p}.requirements`, 1, RESOURCES.length)
+            .map((resource, resourceIndex) => this.enum(resource, `${p}.requirements[${resourceIndex}]`, RESOURCES))
+          this.unique(requirements, resource => resource, `${p}.requirements`)
+          const profilePath = `${p}.profile`
+          const profile = this.object(item.profile, profilePath, ['version', 'schedulingEstimate', 'prescription'])
+          const prescriptionPath = `${profilePath}.prescription`
+          const prescriptionTag = this.object(profile.prescription, prescriptionPath, ['unit', 'sets', 'reps', 'targetRPE', 'seconds'])
+          const unit = this.enum(prescriptionTag.unit, `${prescriptionPath}.unit`, ['reps', 'seconds'] as const)
+          const prescriptionData = this.object(prescriptionTag, prescriptionPath,
+            unit === 'reps' ? ['unit', 'sets', 'reps', 'targetRPE'] : ['unit', 'sets', 'seconds'])
+          const prescription = unit === 'reps' ? {
+            unit,
+            sets: this.number(prescriptionData.sets, `${prescriptionPath}.sets`, 1, 4, true),
+            reps: this.number(prescriptionData.reps, `${prescriptionPath}.reps`, 1, 20, true),
+            targetRPE: this.rpe(prescriptionData.targetRPE, `${prescriptionPath}.targetRPE`),
+          } : {
+            unit,
+            sets: this.number(prescriptionData.sets, `${prescriptionPath}.sets`, 1, 4, true),
+            seconds: this.number(prescriptionData.seconds, `${prescriptionPath}.seconds`, 5, 300, true),
+          }
+          const schedulingEstimate = this.load(profile.schedulingEstimate, `${profilePath}.schedulingEstimate`)
+          if (schedulingEstimate.systemic !== exercise.coefficients.systemic
+            || schedulingEstimate.structural !== exercise.coefficients.structural) {
+            this.issue(profilePath, 'schedulingEstimate must exactly match coefficients')
+          }
+          exercise.requirements = requirements.sort(compareText)
+          exercise.label = this.text(item.label, `${p}.label`, 1, 80, true)
+          exercise.template = this.enum(item.template, `${p}.template`,
+            ['squat', 'hinge', 'push', 'pull', 'unilateral', 'carry', 'core', 'rotation', 'mobility'] as const)
+          exercise.profile = {
+            version: this.enum(profile.version, `${profilePath}.version`, ['scheduling-estimate-1'] as const),
+            schedulingEstimate,
+            prescription,
+          }
+          for (const equipment of exercise.equipment) {
+            if (equipment !== 'none' && !requirements.includes(equipment)) {
+              this.issue(`${p}.requirements`, `must include equipment requirement ${equipment}`)
+            }
+          }
+        }
+        return exercise
       })
     this.unique(exercises, exercise => exercise.id, `${path}.exercises`)
-    return { version, exercises: exercises.sort((a, b) => compareText(a.id, b.id)) }
+    const result = { version, exercises: exercises.sort((a, b) => compareText(a.id, b.id)) }
+    if (extensible && canonical(result) !== canonical(canonicalProgramLibrary)) {
+      this.issue(path, 'exercise-profiles-1 must exactly match the reviewed built-in catalog')
+    }
+    return result
   }
 
   observation(value: unknown, path: string): ExerciseObservation {
@@ -234,7 +371,8 @@ class Validator {
   }
 
   athlete(value: unknown, path: string): AthleteState {
-    const data = this.object(value, path, ['baseline', 'calibration', 'availableDays', 'equipment', 'weeklyTimeBudgetMin', 'defaultStartTime', 'aggressiveness', 'residual', 'safetyHold', 'recommendedExerciseIds'])
+    const data = this.object(value, path, ['baseline', 'calibration', 'availableDays', 'equipment', 'weeklyTimeBudgetMin', 'defaultStartTime', 'aggressiveness', 'residual', 'safetyHold', 'recommendedExerciseIds', 'program'])
+    const program = Object.hasOwn(data, 'program') ? this.program(data.program, `${path}.program`) : undefined
     let recommendedExerciseIds: string[] | undefined
     if (Object.hasOwn(data, 'recommendedExerciseIds')) {
       const p = `${path}.recommendedExerciseIds`
@@ -248,7 +386,10 @@ class Validator {
     const asOf = this.date(baseline.asOf, `${b}.asOf`)
     const weeklyRunMinutes = this.number(baseline.weeklyRunMinutes, `${b}.weeklyRunMinutes`, 1, LIMITS.maxWeeklyRunMinutes)
     const longestRunMinutes = this.number(baseline.longestRunMinutes, `${b}.longestRunMinutes`, 1, LIMITS.maxRunMinutes)
-    const exercises = this.array(baseline.exercises, `${b}.exercises`, recommendedExerciseIds ? 0 : 1, LIMITS.maxExercises)
+    const runsPerWeek = this.number(baseline.runsPerWeek, `${b}.runsPerWeek`, 1, LIMITS.maxRuns, true)
+    const liftsPerWeek = this.number(baseline.liftsPerWeek, `${b}.liftsPerWeek`, 1, LIMITS.maxLifts, true)
+    const liftDurationMin = this.number(baseline.liftDurationMin, `${b}.liftDurationMin`, 15, 180)
+    const exercises = this.array(baseline.exercises, `${b}.exercises`, recommendedExerciseIds || program ? 0 : 1, LIMITS.maxExercises)
       .map((item, index) => this.observation(item, `${b}.exercises[${index}]`))
     this.unique(exercises, item => item.exerciseId, `${b}.exercises`)
     for (const [index, item] of exercises.entries()) {
@@ -272,12 +413,33 @@ class Validator {
         since: this.date(hold.since, `${p}.since`),
       }
     }
+    const equipment = this.equipment(data.equipment, `${path}.equipment`)
+    if (program) {
+      for (const resource of program.resources) {
+        if ((EQUIPMENT as readonly string[]).includes(resource) && resource !== 'none' && !equipment.includes(resource as Equipment)) {
+          this.issue(`${path}.program.resources`, `equipment resource ${resource} is not present in athlete.equipment`)
+        }
+      }
+      if (recommendedExerciseIds) this.issue(`${path}`, 'recommendedExerciseIds is legacy-only and cannot be combined with program')
+      const explicitRuns = program.conditioningBaselines.filter(item =>
+        item.modality === 'run_road' || item.modality === 'run_trail')
+      if (explicitRuns.length > 1) {
+        this.issue(`${path}.program.conditioningBaselines`, 'may contain only one explicit running baseline')
+      }
+      const explicitRun = explicitRuns[0]
+      if (explicitRun && (explicitRun.weeklyMinutes !== weeklyRunMinutes
+        || explicitRun.longestSessionMinutes !== longestRunMinutes
+        || explicitRun.sessionsPerWeek !== runsPerWeek)) {
+        this.issue(`${path}.program.conditioningBaselines`,
+          'an explicit running baseline must exactly match baseline weeklyRunMinutes, longestRunMinutes, and runsPerWeek')
+      }
+    }
     return {
       baseline: {
         asOf, weeklyRunMinutes, longestRunMinutes,
-        runsPerWeek: this.number(baseline.runsPerWeek, `${b}.runsPerWeek`, 1, LIMITS.maxRuns, true),
-        liftsPerWeek: this.number(baseline.liftsPerWeek, `${b}.liftsPerWeek`, 1, LIMITS.maxLifts, true),
-        liftDurationMin: this.number(baseline.liftDurationMin, `${b}.liftDurationMin`, 15, 180),
+        runsPerWeek,
+        liftsPerWeek,
+        liftDurationMin,
         exercises,
       },
       calibration: {
@@ -286,7 +448,7 @@ class Validator {
         observationCount: this.number(calibration.observationCount, `${c}.observationCount`, 0, MAX_COST, true),
       },
       availableDays: availableDays.sort((a, b) => a - b),
-      equipment: this.equipment(data.equipment, `${path}.equipment`),
+      equipment,
       weeklyTimeBudgetMin: this.positive(data.weeklyTimeBudgetMin, `${path}.weeklyTimeBudgetMin`, 7 * MAX_DURATION),
       defaultStartTime: this.time(data.defaultStartTime, `${path}.defaultStartTime`),
       aggressiveness: this.enum(data.aggressiveness, `${path}.aggressiveness`, ['conservative', 'standard', 'aggressive']),
@@ -297,6 +459,7 @@ class Validator {
       },
       safetyHold,
       ...(recommendedExerciseIds ? { recommendedExerciseIds } : {}),
+      ...(program ? { program } : {}),
     }
   }
 
@@ -370,7 +533,8 @@ class Validator {
   }
 
   block(value: unknown, path: string): Block {
-    const data = this.object(value, path, ['id', 'engineVersion', 'policyVersion', 'libraryVersion', 'startDate', 'totalWeeks', 'goal', 'phases', 'anchors'])
+    const data = this.object(value, path, ['id', 'engineVersion', 'policyVersion', 'libraryVersion', 'startDate', 'totalWeeks', 'goal', 'phases', 'anchors', 'program', 'workoutTemplates'])
+    const program = Object.hasOwn(data, 'program') ? this.program(data.program, `${path}.program`) : undefined
     const startDate = this.date(data.startDate, `${path}.startDate`)
     const totalWeeks = this.number(data.totalWeeks, `${path}.totalWeeks`, 1, LIMITS.maxWeeks, true)
     const goal = this.goal(data.goal, `${path}.goal`)
@@ -402,26 +566,61 @@ class Validator {
       nextWeek = phase.endWeekIndex + 1
     }
     if (nextWeek !== totalWeeks) this.issue(`${path}.phases`, `must cover all ${totalWeeks} block weeks`)
-    const anchors = this.array(data.anchors, `${path}.anchors`, 1, LIMITS.maxExercises)
+    const anchors = this.array(data.anchors, `${path}.anchors`, program ? 0 : 1, LIMITS.maxExercises)
       .map((item, index) => this.prescription(item, `${path}.anchors[${index}]`, true))
     this.unique(anchors, item => item.exerciseId, `${path}.anchors`)
     for (const id of goal.protectedExerciseIds) {
       if (!anchors.some(anchor => anchor.exerciseId === id)) this.issue(`${path}.anchors`, `must include protected exercise ${id}`)
     }
-    return {
+    let workoutTemplates: Block['workoutTemplates']
+    if (program) {
+      if (!program.selectedExerciseIds) {
+        this.issue(`${path}.program.selectedExerciseIds`, 'must freeze the resolved exercise pool')
+      }
+      const templates = this.array(data.workoutTemplates, `${path}.workoutTemplates`, 2, 2).map((entry, index) => {
+        const p = `${path}.workoutTemplates[${index}]`
+        const template = this.object(entry, p, ['label', 'exerciseIds'])
+        const exerciseIds = this.array(template.exerciseIds, `${p}.exerciseIds`, 3, 4)
+          .map((id, exerciseIndex) => this.id(id, `${p}.exerciseIds[${exerciseIndex}]`))
+        this.unique(exerciseIds, id => id, `${p}.exerciseIds`)
+        return {
+          label: this.enum(template.label, `${p}.label`, ['Strength A', 'Strength B'] as const),
+          exerciseIds,
+        }
+      })
+      this.unique(templates, template => template.label, `${path}.workoutTemplates`)
+      const usedIds = [...new Set(templates.flatMap(template => template.exerciseIds))].sort(compareText)
+      if (program.selectedExerciseIds
+        && usedIds.join('|') !== [...program.selectedExerciseIds].sort(compareText).join('|')) {
+        this.issue(`${path}.workoutTemplates`, 'must use exactly the frozen selectedExerciseIds pool')
+      }
+      workoutTemplates = templates
+    } else if (Object.hasOwn(data, 'workoutTemplates')) {
+      this.issue(`${path}.workoutTemplates`, 'requires an opt-in program')
+    }
+    const result: Block = {
       id: this.id(data.id, `${path}.id`),
       engineVersion: this.enum(data.engineVersion, `${path}.engineVersion`, [ENGINE_VERSION]),
-      policyVersion: this.enum(data.policyVersion, `${path}.policyVersion`, [POLICY_VERSION]),
-      libraryVersion: this.enum(data.libraryVersion, `${path}.libraryVersion`, [LIBRARY_VERSION]),
+      policyVersion: this.enum(data.policyVersion, `${path}.policyVersion`, [program ? PROGRAM_POLICY_VERSION : POLICY_VERSION]),
+      libraryVersion: this.enum(data.libraryVersion, `${path}.libraryVersion`, [program ? PROGRAM_LIBRARY_VERSION : LIBRARY_VERSION]),
       startDate, totalWeeks, goal, phases, anchors,
     }
+    if (program && workoutTemplates) {
+      result.program = program
+      result.workoutTemplates = workoutTemplates
+    }
+    return result
   }
 
   session(value: unknown, path: string): Session {
     // Select the allowed field set before parsing, so another variant's fields are rejected.
-    const tag = this.object(value, path, [...SESSION_FIELDS, 'endurancePrescription', 'strengthPrescription', 'label'])
-    const kind = this.enum(tag.kind, `${path}.kind`, ['run', 'strength', 'commitment'])
-    const data = this.object(tag, path, [...SESSION_FIELDS, kind === 'run' ? 'endurancePrescription' : kind === 'strength' ? 'strengthPrescription' : 'label'])
+    const tag = this.object(value, path, [...SESSION_FIELDS, 'endurancePrescription', 'strengthPrescription', 'conditioningPrescription', 'label', 'blocks', 'sourceCommitmentId'])
+    const kind = this.enum(tag.kind, `${path}.kind`, ['run', 'strength', 'commitment', 'conditioning', 'workout'])
+    const variantFields = kind === 'run' ? ['endurancePrescription']
+      : kind === 'strength' ? ['strengthPrescription']
+        : kind === 'conditioning' ? ['conditioningPrescription']
+          : kind === 'workout' ? ['label', 'blocks', 'sourceCommitmentId'] : ['label']
+    const data = this.object(tag, path, [...SESSION_FIELDS, ...variantFields])
     const base = {
       id: this.id(data.id, `${path}.id`),
       date: this.date(data.date, `${path}.date`),
@@ -457,10 +656,96 @@ class Validator {
         strengthPrescription,
       }
     }
+    if (kind === 'conditioning') {
+      const p = `${path}.conditioningPrescription`
+      const prescription = this.object(data.conditioningPrescription, p, ['intent', 'effort'])
+      const modality = this.enum(data.modality, `${path}.modality`,
+        ['run_road', 'run_trail', 'bike_road', 'bike_gravel', 'row', 'ski_erg'] as const)
+      const discipline = modality === 'run_road' || modality === 'run_trail' ? 'run'
+        : modality === 'bike_road' || modality === 'bike_gravel' ? 'bike' : 'sport'
+      return {
+        ...base, kind,
+        discipline: this.enum(data.discipline, `${path}.discipline`, [discipline]),
+        modality,
+        conditioningPrescription: {
+          intent: this.enum(prescription.intent, `${p}.intent`, ['easy']),
+          effort: this.enum(prescription.effort, `${p}.effort`, ['conversational']),
+        },
+      }
+    }
+    if (kind === 'workout') {
+      const discipline = this.enum(data.discipline, `${path}.discipline`, ['strength', 'sport'] as const)
+      const modality = this.enum(data.modality, `${path}.modality`, ['lifting', 'court_sport'] as const)
+      if ((discipline === 'strength') !== (modality === 'lifting')) {
+        this.issue(path, 'strength workouts require lifting and sport workouts require court_sport')
+      }
+      const blocks = this.array(data.blocks, `${path}.blocks`, 1, LIMITS.maxWorkoutBlocks)
+        .map((block, index) => this.workoutBlock(block, `${path}.blocks[${index}]`))
+      const result: Extract<Session, { kind: 'workout' }> = {
+        ...base, kind, discipline, modality,
+        label: this.text(data.label, `${path}.label`, 1, 80, true),
+        blocks,
+      }
+      if (Object.hasOwn(data, 'sourceCommitmentId')) {
+        result.sourceCommitmentId = this.id(data.sourceCommitmentId, `${path}.sourceCommitmentId`)
+      }
+      if (discipline === 'sport') {
+        if (!result.sourceCommitmentId) this.issue(`${path}.sourceCommitmentId`, 'is required for a sport workout')
+        if (blocks.some(block => block.unit !== 'throws')) this.issue(`${path}.blocks`, 'sport workouts support only controlled throw blocks')
+      } else {
+        if (result.sourceCommitmentId) this.issue(`${path}.sourceCommitmentId`, 'is supported only for a sport workout')
+        if (blocks.some(block => block.unit === 'throws')) this.issue(`${path}.blocks`, 'strength workouts cannot contain throw blocks')
+      }
+      return result
+    }
     const discipline = this.enum(data.discipline, `${path}.discipline`, DISCIPLINES)
     const modality = this.enum(data.modality, `${path}.modality`, MODALITIES)
     this.compatible(discipline, modality, path)
     return { ...base, kind, discipline, modality, label: this.text(data.label, `${path}.label`, 1, 80, true) }
+  }
+
+  workoutBlock(value: unknown, path: string): WorkoutBlock {
+    const tag = this.object(value, path, [
+      'unit', 'exerciseId', 'sets', 'reps', 'targetRPE', 'role', 'suggestedWeightKg',
+      'seconds', 'drillId', 'throws', 'intent', 'embedded', 'executionStyle',
+    ])
+    const unit = this.enum(tag.unit, `${path}.unit`, ['reps', 'seconds', 'throws'] as const)
+    if (unit === 'reps') {
+      const data = this.object(tag, path, ['unit', 'exerciseId', 'sets', 'reps', 'targetRPE', 'role', 'suggestedWeightKg', 'executionStyle'])
+      const result: Extract<WorkoutBlock, { unit: 'reps' }> = {
+        unit, exerciseId: this.id(data.exerciseId, `${path}.exerciseId`),
+        sets: this.number(data.sets, `${path}.sets`, 1, 4, true),
+        reps: this.number(data.reps, `${path}.reps`, 1, 20, true),
+        targetRPE: this.rpe(data.targetRPE, `${path}.targetRPE`),
+        role: this.enum(data.role, `${path}.role`, ['anchor', 'accessory'] as const),
+        executionStyle: this.enum(data.executionStyle, `${path}.executionStyle`,
+          ['controlled', 'slow_lowering', 'fast_concentric_intent'] as const),
+      }
+      if (Object.hasOwn(data, 'suggestedWeightKg')) {
+        result.suggestedWeightKg = this.number(data.suggestedWeightKg, `${path}.suggestedWeightKg`, 0, 500)
+      }
+      return result
+    }
+    if (unit === 'seconds') {
+      const data = this.object(tag, path, ['unit', 'exerciseId', 'sets', 'seconds', 'role', 'executionStyle'])
+      return {
+        unit, exerciseId: this.id(data.exerciseId, `${path}.exerciseId`),
+        sets: this.number(data.sets, `${path}.sets`, 1, 4, true),
+        seconds: this.number(data.seconds, `${path}.seconds`, 5, 300, true),
+        role: this.enum(data.role, `${path}.role`, ['carry', 'mobility'] as const),
+        executionStyle: this.enum(data.executionStyle, `${path}.executionStyle`, ['controlled']),
+      }
+    }
+    const data = this.object(tag, path, ['unit', 'drillId', 'throws', 'intent', 'embedded'])
+    const embedded = this.boolean(data.embedded, `${path}.embedded`)
+    if (!embedded) this.issue(`${path}.embedded`, 'must be true because technique is inside an established practice')
+    return {
+      unit,
+      drillId: this.enum(data.drillId, `${path}.drillId`, ['dodgeball-controlled-target-throw'] as const),
+      throws: this.number(data.throws, `${path}.throws`, 1, 500, true),
+      intent: this.enum(data.intent, `${path}.intent`, ['controlled_technique'] as const),
+      embedded: true,
+    }
   }
 
   setLog(value: unknown, path: string): SetLog {
@@ -473,8 +758,41 @@ class Validator {
     }
   }
 
+  blockLog(value: unknown, path: string): BlockLog {
+    const tag = this.object(value, path, ['unit', 'blockIndex', 'exerciseId', 'sets', 'seconds', 'weightKg', 'drillId', 'throws'])
+    const unit = this.enum(tag.unit, `${path}.unit`, ['reps', 'seconds', 'throws'] as const)
+    const blockIndex = this.number(tag.blockIndex, `${path}.blockIndex`, 0, LIMITS.maxWorkoutBlocks - 1, true)
+    if (unit === 'reps') {
+      const data = this.object(tag, path, ['unit', 'blockIndex', 'exerciseId', 'sets'])
+      return {
+        unit, blockIndex,
+        exerciseId: this.id(data.exerciseId, `${path}.exerciseId`),
+        sets: this.array(data.sets, `${path}.sets`, 1, MAX_LOGGED_SETS_PER_BLOCK)
+          .map((set, index) => this.setLog(set, `${path}.sets[${index}]`)),
+      }
+    }
+    if (unit === 'seconds') {
+      const data = this.object(tag, path, ['unit', 'blockIndex', 'exerciseId', 'seconds', 'weightKg'])
+      const result: Extract<BlockLog, { unit: 'seconds' }> = {
+        unit, blockIndex,
+        exerciseId: this.id(data.exerciseId, `${path}.exerciseId`),
+        seconds: this.number(data.seconds, `${path}.seconds`, 0, MAX_DURATION * 60, true),
+      }
+      if (Object.hasOwn(data, 'weightKg')) {
+        result.weightKg = this.number(data.weightKg, `${path}.weightKg`, 0, 500)
+      }
+      return result
+    }
+    const data = this.object(tag, path, ['unit', 'blockIndex', 'drillId', 'throws'])
+    return {
+      unit, blockIndex,
+      drillId: this.enum(data.drillId, `${path}.drillId`, ['dodgeball-controlled-target-throw'] as const),
+      throws: this.number(data.throws, `${path}.throws`, 0, 500, true),
+    }
+  }
+
   log(value: unknown, path: string): SessionLog {
-    const data = this.object(value, path, ['sessionId', 'status', 'skipReason', 'actualEffort', 'actualDurationMin', 'sets', 'painFlag', 'notes'])
+    const data = this.object(value, path, ['sessionId', 'status', 'skipReason', 'actualEffort', 'actualDurationMin', 'sets', 'blockLogs', 'painFlag', 'notes'])
     const status = this.enum(data.status, `${path}.status`, ['completed', 'partial', 'skipped'])
     const result: SessionLog = {
       sessionId: this.id(data.sessionId, `${path}.sessionId`), status,
@@ -488,6 +806,7 @@ class Validator {
       }
       if (Object.hasOwn(data, 'actualEffort')) this.issue(`${path}.actualEffort`, 'a skipped session cannot report workout effort')
       if (Object.hasOwn(data, 'sets')) this.issue(`${path}.sets`, 'a skipped session cannot report workout sets')
+      if (Object.hasOwn(data, 'blockLogs')) this.issue(`${path}.blockLogs`, 'a skipped session cannot report workout blocks')
     } else {
       if (Object.hasOwn(data, 'skipReason')) this.issue(`${path}.skipReason`, 'is allowed only when status is skipped')
       if (Object.hasOwn(data, 'actualEffort')) result.actualEffort = this.number(data.actualEffort, `${path}.actualEffort`, 0, 10)
@@ -495,6 +814,12 @@ class Validator {
       if (Object.hasOwn(data, 'sets')) {
         result.sets = this.array(data.sets, `${path}.sets`, 0, LIMITS.maxExercises * 10)
           .map((item, index) => this.setLog(item, `${path}.sets[${index}]`))
+      }
+      if (Object.hasOwn(data, 'blockLogs')) {
+        const blockLogs = this.array(data.blockLogs, `${path}.blockLogs`, 0, LIMITS.maxWorkoutBlocks)
+          .map((item, index) => this.blockLog(item, `${path}.blockLogs[${index}]`))
+        this.unique(blockLogs, item => item.blockIndex, `${path}.blockLogs`)
+        result.blockLogs = blockLogs.sort((a, b) => a.blockIndex - b.blockIndex)
       }
     }
     return result
@@ -510,6 +835,37 @@ class Validator {
         const ids = new Set(session.strengthPrescription.map(item => item.exerciseId))
         for (const [index, set] of log.sets.entries()) {
           if (!ids.has(set.exerciseId)) this.issue(`${path}.log.sets[${index}].exerciseId`, `exercise ${set.exerciseId} is not prescribed by this session`)
+        }
+      }
+    }
+    if (log.blockLogs !== undefined) {
+        if (session.kind !== 'workout') {
+          this.issue(`${path}.log.blockLogs`, 'can only be supplied for a workout session')
+        } else {
+          for (const [index, blockLog] of log.blockLogs.entries()) {
+            const p = `${path}.log.blockLogs[${index}]`
+            const block = session.blocks[blockLog.blockIndex]
+            if (!block) {
+              this.issue(`${p}.blockIndex`, 'does not identify a prescribed block')
+              continue
+            }
+            if (block.unit !== blockLog.unit) {
+              this.issue(`${p}.unit`, `must match prescribed ${block.unit} unit`)
+              continue
+          }
+          if (block.unit === 'reps' && blockLog.unit === 'reps') {
+            if (block.exerciseId !== blockLog.exerciseId) this.issue(`${p}.exerciseId`, `must match ${block.exerciseId}`)
+            for (const [setIndex, set] of blockLog.sets.entries()) {
+              if (set.exerciseId !== block.exerciseId) this.issue(`${p}.sets[${setIndex}].exerciseId`, `must match ${block.exerciseId}`)
+            }
+          } else if (block.unit === 'seconds' && blockLog.unit === 'seconds') {
+            if (block.exerciseId !== blockLog.exerciseId) this.issue(`${p}.exerciseId`, `must match ${block.exerciseId}`)
+            if (block.role === 'mobility' && blockLog.weightKg !== undefined) {
+              this.issue(`${p}.weightKg`, 'is allowed only for a loaded carry, not mobility')
+            }
+          } else if (block.unit === 'throws' && blockLog.unit === 'throws') {
+            if (block.drillId !== blockLog.drillId) this.issue(`${p}.drillId`, `must match ${block.drillId}`)
+          }
         }
       }
     }
@@ -578,6 +934,24 @@ class Validator {
     const context = this.context(data.context, `${path}.context`)
     // Structural failures are reported before cross-field date arithmetic or library lookups.
     this.finish(undefined)
+    if ((athlete.program === undefined) !== (block.program === undefined)) {
+      this.issue('input', 'athlete.program and block.program must either both be present or both be absent')
+    }
+    if (athlete.program && block.program) {
+      const sameProgram = athlete.program.version === block.program.version
+        && athlete.program.libraryVersion === block.program.libraryVersion
+        && athlete.program.goal === block.program.goal
+        && athlete.program.comfortableThrowsPerPractice === block.program.comfortableThrowsPerPractice
+        && athlete.program.includeMobility === block.program.includeMobility
+        && athlete.program.resources.join('|') === block.program.resources.join('|')
+        && JSON.stringify(athlete.program.conditioningBaselines) === JSON.stringify(block.program.conditioningBaselines)
+      if (!sameProgram) {
+        this.issue('input.block.program', 'must exactly match the program frozen from athlete.program')
+      }
+      if (library.version !== block.libraryVersion || library.version !== athlete.program.libraryVersion) {
+        this.issue('input.library.version', 'must match the frozen opt-in program libraryVersion')
+      }
+    }
     const weekStart = addDays(block.startDate, weekIndex * 7)
     const weekDay = dayNumber(weekStart)
     if (athlete.baseline.asOf > weekStart) this.issue('input.athlete.baseline.asOf', `cannot be after planned week start ${weekStart}`)
@@ -597,6 +971,12 @@ class Validator {
       const missing = exercise.equipment.filter(item => item !== 'none' && !athlete.equipment.includes(item))
       if (missing.length) this.issue(p, `exercise ${exercise.id} requires unavailable equipment: ${missing.join(', ')}`)
     }
+    const resourced = (exercise: Exercise, p: string): void => {
+      if (!athlete.program) return
+      const missing = (exercise.requirements ?? []).filter(item => !athlete.program!.resources.includes(item))
+      if (missing.length) this.issue(p, `exercise ${exercise.id} requires unavailable resources: ${missing.join(', ')}`)
+      if (!exercise.profile || !exercise.template || !exercise.label) this.issue(p, `exercise ${exercise.id} lacks a reviewed built-in program profile`)
+    }
     for (const [index, observation] of athlete.baseline.exercises.entries()) {
       known(observation.exerciseId, `input.athlete.baseline.exercises[${index}].exerciseId`)
     }
@@ -613,6 +993,10 @@ class Validator {
       const p = `input.block.anchors[${index}]`
       const exercise = known(anchor.exerciseId, `${p}.exerciseId`)
       if (!exercise) continue
+      if (!block.program && library.version === PROGRAM_LIBRARY_VERSION
+        && !(LEGACY_EXERCISE_IDS as readonly string[]).includes(anchor.exerciseId)) {
+        this.issue(`${p}.exerciseId`, 'expanded catalog exercises require opt-in programming')
+      }
       if (exercise.pattern !== anchor.pattern) this.issue(`${p}.pattern`, `must match library movement pattern ${exercise.pattern} for ${exercise.id}`)
       if (exercise.highSkill) this.issue(`${p}.exerciseId`, `high-skill exercise ${exercise.id} cannot be a generated anchor or accessory`)
       equipped(exercise, p)
@@ -620,6 +1004,30 @@ class Validator {
       if (anchor.provenance) {
         if (!athlete.recommendedExerciseIds?.includes(anchor.exerciseId) || observed) {
           this.issue(p, 'recommended provenance requires an explicitly selected, unobserved exercise')
+        }
+        if (block.program && block.workoutTemplates) {
+          const selected = block.program.selectedExerciseIds
+          if (!selected) this.issue('input.block.program.selectedExerciseIds', 'must freeze the resolved exercise pool')
+          const ids = new Set<string>()
+          for (const [templateIndex, template] of block.workoutTemplates.entries()) {
+            for (const [exerciseIndex, id] of template.exerciseIds.entries()) {
+              const p = `input.block.workoutTemplates[${templateIndex}].exerciseIds[${exerciseIndex}]`
+              const exercise = known(id, p)
+              if (exercise) { equipped(exercise, p); resourced(exercise, p) }
+              ids.add(id)
+              if (selected && !selected.includes(id)) this.issue(p, 'must come from program.selectedExerciseIds')
+            }
+          }
+          if (selected) {
+            for (const id of selected) {
+              const exercise = known(id, 'input.block.program.selectedExerciseIds')
+              if (exercise) { equipped(exercise, 'input.block.program.selectedExerciseIds'); resourced(exercise, 'input.block.program.selectedExerciseIds') }
+            }
+          }
+          if (block.workoutTemplates[0]?.exerciseIds.join('|') === block.workoutTemplates[1]?.exerciseIds.join('|')) {
+            this.issue('input.block.workoutTemplates', 'Strength A and Strength B must be differentiated')
+          }
+          if (ids.size < 3) this.issue('input.block.workoutTemplates', 'must freeze at least three exercises')
         }
       }
       if (athlete.recommendedExerciseIds) {
@@ -635,11 +1043,13 @@ class Validator {
       equipped(exercise, p)
     }
     const checkPrescriptions = (session: Session, p: string, requireEquipment: boolean): void => {
-      if (session.kind !== 'strength') return
-      for (const [index, prescription] of session.strengthPrescription.entries()) {
+      const exerciseIds = session.kind === 'strength' ? session.strengthPrescription.map(item => item.exerciseId)
+        : session.kind === 'workout' ? session.blocks.filter((block): block is Extract<WorkoutBlock, { unit: 'reps' | 'seconds' }> =>
+          block.unit !== 'throws').map(block => block.exerciseId) : []
+      for (const [index, exerciseId] of exerciseIds.entries()) {
         const key = `${p}.strengthPrescription[${index}].exerciseId`
-        const exercise = known(prescription.exerciseId, key)
-        if (exercise && requireEquipment) equipped(exercise, key)
+        const exercise = known(exerciseId, key)
+        if (exercise && requireEquipment) { equipped(exercise, key); resourced(exercise, key) }
       }
     }
     for (const [index, item] of context.recentSessions.entries()) {
@@ -686,6 +1096,11 @@ export function parseAthlete(value: unknown): AthleteState {
   return v.finish(v.athlete(value, 'athlete'))
 }
 
+export function parseProgramConfig(value: unknown): ProgramConfigV1 {
+  const v = new Validator()
+  return v.finish(v.program(value, 'program'))
+}
+
 export function parseGoal(value: unknown): Goal {
   const v = new Validator()
   return v.finish(v.goal(value, 'goal'))
@@ -704,6 +1119,25 @@ export function parseSession(value: unknown): Session {
 export function parseSessionLog(value: unknown): SessionLog {
   const v = new Validator()
   return v.finish(v.log(value, 'log'))
+}
+
+export function parseWorkoutBlock(value: unknown): WorkoutBlock {
+  const v = new Validator()
+  return v.finish(v.workoutBlock(value, 'block'))
+}
+
+export function parseBlockLog(value: unknown): BlockLog {
+  const v = new Validator()
+  return v.finish(v.blockLog(value, 'blockLog'))
+}
+
+/** Parse both values and verify every block log against its prescribed block. */
+export function validateBlockLogs(sessionValue: unknown, logValue: unknown): SessionLog {
+  const v = new Validator()
+  const session = v.session(sessionValue, 'session')
+  const log = v.log(logValue, 'log')
+  v.associate(session, log, 'record')
+  return v.finish(log)
 }
 
 export function parsePlanningContext(value: unknown): PlanningContext {

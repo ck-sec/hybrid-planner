@@ -1,8 +1,9 @@
 import { useId, useState } from 'react'
-import { RESOURCE_CATALOG, exerciseAvailable, resourceLabels } from './equipment.ts'
+import { RESOURCE_CATALOG, programResources, resourceLabels } from './equipment.ts'
+import type { ProgramConfigV1 } from '../../engine/types.ts'
 import type { ResourceId } from './equipment.ts'
 import {
-  MAX_WORKOUT_CARDS, WORKOUT_CARD_EXERCISES, WORKOUT_CARD_LIMITS, moveWorkoutCard, parseWorkoutCards, saveWorkoutCard,
+  MAX_WORKOUT_CARDS, WORKOUT_CARD_EXERCISES, WORKOUT_CARD_LIMITS, moveWorkoutCard, parseWorkoutCards, saveWorkoutCard, workoutCardAvailable,
 } from './workout-cards.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 import './workout-cards.css'
@@ -13,15 +14,17 @@ export interface WorkoutCardsProps {
   onChange: (cards: WorkoutCard[]) => void
   exerciseId?: string
   readOnly?: boolean
+  program?: ProgramConfigV1
 }
 
 const allResources = RESOURCE_CATALOG.map(resource => resource.id)
 
-function missingResources(card: WorkoutCard, resources: readonly ResourceId[]): ResourceId[] {
+function missingResources(card: WorkoutCard, resources: readonly ResourceId[], program?: ProgramConfigV1): ResourceId[] {
   const required = [...card.resources]
   if (card.exerciseId !== null) {
     for (const resource of allResources) {
-      if (!exerciseAvailable(card.exerciseId, allResources.filter(id => id !== resource))) required.push(resource)
+      const without = allResources.filter(id => id !== resource)
+      if (!workoutCardAvailable(card.exerciseId, without, program ? { ...program, resources: programResources(without) } : undefined)) required.push(resource)
     }
   }
   return [...new Set(required)].filter(resource => !resources.includes(resource))
@@ -31,16 +34,16 @@ function sourceLabel(card: WorkoutCard): string {
   return `${card.source === 'ai' ? 'AI' : 'User'} · ${card.source === 'ai' || card.status === 'draft' ? 'Draft' : 'Personal reference'}`
 }
 
-export default function WorkoutCards({ cards, resources, onChange, exerciseId, readOnly = false }: WorkoutCardsProps) {
+export default function WorkoutCards({ cards, resources, onChange, exerciseId, readOnly = false, program }: WorkoutCardsProps) {
   const notebookId = useId()
   const [editing, setEditing] = useState<{ card: WorkoutCard; isNew: boolean; original: WorkoutCard | null } | null>(null)
   const [issue, setIssue] = useState('')
   const visible = exerciseId === undefined ? cards : cards.filter(card => card.exerciseId === exerciseId)
-  const compatibleExercises = WORKOUT_CARD_EXERCISES.filter(exercise => exerciseAvailable(exercise.id, resources))
+  const compatibleExercises = WORKOUT_CARD_EXERCISES.filter(exercise => workoutCardAvailable(exercise.id, resources, program))
   const editor = readOnly ? null : editing
-  const editorMissing = editor ? missingResources(editor.card, resources) : []
+  const editorMissing = editor ? missingResources(editor.card, resources, program) : []
   const editorUnavailable = editor !== null && (editorMissing.length > 0
-    || (editor.card.exerciseId !== null && !exerciseAvailable(editor.card.exerciseId, resources)))
+    || (editor.card.exerciseId !== null && !workoutCardAvailable(editor.card.exerciseId, resources, program)))
 
   function changeCards(next: WorkoutCard[]) {
     try {
@@ -100,8 +103,8 @@ export default function WorkoutCards({ cards, resources, onChange, exerciseId, r
     {cards.length >= MAX_WORKOUT_CARDS && !readOnly && <p className="cf-notebook-meta">Notebook limit: {MAX_WORKOUT_CARDS} notes. Delete a note before adding another.</p>}
     <div className="cf-notebook-list">{visible.map(card => {
       const exercise = WORKOUT_CARD_EXERCISES.find(exercise => exercise.id === card.exerciseId)
-      const missing = missingResources(card, resources)
-      const unavailable = missing.length > 0 || (card.exerciseId !== null && !exerciseAvailable(card.exerciseId, resources))
+      const missing = missingResources(card, resources, program)
+      const unavailable = missing.length > 0 || (card.exerciseId !== null && !workoutCardAvailable(card.exerciseId, resources, program))
       return <article key={card.id} className={`cf-notebook-card${unavailable ? ' cf-notebook-unavailable' : ''}`} aria-labelledby={`${notebookId}-${card.id}`}>
         <p className="cf-notebook-meta">{sourceLabel(card)}</p>
         <h4 id={`${notebookId}-${card.id}`}>{card.title}</h4>
@@ -109,9 +112,9 @@ export default function WorkoutCards({ cards, resources, onChange, exerciseId, r
         {card.resources.length > 0 && <p className="cf-notebook-meta">Note resources: {resourceLabels(card.resources).join(', ')}.</p>}
         {unavailable && <p className="cf-notebook-warning">Unavailable for use. Missing: {missing.length ? resourceLabels(missing).join(', ') : 'compatible exercise equipment'}. You can keep and edit this as a draft; it cannot add work to your plan.</p>}
         {(card.purpose || card.instructions || card.cues) && <details className="cf-notebook-text"><summary>Read note</summary><dl>
-          {card.purpose && <><dt>Purpose note</dt><dd>{card.purpose}</dd></>}
-          {card.instructions && <><dt>Instruction notes — not a prescription</dt><dd>{card.instructions}</dd></>}
-          {card.cues && <><dt>Cue notes</dt><dd>{card.cues}</dd></>}
+          {card.instructions && <><dt>Description</dt><dd>{card.instructions}</dd></>}
+          {card.cues && <><dt>What to focus on</dt><dd>{card.cues}</dd></>}
+          {card.purpose && <><dt>Why this exercise</dt><dd>{card.purpose}</dd></>}
         </dl></details>}
         {!readOnly && <div className="cf-notebook-actions">
           <button type="button" className="cf-notebook-button" disabled={editor !== null} aria-label={`Edit ${card.title}`} onClick={() => {
@@ -137,11 +140,11 @@ export default function WorkoutCards({ cards, resources, onChange, exerciseId, r
         {compatibleExercises.map(exercise => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}
       </select></label>
       <p className="cf-notebook-meta">A title never changes the linked exercise. New sport drills must stay “Unscheduled drill idea”; linking a different exercise does not make them supported.</p>
-      {(['purpose', 'instructions', 'cues'] as const).map(field => <label key={field}>
-        {field === 'instructions' ? 'Instruction notes (not a training prescription)' : field === 'purpose' ? 'Purpose note' : 'Cue notes'}
+      {(['instructions', 'cues', 'purpose'] as const).map(field => <label key={field}>
+        {field === 'instructions' ? 'Description - how to perform it' : field === 'purpose' ? 'Why this exercise' : 'What to focus on'}
         <textarea rows={field === 'instructions' ? 3 : 2} maxLength={WORKOUT_CARD_LIMITS[field]} value={editor.card[field]} onChange={event => patchCard({ [field]: event.target.value })} />
       </label>)}
-      <p className="cf-notebook-meta">Plain text and paragraphs; no HTML. These fields are notes, not a way to prescribe sets, reps, load or duration.</p>
+      <p className="cf-notebook-meta">Personal notes do not change the prescription. Change execution style through a supported exercise variant, not by writing slower, faster or extra work here.</p>
       <fieldset className="cf-notebook-resources"><legend>Resources needed for this note</legend><div>{RESOURCE_CATALOG.map(resource => <label key={resource.id}>
         <input type="checkbox" checked={editor.card.resources.includes(resource.id)} onChange={event => patchCard({
           resources: event.target.checked ? [...editor.card.resources, resource.id] : editor.card.resources.filter(id => id !== resource.id),

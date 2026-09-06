@@ -5,12 +5,14 @@ import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
+import { PROGRAM_LIBRARY_VERSION } from '../../engine/constants.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
-import { recommendationForExercise } from '../../engine/recommendations.ts'
+import { SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
+import type { ProgramConfigV1 } from '../../engine/types.ts'
 import { RESOURCE_CATALOG, parseResources } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 import {
-  MAX_WORKOUT_CARDS, WORKOUT_CARD_LIMITS, parseWorkoutCards, saveWorkoutCard,
+  MAX_WORKOUT_CARDS, WORKOUT_CARD_LIMITS, parseWorkoutCards, saveWorkoutCard, workoutCardAvailable,
 } from './workout-cards.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 
@@ -20,7 +22,35 @@ function card(change: Partial<WorkoutCard> = {}): WorkoutCard {
     purpose: '', instructions: '', cues: '', resources: [], source: 'user', status: 'draft',
     ...change,
   }
+
 }
+
+test('card availability preserves legacy support guards and uses exact metadata in program mode', () => {
+  assert.equal(workoutCardAvailable('back-squat', ['barbell']), false)
+  assert.equal(workoutCardAvailable('back-squat', ['barbell', 'rack']), true)
+  assert.equal(workoutCardAvailable('bench-press', ['barbell']), false)
+  assert.equal(workoutCardAvailable('bench-press', ['barbell', 'bench']), true)
+  assert.equal(workoutCardAvailable('hip-thrust', ['barbell']), false)
+  assert.equal(workoutCardAvailable('hip-thrust', ['barbell', 'bench']), true)
+  assert.equal(workoutCardAvailable('pull-up', []), false)
+  assert.equal(workoutCardAvailable('pull-up', ['pull_up_bar']), true)
+  assert.equal(workoutCardAvailable('dumbbell-row', ['dumbbell']), true)
+  const program: ProgramConfigV1 = {
+    version: 1,
+    libraryVersion: PROGRAM_LIBRARY_VERSION,
+    goal: 'strength',
+    resources: ['bodyweight', 'barbell', 'bench'],
+    conditioningBaselines: [],
+  }
+  assert.equal(workoutCardAvailable('bench-press', ['barbell', 'bench'], program), false)
+  assert.equal(workoutCardAvailable('bodyweight-squat', [], program), false)
+  assert.equal(workoutCardAvailable('dumbbell-row', ['dumbbell'], {
+    ...program, resources: ['bodyweight', 'dumbbell'],
+  }), false)
+  assert.equal(workoutCardAvailable('dumbbell-row', ['dumbbell', 'bench'], {
+    ...program, resources: ['bodyweight', 'bench', 'dumbbell'],
+  }), true)
+})
 
 test('concurrent editors cannot overwrite a newer saved card or resurrect a removed card', () => {
   const original = card()
@@ -60,7 +90,8 @@ test('reference card parser rejects missing, extra, prescription and prototype f
   for (const key of [
     'sets', 'reps', 'weight', 'load', 'rpe', 'duration', 'durationMin', 'quantity',
     'placement', 'day', 'date', 'time', 'startAt', 'cost', 'coefficients', 'exercise',
-    'approved', 'safe', '__proto__', 'constructor', 'prototype',
+    'approved', 'safe', 'tempo', 'executionStyle', 'profile', 'profileId', 'prescription', 'dose',
+    'targetRPE', '__proto__', 'constructor', 'prototype',
   ]) {
     assert.throws(() => parseWorkoutCards([{ ...card(), [key]: 1 }]), /extra fields/i, key)
   }
@@ -117,13 +148,15 @@ test('card text is bounded plain text without HTML, control characters or silent
 
 test('only supported non-high-skill exercise identities or null can be linked', () => {
   for (const exercise of DEFAULT_LIBRARY.exercises) {
-    let supported = true
-    try { recommendationForExercise(exercise.id) } catch { supported = false }
-    if (supported && !exercise.highSkill) {
+    const supported = !exercise.highSkill && exercise.template && exercise.profile && exercise.requirements
+    if (supported) {
       assert.equal(parseWorkoutCards([card({ exerciseId: exercise.id })])[0].exerciseId, exercise.id)
     } else {
       assert.throws(() => parseWorkoutCards([card({ exerciseId: exercise.id })]), /supported/i)
     }
+  }
+  for (const drill of SUPPORTED_SPORT_DRILLS) {
+    assert.equal(parseWorkoutCards([card({ exerciseId: drill.id })])[0].exerciseId, drill.id)
   }
   for (const exerciseId of ['invented-drill', 'snatch', '__proto__', 'constructor', '', 4, {}, ['push-up']]) {
     assert.throws(() => parseWorkoutCards([{ ...card(), exerciseId }]), /supported/i)
@@ -232,6 +265,17 @@ test('native notebook renders identity and provenance separately without form or
       assert.match(html, /&lt;script&gt;/)
       assert.doesNotMatch(html, /<script|href="javascript:|<img/)
     })
+    await t.test('description, focus and purpose remain readable personal content', () => {
+      const html = render([card({
+        instructions: 'Use the execution shown in the prescription.',
+        cues: 'Keep a balanced stance.',
+        purpose: 'This is my strength-support movement.',
+      })])
+      assert.match(html, /Description/)
+      assert.match(html, /What to focus on/)
+      assert.match(html, /Why this exercise/)
+      assert.match(html, /Use the execution shown in the prescription/)
+    })
     await t.test('filtering does not expose unrelated cards and read-only removes editing controls', () => {
       const cards = [card(), card({ id: 'another-note', exerciseId: 'push-up', title: 'Other exercise note' })]
       const before = structuredClone(cards)
@@ -241,15 +285,15 @@ test('native notebook renders identity and provenance separately without form or
       assert.deepEqual(cards, before)
     })
     await t.test('missing explicit and exercise-specific resources are named, without hiding the draft', () => {
-      const note = card({ exerciseId: 'bench-press', resources: ['rower', 'cones'] })
-      const html = render([note], { resources: ['barbell', 'rower'] })
-      assert.match(html, /Bench press/)
+      const note = card({ exerciseId: 'dumbbell-bench-press-fast-concentric', resources: ['rower', 'cones'] })
+      const html = render([note], { resources: ['dumbbell', 'rower'] })
+      assert.match(html, /Fast-intent DB bench press/)
       assert.match(html, /Unavailable for use/)
       assert.match(html, /Missing: Bench, Cones/)
       assert.match(html, /keep and edit this as a draft/)
       assert.match(html, /Edit/)
       assert.doesNotMatch(html, /Use note|Use drill|Add to plan/)
-      assert.doesNotMatch(render([note], { resources: ['barbell', 'bench', 'rower', 'cones'] }), /Unavailable for use/)
+      assert.doesNotMatch(render([note], { resources: ['dumbbell', 'bench', 'rower', 'cones'] }), /Unavailable for use/)
       assert.match(render([card({ exerciseId: 'pull-up' })]), /Missing: Pull-up bar/)
       assert.match(render([card({ exerciseId: 'back-squat' })]), /Missing: Barbell &amp; plates, Squat rack/)
     })

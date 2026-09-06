@@ -1,4 +1,4 @@
-import type { Day, Equipment, ExerciseObservation, PlanWeekInput, Quality, Session, SessionLog, WeekPlan } from '../../engine/types.ts'
+import type { Day, Equipment, ExerciseObservation, PlanWeekInput, ProgramConfigV1, Quality, Session, SessionLog, WeekPlan } from '../../engine/types.ts'
 import type { ResourceId } from './equipment.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 
@@ -29,6 +29,7 @@ export interface CampaignDraft {
   weeklyTimeBudgetMin: number
   equipment: Equipment[]
   resources?: ResourceId[]
+  program?: ProgramConfigV1
   exercises: ExerciseObservation[]
   confirmed: boolean
   recommendedSetup?: RecommendedSetup
@@ -47,6 +48,11 @@ export interface CampaignWeek {
   changes: CalendarChange[]
 }
 
+export interface CampaignRevision {
+  weekIndex: number
+  draft: CampaignDraft
+}
+
 export interface SetDraft {
   weight: string
   reps: string
@@ -63,6 +69,7 @@ export interface CampaignState {
   selectedWeek: number
   setDrafts: Record<string, SetDraft>
   cards?: WorkoutCard[]
+  revisions?: CampaignRevision[]
 }
 
 export type CalendarAction =

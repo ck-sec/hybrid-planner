@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import type { AthleteState, Goal, PlanWeekInput, Session, SessionLog } from '../engine/types.ts'
-import { DEFAULT_LIBRARY } from '../engine/library.ts'
+import { LEGACY_LIBRARY as DEFAULT_LIBRARY } from '../engine/library.ts'
 import BlockSetup, { NumericField } from './BlockSetup.tsx'
 import { numberFrom } from './form-values.ts'
 import ModelWeekView from './ModelWeekView.tsx'

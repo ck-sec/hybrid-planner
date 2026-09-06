@@ -1,18 +1,23 @@
 import {
-  AGGRESSIVENESS_VOLUME_FRACTION, ENGINE_VERSION, LIMITS, POLICY_VERSION, RECOMMENDATION_POLICY, SAFETY,
+  AGGRESSIVENESS_VOLUME_FRACTION, ENGINE_VERSION, LIMITS, POLICY_VERSION, PROGRAM_POLICY,
+  RECOMMENDATION_POLICY, SAFETY,
 } from './constants.ts'
 import { addDays, dayNumber } from './dates.ts'
 import { predictSessionLoad } from './load.ts'
-import { latestPerformance } from './observations.ts'
+import {
+  hasCleanBlockObservation, hasCleanThrowObservation, latestPerformance, sessionBlockOverrunCount,
+} from './observations.ts'
 import { scoreSessions } from './scoring.ts'
 import { checkSafety } from './safety.ts'
+import { exerciseMetadata, resolvedConditioningBaselines } from './program.ts'
 import type {
-  CommitmentSession, PlanWeekInput, Session, StrengthPrescription, WeekPlan,
+  PlanWeekInput, Session, StrengthPrescription, WeekPlan, WorkoutBlock,
 } from './types.ts'
 import { InputError, parsePlanWeekInput } from './validation.ts'
 
 /** Templates ask for block-frozen pattern assignments, never a hardcoded exercise name. */
 export function requestedSessions(input: PlanWeekInput): Session[] {
+  if (input.block.program) return requestedProgramSessions(input)
   const { athlete, block, weekIndex, library } = input
   const baseline = athlete.baseline
   const weekStart = addDays(block.startDate, weekIndex * 7)
@@ -85,18 +90,135 @@ export function requestedSessions(input: PlanWeekInput): Session[] {
   return sessions
 }
 
-export function fixedSessions(input: PlanWeekInput): CommitmentSession[] {
+function completedBlock(input: PlanWeekInput, exerciseId: string, unit: 'reps' | 'seconds'): boolean {
+  return hasCleanBlockObservation(input, exerciseId, unit)
+}
+
+function requestedProgramSessions(input: PlanWeekInput): Session[] {
+  const { athlete, block, weekIndex, library } = input
+  const weekStart = addDays(block.startDate, weekIndex * 7)
+  const phase = block.phases.find(item => item.startWeekIndex <= weekIndex && item.endWeekIndex >= weekIndex)
+  if (!phase || !block.workoutTemplates) throw new InputError(['The frozen program has no template for this week.'])
+  const fraction = Math.min(
+    phase.volumeFraction,
+    AGGRESSIVENESS_VOLUME_FRACTION[athlete.aggressiveness],
+    weekIndex === 0 ? PROGRAM_POLICY.firstWeekFraction : 1,
+  )
+  const sessions: Session[] = []
+  for (const baseline of resolvedConditioningBaselines(athlete)) {
+    const totalMinutes = Math.floor(baseline.weeklyMinutes * fraction)
+    for (let index = 0; index < baseline.sessionsPerWeek; index++) {
+      const minutes = Math.min(
+        baseline.longestSessionMinutes,
+        Math.floor(totalMinutes / baseline.sessionsPerWeek) + (index < totalMinutes % baseline.sessionsPerWeek ? 1 : 0),
+      )
+      if (minutes < 1) continue
+      const modality = baseline.modality
+      const discipline = modality === 'run_road' || modality === 'run_trail' ? 'run'
+        : modality === 'bike_road' || modality === 'bike_gravel' ? 'bike' : 'sport'
+      const session: Session = {
+        id: `conditioning-${modality}-${index + 1}-${weekStart}`,
+        kind: 'conditioning', discipline, modality, date: weekStart,
+        startTime: athlete.defaultStartTime, durationMin: minutes,
+        predictedLoad: { systemic: 0, structural: 0 },
+        conditioningPrescription: { intent: 'easy', effort: 'conversational' },
+        pinned: false, isCalibration: weekIndex === 0, reason: '',
+      }
+      session.predictedLoad = predictSessionLoad(session, athlete, library)
+      sessions.push(session)
+    }
+  }
+  for (let index = 0; index < athlete.baseline.liftsPerWeek; index++) {
+    const chosen = block.workoutTemplates[(weekIndex * athlete.baseline.liftsPerWeek + index) % block.workoutTemplates.length]!
+    const blocks: WorkoutBlock[] = chosen.exerciseIds.map((exerciseId, blockIndex) => {
+      const exercise = library.exercises.find(item => item.id === exerciseId)
+      if (!exercise?.profile) throw new InputError([`Frozen exercise ${exerciseId} has no reviewed profile.`])
+      const dose = exercise.profile.prescription
+      const sets = Math.max(1, Math.floor(dose.sets * fraction))
+      const execution = exerciseMetadata(exerciseId).execution
+      if (execution.style === 'ballistic_logging_only') {
+        throw new InputError([`Frozen exercise ${exerciseId} is logging-only and cannot be prescribed.`])
+      }
+      if (dose.unit === 'reps') {
+        const latest = latestPerformance(input, exerciseId)
+        return {
+          unit: 'reps', exerciseId, sets, reps: dose.reps, targetRPE: dose.targetRPE,
+          role: blockIndex === 0 ? 'anchor' : 'accessory',
+          executionStyle: execution.style,
+          ...(latest && latest.reps === dose.reps && latest.actualRPE === dose.targetRPE
+            ? { suggestedWeightKg: latest.weightKg } : {}),
+        }
+      }
+      return {
+        unit: 'seconds', exerciseId, sets, seconds: dose.seconds,
+        role: exercise.template === 'mobility' ? 'mobility' : 'carry',
+        executionStyle: 'controlled',
+      }
+    })
+    let workUnits = blocks.reduce((sum, block) => sum + ('sets' in block ? block.sets : 0), 0)
+    let repetitions = blocks.reduce((sum, block) =>
+      sum + (block.unit === 'reps' ? block.sets * block.reps : 0), 0)
+    while (workUnits > PROGRAM_POLICY.maxSessionWorkUnits || repetitions > PROGRAM_POLICY.maxSessionRepetitions) {
+      const block = [...blocks].reverse().find(item => item.unit !== 'throws' && item.sets > 1)
+      if (!block || block.unit === 'throws') break
+      block.sets--
+      workUnits--
+      if (block.unit === 'reps') repetitions -= block.reps
+    }
+    const session: Session = {
+      id: `workout-${index + 1}-${weekStart}`,
+      kind: 'workout', discipline: 'strength', modality: 'lifting', label: chosen.label,
+      blocks, date: weekStart, startTime: athlete.defaultStartTime,
+      durationMin: Math.max(1, Math.floor(athlete.baseline.liftDurationMin * fraction)),
+      predictedLoad: { systemic: 0, structural: 0 }, pinned: false,
+      isCalibration: blocks.some(block => block.unit !== 'throws'
+        && !completedBlock(input, block.exerciseId, block.unit)),
+      reason: '',
+    }
+    session.predictedLoad = predictSessionLoad(session, athlete, library)
+    sessions.push(session)
+  }
+  return sessions
+}
+
+function cleanThrowCalibration(input: PlanWeekInput, commitmentId: string): boolean {
+  return hasCleanThrowObservation(input, commitmentId)
+}
+
+export function fixedSessions(input: PlanWeekInput): Session[] {
   const weekStart = addDays(input.block.startDate, input.weekIndex * 7)
   return [...input.block.goal.fixedCommitments]
     .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-    .map((commitment, index) => ({
-      id: `fixed-${index + 1}-${weekStart}`,
-      kind: 'commitment', discipline: commitment.discipline, modality: commitment.modality,
-      date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
-      durationMin: commitment.durationMin, predictedLoad: { ...commitment.estimatedLoad },
-      label: commitment.label, pinned: true, isCalibration: false,
-      reason: 'An established commitment. Its time and workload are not changed by the optimizer.',
-    }))
+    .map((commitment, index): Session => {
+      const base = {
+        id: `fixed-${index + 1}-${weekStart}`,
+        date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+        durationMin: commitment.durationMin, predictedLoad: { ...commitment.estimatedLoad },
+        label: commitment.label, pinned: true,
+        reason: 'An established commitment. Its time and workload are not changed by the optimizer.',
+      }
+      const program = input.block.program
+      if (program?.goal === 'dodgeball' && program.comfortableThrowsPerPractice !== undefined
+        && commitment.discipline === 'sport' && commitment.modality === 'court_sport') {
+        const calibrated = cleanThrowCalibration(input, commitment.id)
+        const comfortable = program.comfortableThrowsPerPractice!
+        const throws = calibrated ? comfortable : Math.max(1, Math.floor(comfortable * PROGRAM_POLICY.throwingCalibrationFraction))
+        return {
+          ...base, kind: 'workout', discipline: 'sport', modality: 'court_sport',
+          sourceCommitmentId: commitment.id, isCalibration: !calibrated,
+          blocks: [{ unit: 'throws', drillId: 'dodgeball-controlled-target-throw',
+            throws, intent: 'controlled_technique', embedded: true }],
+        }
+      }
+      return {
+        id: `fixed-${index + 1}-${weekStart}`,
+        kind: 'commitment', discipline: commitment.discipline, modality: commitment.modality,
+        date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+        durationMin: commitment.durationMin, predictedLoad: { ...commitment.estimatedLoad },
+        label: commitment.label, pinned: true, isCalibration: false,
+        reason: 'An established commitment. Its time and workload are not changed by the optimizer.',
+      }
+    })
 }
 
 function samePrescription(a: Session, b: Session): boolean {
@@ -114,6 +236,14 @@ function samePrescription(a: Session, b: Session): boolean {
         return item.exerciseId === other.exerciseId && item.sets === other.sets && item.reps === other.reps
           && item.targetRPE === other.targetRPE && item.suggestedWeightKg === other.suggestedWeightKg && item.role === other.role
       })
+  }
+  if (a.kind === 'conditioning' && b.kind === 'conditioning') {
+    return a.conditioningPrescription.intent === b.conditioningPrescription.intent
+      && a.conditioningPrescription.effort === b.conditioningPrescription.effort
+  }
+  if (a.kind === 'workout' && b.kind === 'workout') {
+    return a.label === b.label && a.sourceCommitmentId === b.sourceCommitmentId
+      && JSON.stringify(a.blocks) === JSON.stringify(b.blocks)
   }
   return a.kind === 'commitment' && b.kind === 'commitment' && a.label === b.label
 }
@@ -172,6 +302,21 @@ export function planWeek(rawInput: PlanWeekInput): WeekPlan {
     'Selected exercises without observations use the versioned first-exposure policy, not invented lifting history. Initial sets may be reduced; starting kilograms require your own completed matching set log.',
     `Recommended strength sessions are independently limited to ${RECOMMENDATION_POLICY.maxSessionSets} working sets and ${RECOMMENDATION_POLICY.maxSessionReps} repetitions in total; adding cards never bypasses that cap.`,
   )
+  if (input.block.program) warnings.push(
+    'Opt-in programming uses reviewed hand-authored scheduling estimates, not validated injury-risk coefficients.',
+    'Slow-lowering variants use a fixed reviewed tempo and separate exercise history; the engine assumes no universal optimal tempo and never transfers starting load from the conventional variant.',
+    'Target RPE is a bounded prescription cue, not a precise RIR measurement. Repetition-in-reserve evidence is primarily from experienced adults doing traditional resistance training and ratings become less reliable farther from failure.',
+    'Timed work and controlled throws keep their own units. The user-established throw ceiling is an administrative exposure cap, not a validated injury-safe threshold. Throws stay inside the established practice duration and supplied commitment cost, which cannot isolate throwing fatigue from the rest of practice.',
+  )
+  if (input.block.program) {
+    const overruns = input.context.recentSessions.reduce((count, record) =>
+      count + (record.session.kind === 'workout' && record.log
+        ? sessionBlockOverrunCount(record.session, record.log) : 0), 0)
+    if (overruns) warnings.push(
+      `${overruns} recorded workout block${overruns === 1 ? '' : 's'} exceeded the prescription. `
+      + 'Actual work is retained for load accounting, does not clear calibration, and does not increase future prescriptions.',
+    )
+  }
 
   // Missing mandatory work is never an optimizer option. If it already fails
   // the floor, more sessions cannot repair that conflict.
@@ -242,14 +387,18 @@ export function planWeek(rawInput: PlanWeekInput): WeekPlan {
     reason: [
       session.pinned ? 'Time pinned: the optimizer cannot move this session.' : 'Placed by deterministic finite scoring, then independently checked against the safety floor.',
       ...(penalties.filter(penalty => penalty.affectedSessionIds.includes(session.id)).map(penalty => penalty.explanation)),
-      session.kind === 'commitment' ? 'Existing commitment; the engine did not prescribe this activity.'
+      session.kind === 'commitment'
+        ? 'Existing commitment; the engine did not prescribe this activity.'
+        : session.kind === 'workout' && session.sourceCommitmentId
+          ? 'Existing commitment; any controlled technique block is contained within its established duration and supplied workload, not added to it.'
         : session.kind === 'strength' && input.athlete.recommendedExerciseIds
           ? 'Selected new exercises use the versioned first-exposure dose, within your established session time. Skipped work creates no debt.'
           : 'Work stays within the established baseline. Skipped work creates no debt.',
     ].join(' '),
   }))
   return {
-    engineVersion: ENGINE_VERSION, policyVersion: POLICY_VERSION, libraryVersion: input.library.version,
+    engineVersion: ENGINE_VERSION, policyVersion: input.block.program ? input.block.policyVersion : POLICY_VERSION,
+    libraryVersion: input.block.libraryVersion,
     weekIndex: input.weekIndex, weekStart, phase: phase.kind,
     intent: `${phase.kind} week ${input.weekIndex + 1} of ${input.block.totalWeeks}: established workload bounded; no automatic increases.`,
     sessions, totalScore, penalties, warnings, omitted, safety,

@@ -113,7 +113,7 @@ export default function ModelWeekView({ input, plan, week, disabled, onSaveLog, 
         <div className="day-card-top"><span className="day-name">{day}</span><time className="day-date" dateTime={date}>{formatDay(plan.weekStart, index)}</time></div>
         {!sessions.length && <><h3>Rest / unscheduled</h3><p className="session-detail">No training assigned. No catching up.</p></>}
         {sessions.map(session => <section className="model-session" key={session.id}>
-          <h4>{session.kind === 'run' ? `${session.endurancePrescription.intent === 'long' ? 'Long easy' : 'Easy'} run` : session.kind === 'strength' ? 'Established strength' : session.label}</h4>
+          <h4>{session.kind === 'run' ? `${session.endurancePrescription.intent === 'long' ? 'Long easy' : 'Easy'} run` : session.kind === 'strength' ? 'Established strength' : session.kind === 'conditioning' ? `Easy ${session.modality.replaceAll('_', ' ')}` : session.label}</h4>
           <p className="session-detail">{session.startTime ?? 'Time unknown'} · {session.durationMin} min{session.isCalibration ? ' · calibration' : ''}{session.pinned ? ' · pinned' : ''}</p>
           {session.kind === 'run' && <p className="session-detail">Conversational effort. No pace target or intensity increase.</p>}
           {session.kind === 'strength' && <ul className="prescription-list">{session.strengthPrescription.map(exercise => <li key={exercise.exerciseId}>

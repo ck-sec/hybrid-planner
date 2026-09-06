@@ -3,19 +3,26 @@ import type { FormEvent } from 'react'
 import { addDays } from '../../engine/dates.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { recommendationForExercise } from '../../engine/recommendations.ts'
-import { RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { LIMITS, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { recommendProgram } from '../../engine/program.ts'
 import type { MovementPattern } from '../../engine/types.ts'
 import { buildCampaign, exampleCampaign, normalizeRecommendedDraft, prepareRecommendedSetup } from './model.ts'
-import { MAX_GOAL_TEXT_LENGTH } from './setup-assistant.ts'
+import { GOAL_KIND_LABELS, MAX_GOAL_TEXT_LENGTH, SETUP_QUALITY_LABELS } from './setup-assistant.ts'
+import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import { eventDateBounds, validateSetupDate } from './setup-dates.ts'
 import type { CampaignDraft, CampaignState, RecommendedSetup } from './types.ts'
 import { CourtArt, DayPicker, NumberField } from './components.tsx'
 import Icon from './Icons.tsx'
 import EquipmentPicker from './EquipmentPicker.tsx'
-import { equipmentForResources, exerciseAvailable, recommendForResources, resourcesForEquipment, resourceLabels } from './equipment.ts'
+import { equipmentForResources, exerciseAvailable, programResources, recommendForResources, resourcesForEquipment, resourceLabels } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 import WorkoutCards from './WorkoutCards.tsx'
 import { parseWorkoutCards } from './workout-cards.ts'
+import ExerciseGuide from './ExerciseGuide.tsx'
+import { exerciseGuidance } from './exercise-guidance.ts'
+import ExercisePoolEditor from './ExercisePoolEditor.tsx'
+import { programmingChoices, selectProgramExercises } from './programming.ts'
+import { ConditioningOptions, PracticeBlockOptions, ProgrammingChoice } from './ProgrammingOptions.tsx'
 
 const stepOrder = [6, 1, 2, 3, 4, 5]
 const steps = ['Welcome', 'Your direction', 'Your rhythm', 'Your base', 'Your week', 'Ready to start', 'Your equipment']
@@ -56,6 +63,19 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
     })
   }
   const changeResources = (selected: ResourceId[]) => {
+    if (draft.program) {
+      try {
+        const candidate = { ...draft, resources: selected, equipment: equipmentForResources(selected) }
+        const allowed = new Set(programmingChoices(candidate).map(item => item.exercise.id))
+        const equipped = setup.exerciseIds.filter(id => allowed.has(id))
+        const exerciseIds = equipped.length >= PROGRAM_POLICY.minSelectedExercises ? equipped : [...recommendProgram(programResources(selected), draft.program.goal).exerciseIds]
+        patch({ resources: selected, equipment: equipmentForResources(selected) }, { exerciseIds })
+        if (equipped.length !== setup.exerciseIds.length) setIssue('The pool was updated for your equipment. Review each movement in Your base; personal notes were kept.')
+      } catch (error) {
+        setIssue(error instanceof Error ? error.message : 'Equipment changes could not be applied.')
+      }
+      return
+    }
     const equipped = setup.exerciseIds.filter(id => exerciseAvailable(id, selected))
     const removed = setup.exerciseIds.length - equipped.length
     const wasRecommended = JSON.stringify(setup.exerciseIds) === JSON.stringify(recommendForResources(resources))
@@ -75,7 +95,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
   function forward(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (state.step === 1 && setup?.mode === 'assisted' && !draft.goalLabel.trim()) {
-      setIssue('Review your goal using an API or imported chat reply, or choose the classic run + lift plan.')
+      setIssue('Review your goal with AI, set its details yourself below, or choose the classic run + lift plan.')
       return
     }
     if (state.step === 1 && setup?.mode === 'assisted') {
@@ -93,7 +113,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
       const current = prepareRecommendedSetup(previous)
       if (current.step === 6) return {
         ...current, step: 1, draft: { ...current.draft, resources, equipment: equipmentForResources(resources),
-          recommendedSetup: { ...current.draft.recommendedSetup!, exerciseIds: current.draft.recommendedSetup!.exerciseIds.filter(id => exerciseAvailable(id, resources)) } },
+          recommendedSetup: { ...current.draft.recommendedSetup!, exerciseIds: current.draft.recommendedSetup!.exerciseIds.filter(id => current.draft.program ? programmingChoices(current.draft).some(item => item.exercise.id === id) : exerciseAvailable(id, resources)) } },
       }
       return current.step === 5 ? buildCampaign(current) : { ...current, step: current.step + 1 }
     })
@@ -117,7 +137,8 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
       {state.step === 6 && <section className="cf-stack">
         <div><p className="cf-kicker">START WITH WHAT YOU HAVE</p><h1>Your space.<br /><em>Your equipment.</em></h1><p className="cf-lead">Choose a starting point, then adjust the details. Every recommendation and AI brief uses this selection.</p></div>
         <EquipmentPicker value={resources} onChange={changeResources} />
-        <p className="cf-small">Cardio and sport equipment are included in your brief. This engine still schedules easy running, strength and established practices; selecting a rower or SkiErg does not add or replace training.</p>
+        <ProgrammingChoice draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
+        <p className="cf-small">Equipment never adds training by itself. Template programming can include rowing, cycling or SkiErg work only after you confirm an established routine for that modality.</p>
       </section>}
       {state.step === 1 && <section className="cf-stack">
         <div><p className="cf-kicker">CHOOSE YOUR STARTING POINT</p><h1>A ready-made base.<br /><em>Or your own brief.</em></h1></div>
@@ -132,6 +153,16 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
           {dateBounds.issue && <p role="status">{dateBounds.issue}</p>}
           <button className="cf-button cf-primary" type="button" disabled={!setup.goalText.trim()} onClick={onAI}><Icon name="spark" />{draft.goalLabel ? 'Refine my goal' : 'Shape my goal'}<Icon name="arrow" size={18} /></button>
           <p className="cf-small">{connected ? 'AI connection is held in this tab only. Nothing is sent without confirmation.' : 'Use a local model or your own API. You review its interpretation before anything is applied.'}</p>
+          <details className="cf-details"><summary>Set this goal without AI</summary><div className="cf-stack">
+            <p className="cf-small">The same planning engine works without a chat or API key. Choose your own goal and priorities; exercise quantities still come from the engine.</p>
+            <label className="cf-field">Goal name<input value={draft.goalLabel} maxLength={CAMPAIGN_TEXT_LIMITS.goalLabel} onChange={event => patch({ goalLabel: event.target.value })} /></label>
+            <label className="cf-field">Location (optional)<input value={draft.location} maxLength={CAMPAIGN_TEXT_LIMITS.location} onChange={event => patch({ location: event.target.value })} /></label>
+            <fieldset className="cf-quick-choice"><legend>Goal focus</legend><div>{Object.entries(GOAL_KIND_LABELS).map(([kind, label]) => <button type="button" key={kind} aria-pressed={draft.goalKind === kind} onClick={() => patch({ goalKind: kind as CampaignDraft['goalKind'] })}>{label}</button>)}</div></fieldset>
+            <fieldset className="cf-quick-choice"><legend>Training priorities</legend><div>{Object.entries(SETUP_QUALITY_LABELS).map(([quality, label]) => {
+              const id = quality as CampaignDraft['priorities'][number]
+              return <button type="button" key={id} aria-pressed={draft.priorities.includes(id)} disabled={draft.priorities.length === 1 && draft.priorities.includes(id)} onClick={() => patch({ priorities: draft.priorities.includes(id) ? draft.priorities.filter(item => item !== id) : [...draft.priorities, id] })}>{label}</button>
+            })}</div></fieldset>
+          </div></details>
           {connected && <button className="cf-text-button" type="button" onClick={onDisconnect}>Disconnect AI</button>}
           {draft.goalLabel && <div className="cf-goal-review"><p className="cf-kicker">{state.sample ? 'SAMPLE GOAL BRIEF' : 'YOUR REVIEWED GOAL'}</p><h2>{draft.goalLabel}</h2>{draft.location && <p>{draft.location}</p>}<p className="cf-small">Review your goal and the date selected above before continuing.</p></div>}
         </>}
@@ -140,11 +171,17 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
         <div><p className="cf-kicker">NO WEEKLY MATHS</p><h1>What's a normal<br /><em>session for you?</em></h1><p className="cf-lead">Think about recent, comfortable training. Approximate is fine—we'll do the adding up.</p></div>
         <div className="cf-input-group cf-rhythm-group"><h3><Icon name="run" />Your runs</h3><QuickChoice label="A usual easy run lasts about..." value={setup.typicalRunMinutes} options={[15, 20, 30, 45, 60]} unit="min" onChange={typicalRunMinutes => patch({}, { typicalRunMinutes })} /><QuickChoice label="How many runs in a normal week?" value={draft.runsPerWeek} options={[1, 2, 3, 4]} unit="runs" onChange={runsPerWeek => patch({ runsPerWeek })} /><details className="cf-details"><summary>My usual run is a different length</summary><NumberField label="Typical easy run" value={setup.typicalRunMinutes} min={1} max={150} suffix="min" required={false} onChange={typicalRunMinutes => patch({}, { typicalRunMinutes })} /></details></div>
         <div className="cf-input-group cf-rhythm-group"><h3><Icon name="dumbbell" />Your lifting</h3><QuickChoice label="How many lifting sessions is normal for you?" value={draft.liftsPerWeek} options={[1, 2, 3]} unit="lifts" onChange={liftsPerWeek => patch({ liftsPerWeek })} /><QuickChoice label="About how long are you usually in the gym?" value={draft.liftDurationMin} options={[20, 30, 45, 60]} unit="min" onChange={liftDurationMin => patch({ liftDurationMin })} /></div>
+        <ConditioningOptions draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
         <details className="cf-details"><summary>Have Garmin / FIT / Apple training history?</summary><p>On-device activity import is next. You won't need to calculate a weekly total when that arrives either. This build uses the simple answers above.</p></details>
       </section>}
       {state.step === 3 && <section className="cf-stack">
         <div><p className="cf-kicker">A BASE, NOT A BLANK PAGE</p><h1>Your starting<br /><em>lineup.</em></h1><p className="cf-lead">A recommended strength routine for the equipment you have. Keep it, swap a movement, or ask AI to tailor the cards.</p></div>
         <details className="cf-details"><summary>Equipment: {resourceLabels(resources).join(', ') || 'No kit'}</summary><EquipmentPicker value={resources} onChange={changeResources} /></details>
+        <ProgrammingChoice draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
+        {draft.program ? <ExercisePoolEditor choices={programmingChoices(draft)} selected={setup.exerciseIds} maxExercises={LIMITS.maxProgramExercises}
+          goal={draft.goalLabel} resources={resources} cards={state.cards ?? []} program={draft.program}
+          onChange={ids => { try { const next = selectProgramExercises(draft, ids); update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) })); setIssue('') } catch (error) { setIssue(error instanceof Error ? error.message : 'The pool could not be updated.') } }}
+          onCards={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} /> : <>
         <div className="cf-recommendation-list">{setup.exerciseIds.map((id, index) => {
           const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === id)
           if (!exercise) throw new Error('A recommended exercise is missing from the checked library. Review the saved setup.')
@@ -152,7 +189,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
           const alternatives = DEFAULT_LIBRARY.exercises.filter(item => (RECOMMENDATION_POLICY.supportedExerciseIds as readonly string[]).includes(item.id) && item.pattern === exercise.pattern && !setup.exerciseIds.includes(item.id) && exerciseAvailable(item.id, resources))
           return <article key={id} className={`cf-recommendation-card cf-pattern-${exercise.pattern}`}>
             <div className="cf-movement-tile"><span>{String(index + 1).padStart(2, '0')}</span><Icon name={exercise.pattern === 'core' || exercise.pattern === 'rotational' ? 'court' : 'dumbbell'} size={32} /></div>
-            <div className="cf-recommendation-copy"><p className="cf-kicker">{patterns[exercise.pattern]}</p><h2>{exercise.name}</h2><p>Up to {prescription.sets} sets × {prescription.reps} reps<span className="cf-mid-dot">·</span>Easy starting effort</p><span className="cf-small">No starting weight assumed</span></div>
+            <div className="cf-recommendation-copy"><p className="cf-kicker">{patterns[exercise.pattern]}</p><h2>{exercise.name}</h2><p>Up to {prescription.sets} sets × {prescription.reps} reps<span className="cf-mid-dot">·</span>Easy starting effort</p><span className="cf-small">No starting weight assumed</span><ExerciseGuide name={exercise.name} guide={exerciseGuidance(exercise, { goal: draft.goalLabel })} /></div>
             {alternatives.length > 0 && <button className="cf-swap-button" type="button" aria-label={`Swap ${exercise.name}`} onClick={() => setSwapping(swapping === id ? null : id)}><Icon name="move" size={16} /><span>Swap</span></button>}
             <div className="cf-inline"><button type="button" className="cf-text-button" onClick={() => setEditingExercise(editingExercise === id ? null : id)}>Customise {exercise.name}</button><button type="button" className="cf-text-button" disabled={setup.exerciseIds.length <= 1} onClick={() => patch({}, { exerciseIds: setup.exerciseIds.filter(item => item !== id) })}>Remove {exercise.name}</button></div>
             {swapping === id && <div className="cf-swap-options"><p className="cf-small">Same movement pattern. Fresh weight calibration.</p>{alternatives.map(alternative => <button type="button" key={alternative.id} onClick={() => { patch({}, { exerciseIds: setup.exerciseIds.map(current => current === id ? alternative.id : current) }); setSwapping(null) }}>{alternative.name}<Icon name="chevron" size={15} /></button>)}</div>}
@@ -160,7 +197,8 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
         })}</div>
         {editingExercise && <WorkoutCards cards={state.cards ?? []} resources={resources} exerciseId={editingExercise} onChange={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} />}
         <details className="cf-details"><summary>Add an equipped exercise</summary><div className="cf-inline">{DEFAULT_LIBRARY.exercises.filter(item => !setup.exerciseIds.includes(item.id) && (RECOMMENDATION_POLICY.supportedExerciseIds as readonly string[]).includes(item.id) && exerciseAvailable(item.id, resources)).map(item => <button type="button" className="cf-button cf-secondary" key={item.id} disabled={setup.exerciseIds.length >= RECOMMENDATION_POLICY.maxExercises} onClick={() => patch({}, { exerciseIds: [...setup.exerciseIds, item.id] })}>{item.name}</button>)}</div><p className="cf-small">Up to {RECOMMENDATION_POLICY.maxExercises} supported cards. Quantities come from the engine, not custom text.</p></details>
-        <details className="cf-details"><summary>Personal notes &amp; unscheduled drill ideas ({state.cards?.length ?? 0})</summary><WorkoutCards cards={state.cards ?? []} resources={resources} onChange={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} /></details>
+        </>}
+        <details className="cf-details"><summary>Personal notes &amp; unscheduled drill ideas ({state.cards?.length ?? 0})</summary><WorkoutCards cards={state.cards ?? []} resources={resources} program={draft.program} onChange={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} /></details>
         <div className="cf-inline-note"><Icon name="leaf" /><p>You'll find comfortable starting weights in your first session. No old weight, rep or effort records needed.</p></div>
         <button type="button" className="cf-ai-teaser" onClick={onAI}><Icon name="spark" /><div><strong>Shape sessions with my AI</strong><span>Copy a chat brief or use your connected API. Review once, then apply.</span></div><Icon name="chevron" size={18} /></button>
         <p className="cf-small">AI can choose compatible exercises from the checked library. The engine sets the dose and checks scheduling costs. It can't invent an exercise with unknown fatigue data.</p>
@@ -171,6 +209,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
         <label className="cf-field">Block starts (Monday)<input type="date" value={draft.startDate} required onChange={event => patch({ startDate: event.target.value })} /></label>
         <DayPicker label="Days you can train" value={draft.availableDays} onChange={availableDays => patch({ availableDays })} />
         <details className="cf-details" open={draft.practiceDays.length > 0}><summary>{draft.goalKind === 'dodgeball' ? 'Your dodgeball practice' : 'Add fixed sport practices'}</summary><div className="cf-stack cf-practice-fields"><DayPicker label="Practice days" value={draft.practiceDays} onChange={practiceDays => patch({ practiceDays })} />{draft.practiceDays.length > 0 && <div className="cf-two"><label className="cf-field">Starts at<input type="time" value={draft.practiceTime} required onChange={event => patch({ practiceTime: event.target.value })} /></label><NumberField label="Usual practice length" value={draft.practiceDuration} min={1} max={240} suffix="min" onChange={practiceDuration => patch({ practiceDuration })} /></div>}</div></details>
+        <PracticeBlockOptions draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
         <div className="cf-time-summary"><Icon name="calendar" /><div><strong>Roughly {Math.floor(draft.weeklyTimeBudgetMin / 60)}h {draft.weeklyTimeBudgetMin % 60 || ''}{draft.weeklyTimeBudgetMin % 60 ? 'm' : ''} in a normal week</strong><p>Calculated from your session choices, including practice. We'll stay within that time and leave room for rest.</p><button type="button" className="cf-text-button" onClick={() => update(previous => ({ ...previous, step: 2 }))}>Change my usual sessions <Icon name="back" size={15} /></button></div></div>
       </section>}
       {state.step === 5 && <section className="cf-stack">

@@ -1,0 +1,8 @@
+.cf-exercise-guide { margin-top: 12px; border-top: 1px solid var(--cf-line); padding-top: 10px; }
+.cf-exercise-guide summary { min-height: 44px; padding-block: 5px; cursor: pointer; font-weight: 650; font-size: .85rem; }
+.cf-exercise-guide summary span { display: block; margin-top: 4px; font-size: .73rem; font-weight: 400; color: var(--cf-muted); }
+.cf-exercise-guide dl { margin: 14px 0 0; font-size: .85rem; line-height: 1.6; }
+.cf-exercise-guide dt { margin-top: 12px; font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: var(--cf-muted); }
+.cf-exercise-guide dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.cf-exercise-guide ul { margin: 0; padding-left: 18px; }
+.cf-exercise-guide li + li { margin-top: 3px; }

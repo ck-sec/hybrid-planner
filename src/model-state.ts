@@ -1,6 +1,6 @@
 import { generateBlock } from '../engine/block.ts'
 import { ENGINE_VERSION, LIBRARY_VERSION, POLICY_VERSION } from '../engine/constants.ts'
-import { DEFAULT_LIBRARY } from '../engine/library.ts'
+import { LEGACY_LIBRARY as DEFAULT_LIBRARY } from '../engine/library.ts'
 import { planWeek } from '../engine/planner.ts'
 import { checkSafety } from '../engine/safety.ts'
 import type { AthleteState, Block, CompletedWeek, Goal, PlanWeekInput, PlanningContext, RecentSession, SafetyHold, Session, SessionLog, WeekPlan } from '../engine/types.ts'

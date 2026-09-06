@@ -1,15 +1,18 @@
-import { LIMITS, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { LIMITS, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { dayNumber, parseISODate } from '../../engine/dates.ts'
-import { DEFAULT_LIBRARY } from '../../engine/library.ts'
+import { DEFAULT_LIBRARY, LEGACY_LIBRARY } from '../../engine/library.ts'
+import { availableSportDrills, recommendProgram } from '../../engine/program.ts'
 import { recommendationForExercise } from '../../engine/recommendations.ts'
-import type { Equipment, Exercise, Quality } from '../../engine/types.ts'
+import type { Equipment, Exercise, ProgramConfigV1, Quality } from '../../engine/types.ts'
 import type { CampaignDraft, GoalKind } from './types.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import {
   AssistantError, buildAssistantJsonBody, requestAssistantJson,
 } from './assistant.ts'
 import type { AssistantConfig } from './assistant.ts'
-import { exerciseAvailable, parseResources } from './equipment.ts'
+import {
+  availableProgramExercises, exerciseAvailable, maxExerciseSelection, parseResources,
+} from './equipment.ts'
 
 export const MAX_GOAL_TEXT_LENGTH = LIMITS.maxNotesLength
 export const MAX_EXERCISE_REFINEMENT_LENGTH = 500
@@ -56,7 +59,7 @@ const equipmentKinds: readonly Equipment[] = [
 const proposalKeys = ['goalKind', 'label', 'location', 'eventDate', 'priorities', 'exerciseIds'] as const
 
 export function eligibleSetupExercises(equipment: readonly Equipment[]): readonly Exercise[] {
-  return DEFAULT_LIBRARY.exercises.filter(exercise => !exercise.highSkill
+  return LEGACY_LIBRARY.exercises.filter(exercise => !exercise.highSkill
     && exercise.equipment.every(item => item === 'none' || equipment.includes(item))
     && supportsRecommendation(exercise.id))
 }
@@ -76,6 +79,53 @@ function validatedStartDate(draft: CampaignDraft): string {
   }
 }
 
+function programForDraft(draft: CampaignDraft): ProgramConfigV1 | undefined {
+  return (draft as CampaignDraft & { program?: ProgramConfigV1 }).program
+}
+
+export function maxProposedExercises(draft: CampaignDraft): number {
+  return maxExerciseSelection(programForDraft(draft))
+}
+
+export function minProposedExercises(draft: CampaignDraft): number {
+  return programForDraft(draft) ? PROGRAM_POLICY.minSelectedExercises : 1
+}
+
+function proposalRange(minimum: number, maximum: number): string {
+  return `${minimum === 1 ? 'one' : minimum} to ${maximum}`
+}
+
+function programCatalog(program: ProgramConfigV1) {
+  const exercises = availableProgramExercises([], program).map(metadata => ({
+    kind: 'exercise' as const,
+    id: metadata.id,
+    name: metadata.label,
+    template: metadata.template,
+    requirements: [...metadata.requirements],
+    unit: metadata.unit,
+    profile: {
+      version: metadata.profile.version,
+      prescription: { ...metadata.profile.prescription },
+    },
+    execution: { ...metadata.execution },
+    description: metadata.description,
+    focus: [...metadata.focusCues],
+    purpose: metadata.purpose,
+  }))
+  const drills = availableSportDrills(program.resources).map(drill => ({
+    kind: 'sport_drill' as const,
+    id: drill.id,
+    name: drill.label,
+    requirements: [...drill.requirements],
+    unit: drill.unit,
+    execution: { intent: drill.intent, embeddedOnly: true as const },
+    description: 'A controlled throwing drill that can only be allocated inside an existing fixed sport practice.',
+    focus: ['Use a confirmed safe target and established practice space.'],
+    purpose: 'Provides a reference identity for the engine-owned fixed-practice throwing block.',
+  }))
+  return [...exercises, ...drills]
+}
+
 export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '') {
   const setup = draft.recommendedSetup
   if (!setup || setup.mode !== 'assisted') {
@@ -88,29 +138,55 @@ export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '
     throw new AssistantError(`Keep the exercise-change request to ${MAX_EXERCISE_REFINEMENT_LENGTH} characters or fewer.`)
   }
   validatedStartDate(draft)
-  if (!Array.isArray(draft.equipment) || draft.equipment.length === 0
-    || draft.equipment.some(item => !equipmentKinds.includes(item))) {
+  const program = programForDraft(draft)
+  if (!program && (!Array.isArray(draft.equipment) || draft.equipment.length === 0
+    || draft.equipment.some(item => !equipmentKinds.includes(item)))) {
     throw new AssistantError('Select your available equipment before asking for exercise suggestions.')
   }
   const resources = draft.resources ? parseResources(draft.resources) : undefined
-  const allowed = eligibleSetupExercises(draft.equipment).filter(exercise => !resources || exerciseAvailable(exercise.id, resources))
-  if (!allowed.length) {
+  const allowedCatalog = program
+    ? programCatalog(program)
+    : eligibleSetupExercises(draft.equipment)
+      .filter(exercise => !resources || exerciseAvailable(exercise.id, resources))
+      .map(({ id, name, pattern, equipment }) => ({ id, name, pattern, equipment: [...equipment] }))
+  const allowedExercises = allowedCatalog.filter(item => !('kind' in item) || item.kind === 'exercise')
+  if (!allowedExercises.length) {
     throw new AssistantError('No eligible exercise cards match this equipment. Review your equipment or use the classic setup.')
   }
-  if (!Array.isArray(setup.exerciseIds) || setup.exerciseIds.length > MAX_PROPOSED_EXERCISES
+  const maximum = maxProposedExercises(draft)
+  if (!Array.isArray(setup.exerciseIds) || setup.exerciseIds.length > maximum
     || new Set(setup.exerciseIds).size !== setup.exerciseIds.length
-    || setup.exerciseIds.some(id => typeof id !== 'string' || !DEFAULT_LIBRARY.exercises.some(exercise => exercise.id === id))) {
+    || setup.exerciseIds.some(id => typeof id !== 'string' || (program
+      ? !allowedExercises.some(exercise => exercise.id === id)
+      : !DEFAULT_LIBRARY.exercises.some(exercise => exercise.id === id && supportsRecommendation(id))))) {
     throw new AssistantError('Review your selected exercise cards first; a selection is duplicate, unknown or too large.')
+  }
+  if (program && setup.exerciseIds.length) {
+    try {
+      recommendProgram(program.resources, program.goal, DEFAULT_LIBRARY, setup.exerciseIds, program.includeMobility)
+    } catch {
+      throw new AssistantError('Review your selected program exercises; the selection must form an equipped three-movement program.')
+    }
   }
   return {
     goalText: setup.goalText.trim(),
     requestText: requestText.trim(),
     equipment: [...new Set(draft.equipment)],
     ...(resources ? { resources } : {}),
+    ...(program ? {
+      program: {
+        version: program.version,
+        libraryVersion: program.libraryVersion,
+        goal: program.goal,
+        resources: [...program.resources],
+        conditioningBaselines: program.conditioningBaselines.map(item => ({ ...item })),
+        ...(program.comfortableThrowsPerPractice === undefined
+          ? {} : { comfortableThrowsPerPractice: program.comfortableThrowsPerPractice }),
+        includeMobility: program.includeMobility === true,
+      },
+    } : {}),
     currentExerciseIds: [...setup.exerciseIds],
-    allowedCatalog: allowed.map(({ id, name, pattern, equipment }) => ({
-      id, name, pattern, equipment: [...equipment],
-    })),
+    allowedCatalog,
   }
 }
 
@@ -119,6 +195,8 @@ export function buildGoalProposalRequest(
   requestText = '',
 ) {
   const context = buildSetupAssistantContext(draft, requestText)
+  const minimum = minProposedExercises(draft)
+  const maximum = maxProposedExercises(draft)
   if (purpose !== 'interpret_goal' && purpose !== 'suggest_exercises') {
     throw new AssistantError('Choose goal interpretation or exercise suggestions.')
   }
@@ -140,8 +218,14 @@ export function buildGoalProposalRequest(
         'Never infer a missing day, month or year, resolve “next year”, or guess between ambiguous numeric date formats. Otherwise return the explicit date as YYYY-MM-DD for the user to review.',
         'The app provides a separate date picker. A partial date or no date must not prevent interpreting the goal or suggesting exercise cards; return eventDate:null and continue with the other fields.',
         `priorities must contain distinct IDs from: ${Object.keys(SETUP_QUALITY_LABELS).join(', ')}.`,
-        `exerciseIds must contain one to ${MAX_PROPOSED_EXERCISES} unique IDs drawn ONLY from allowedCatalog. Return the complete proposed selection, not just the changes.`,
+        `exerciseIds must contain ${proposalRange(minimum, maximum)} unique IDs drawn ONLY from allowedCatalog exercise entries (never sport_drill entries). Return the complete proposed selection, not just the changes.`,
         'You may select compatible library cards not currently selected. You may add, keep or swap cards, but cannot invent exercises or include high-skill/ineligible entries.',
+        ...(programForDraft(draft) ? [
+          'The catalog profile, unit and execution fields are immutable engine facts. Do not return them or propose replacements.',
+          'Fast concentric intent is controlled, non-ballistic lifting. Slow lowering and fast-intent variants are separate canonical IDs with independent history.',
+          'Do not prefer an overhead press merely because the goal involves throwing; choose exact compatible movements without claims of guaranteed transfer or injury prevention.',
+          'A sport_drill entry may be described on a reference card, but it must never appear in exerciseIds or create scheduled work.',
+        ] : []),
         'Never output sets, reps, weights, RPE, durations, weekly volume, time budgets, availability, placement, practice days, prescriptions or arbitrary exercise objects.',
         'Baseline quantities remain user-entered. Scheduling and any recommended prescriptions remain deterministic planner decisions after human review.',
       ].join('\n'),
@@ -219,6 +303,8 @@ function parseProposal(
   }
   rejectDuplicateKeys(content)
   const context = buildSetupAssistantContext(draft)
+  const minimum = minProposedExercises(draft)
+  const maximum = maxProposedExercises(draft)
   if (typeof value.goalKind !== 'string' || !Object.hasOwn(GOAL_KIND_LABELS, value.goalKind)) {
     throw new AssistantError('The proposal has an unknown goal classification. Retry with a supported model.')
   }
@@ -230,10 +316,19 @@ function parseProposal(
     || value.priorities.some(item => typeof item !== 'string' || !Object.hasOwn(SETUP_QUALITY_LABELS, item))) {
     throw new AssistantError('The proposal must select distinct priorities from the supported quality catalog.')
   }
-  if (!Array.isArray(value.exerciseIds) || value.exerciseIds.length < 1 || value.exerciseIds.length > MAX_PROPOSED_EXERCISES
+  if (!Array.isArray(value.exerciseIds) || value.exerciseIds.length < minimum || value.exerciseIds.length > maximum
     || new Set(value.exerciseIds).size !== value.exerciseIds.length
-    || value.exerciseIds.some(id => typeof id !== 'string' || !context.allowedCatalog.some(exercise => exercise.id === id))) {
-    throw new AssistantError(`Choose one to ${MAX_PROPOSED_EXERCISES} unique, equipped library exercise IDs. Unknown, high-skill and incompatible exercises are rejected.`)
+    || value.exerciseIds.some(id => typeof id !== 'string' || !context.allowedCatalog.some(exercise =>
+      exercise.id === id && (!('kind' in exercise) || exercise.kind === 'exercise')))) {
+    throw new AssistantError(`Choose ${proposalRange(minimum, maximum)} unique, equipped library exercise IDs. Unknown, high-skill and incompatible exercises are rejected.`)
+  }
+  const program = programForDraft(draft)
+  if (program) {
+    try {
+      recommendProgram(program.resources, program.goal, DEFAULT_LIBRARY, value.exerciseIds as string[], program.includeMobility)
+    } catch {
+      throw new AssistantError('The proposed IDs must form an equipped three-movement program using reviewed catalog profiles.')
+    }
   }
   let eventDate: string | null = null
   let dateIssue: GoalDateIssue | null = null

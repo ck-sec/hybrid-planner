@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { DAY_NAMES } from '../engine/constants.ts'
-import { DEFAULT_LIBRARY } from '../engine/library.ts'
+import { LEGACY_LIBRARY as DEFAULT_LIBRARY } from '../engine/library.ts'
 import type { AthleteState, Day, Discipline, Equipment, Goal, Modality, Quality } from '../engine/types.ts'
 import { parseAthlete, parseGoal } from '../engine/validation.ts'
 import { currentMonday } from './dates.ts'

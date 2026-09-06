@@ -5,7 +5,8 @@ MIT licensed, no subscription, no accounts, no backend, no telemetry, no error
 reporting, or environment configuration. All training data is stored in the
 browser's IndexedDB. No LLM or API key is required. An optional, explicitly
 connected local model, HTTPS API, or external AI chat can interpret a goal,
-propose compatible exercises before setup is committed, and draft reference cards.
+propose compatible exercises during setup or an explicit future-week revision, and
+draft reference cards.
 
 ## Mobile campaign workspace
 
@@ -15,7 +16,8 @@ are explicit capabilities; owning a barbell does not imply a complete gym.
 Rower, SkiErg, court, dodgeballs and training partners are included in all coaching
 briefs. Selecting cardio equipment does not introduce unsupported running substitutions.
 Then choose a complete **classic run + lift** scheme without AI,
-or a **free-text goal** interpreted through an API or imported chat reply. Both lead
+or a **free-text goal** interpreted through an API or imported chat reply. Goal details
+can also be entered manually without AI. These paths lead
 through typical session length and frequency, recommended exercise cards,
 weekly commitments, and a calendar home. Weekly running minutes are calculated
 from a usual easy run and runs per week; users do not need to calculate totals.
@@ -58,6 +60,49 @@ scheduling and curated content; they do not justify invented sport-specific
 workloads. Garmin FIT and Apple Health activity import are not implemented yet,
 and are labelled accordingly in setup. There is no Garmin account connection.
 
+### Opt-in exercise templates
+
+Choose **Use template-based sessions** during setup, or **Revise next week's
+exercises** in settings for an existing campaign. The versioned library includes
+kettlebell movements, carries, mobility and supported execution variants.
+Choose four to seven equipped exercises; complementary A/B sessions cover the
+selected pool rather than repeating the same bundle. Unavailable movements are
+excluded, and excessive work is omitted rather than forced past the safety floor.
+
+Each exercise has **How, focus & why** guidance and editable personal notes.
+Controlled repetitions, slow lowering and fast concentric intent use distinct
+supported identities and engine prescriptions. Fast intent is not a jump or
+ballistic lift. Changing prose never changes execution or dose; a new variant
+does not inherit another variant's working weight.
+
+Repetitions use per-set logs. Carries and mobility use seconds, with optional
+kilograms for carries. Actual overruns and extra sets already performed can be
+recorded honestly: they are flagged separately, not turned into higher prescriptions
+or successful calibration. Established rower, bike and SkiErg routines require explicit
+modality-specific baselines and matching equipment; they do not erase or duplicate
+the existing running baseline. No conditioning is inferred from owning equipment.
+
+For dodgeball, an optional controlled-target throwing block can sit **inside**
+an established court practice when the athlete confirms the required resources
+and their existing total practice throw count. This includes warm-up, drills and
+games: the block is not permission to add throws. Unknown counts retain the
+ordinary practice entry. The count is an administrative exposure ceiling, not a
+validated injury-safe dose or an estimate of isolated shoulder fatigue.
+
+Revisions preview and apply to **next week only**. Previous prescriptions, logs,
+library versions, recovery and fatigue reductions remain intact. Health holds and
+unfinished logs cannot be bypassed with a revision. Existing campaigns are not
+silently upgraded. Arbitrary new exercises and unsupported drills remain notes
+until a reviewed engine profile exists.
+
+Prescription ceilings and scheduling costs are explicit engineering policies,
+not validated physiological measurements. The
+[tempo review](https://pmc.ncbi.nlm.nih.gov/articles/PMC8310485/) does not establish
+one universally optimal tempo or transferable safe load. The
+[RIR review](https://pmc.ncbi.nlm.nih.gov/articles/PMC11127506/) does not justify
+applying resistance-training RIR estimates to timed carries or throwing; those
+units do not use artificial repetitions or RIR.
+
 ### One coaching workspace: built-in, API or external chat
 
 **Shape your sessions** offers three methods using the same equipment profile:
@@ -99,7 +144,9 @@ AI cannot invent exercise metadata or prescribe sets, repetitions, RPE, weights,
 durations, weekly volume or placement. Unknown fields, unknown/high-skill
 exercises and unavailable equipment are rejected. The deterministic engine
 costs the approved selection, sets its prescription and applies the independent
-safety floor. These suggestions cannot edit a committed block.
+safety floor. These suggestions cannot edit a committed block. An explicit
+future-week revision creates a temporary selection for review, not permission
+to rewrite existing sessions.
 
 Use a local OpenAI-compatible endpoint or a remote HTTPS `/chat/completions`
 endpoint. Configure it yourself and confirm the exact payload before sending.
@@ -108,11 +155,12 @@ memory throughout the open tab, including after setup: disconnect or reload to
 clear them. They are never included in training data, chat briefs or backups.
 The previewable brief includes the goal/date, resources, baseline session amounts,
 availability/practices, selected exercise IDs, eligible catalog, reference cards
-and relevant planned sessions. It excludes logs, imported activity files and keys.
+and relevant planned sessions, including locked typed blocks and revision
+history. It excludes logs, imported activity files and keys.
 Copying/downloading is local; sharing with another service is your explicit action.
 
-**Custom cards are not a new planning authority.** Title, purpose, setup/instructions,
-cues and equipment needs are editable local content, separate from prescriptions.
+**Custom cards are not a new planning authority.** Title, description, focus,
+why and equipment needs are editable local content, separate from prescriptions.
 Novel sport drills (for example a throwing idea) remain **unscheduled** because their
 technique and workload are not validated by this engine. AI prose always remains
 an **unverified draft**, including after edits; it cannot approve itself as safe.

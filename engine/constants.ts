@@ -1,6 +1,15 @@
 export const ENGINE_VERSION = '0.2.0'
 export const POLICY_VERSION = 'baseline-bounded-1'
 export const LIBRARY_VERSION = 'exercise-estimates-1'
+export const PROGRAM_LIBRARY_VERSION = 'exercise-profiles-1'
+export const PROGRAM_POLICY_VERSION = 'extensible-programming-1'
+/** Absolute storage bound for truthful actual sets; this is not a prescription ceiling. */
+export const MAX_LOGGED_SETS_PER_BLOCK = 10
+export const LEGACY_EXERCISE_IDS = [
+  'back-squat', 'goblet-squat', 'bodyweight-squat', 'deadlift', 'romanian-deadlift', 'hip-thrust',
+  'bench-press', 'push-up', 'overhead-press', 'dumbbell-row', 'pull-up', 'split-squat',
+  'band-rotation', 'dead-bug', 'snatch',
+] as const
 export const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const
 
 // Model estimates in arbitrary units; not measured physiological recovery.
@@ -58,6 +67,10 @@ export const LIMITS = {
   maxHistorySessions: 140,
   maxCandidates: 150000,
   maxNotesLength: 2000,
+  // Two four-block A/B templates share one stable anchor: at most seven unique exercises.
+  maxProgramExercises: 7,
+  maxWorkoutBlocks: 8,
+  maxConditioningBaselines: 4,
 } as const
 
 // Campaign-only heuristics; the versioned v0.2 engine policy above is unchanged.
@@ -87,4 +100,22 @@ export const RECOMMENDATION_POLICY = {
   bodyweightRoutine: ['bodyweight-squat', 'push-up', 'dead-bug'],
   dumbbellRoutine: ['goblet-squat', 'dumbbell-row', 'push-up', 'dead-bug'],
   gymRoutine: ['back-squat', 'romanian-deadlift', 'bench-press', 'dumbbell-row', 'dead-bug'],
+} as const
+
+export const PROGRAM_POLICY = {
+  version: PROGRAM_POLICY_VERSION,
+  minSelectedExercises: 4,
+  maxSelectedExercises: 7,
+  maxSessionWorkUnits: 8,
+  maxSessionRepetitions: 64,
+  firstWeekFraction: 0.6,
+  throwingCalibrationFraction: 0.5,
+  conditioningCostPerMinute: {
+    run_road: { systemic: 3, structural: 2 },
+    run_trail: { systemic: 3, structural: 2.5 },
+    bike_road: { systemic: 2.5, structural: 0.75 },
+    bike_gravel: { systemic: 2.75, structural: 1 },
+    row: { systemic: 3, structural: 1.5 },
+    ski_erg: { systemic: 3, structural: 1.25 },
+  },
 } as const

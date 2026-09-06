@@ -116,7 +116,7 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
     <p className="cf-small">The engine owns prescriptions and the calendar. Your notes and novel drills stay separate; importing a card never adds training.</p>
     {method === 'builtin' ? <>
       <p>Edit your reference cards here. Exercise swaps are available in Your base before the block is committed.</p>
-      <WorkoutCards cards={state.cards ?? []} resources={resources} onChange={onCards} />
+      <WorkoutCards cards={state.cards ?? []} resources={resources} program={state.draft.program} onChange={onCards} />
     </> : unavailable ? <p role="status">{unavailable}</p> : <>
       <label className="cf-field">What would you like to refine?<textarea maxLength={500} rows={2} value={request} disabled={busy} placeholder="Keep my strength base; suggest a dodgeball throwing drill idea using my equipment." onChange={event => setRequest(event.target.value)} /></label>
       {method === 'chat' ? <>
@@ -161,7 +161,7 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
         {review.reply.proposal && <GoalProposalReview draft={state.draft} proposal={review.reply.proposal} purpose={scope.purpose} dateIssue={review.dateIssue} />}
         {review.reply.cards.length > 0 && <><h3>Reference cards to import</h3><p className="cf-small">Matching IDs replace the shown local card; other cards are kept. All AI prose stays an unverified draft, not workout instructions.</p>
           {review.reply.cards.map(card => <p key={card.id} className="cf-small">{state.cards?.some(old => old.id === card.id) ? 'Replace' : 'Add'}: {card.title}</p>)}
-          <WorkoutCards cards={review.reply.cards} resources={resources} onChange={() => {}} readOnly />
+          <WorkoutCards cards={review.reply.cards} resources={resources} program={state.draft.program} onChange={() => {}} readOnly />
         </>}
         {!review.reply.proposal && !review.reply.cards.length && <p>No changes proposed.</p>}
         <button type="button" className="cf-button cf-primary" disabled={busy || (!review.reply.proposal && !review.reply.cards.length)} onClick={apply}>

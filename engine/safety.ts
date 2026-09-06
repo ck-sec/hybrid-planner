@@ -1,11 +1,13 @@
 import {
   ACCESSORY_RPE_RANGE, ANCHOR_RPE_RANGE, HARD_SESSION_STRUCTURAL_THRESHOLD,
-  HARD_SESSION_SYSTEMIC_THRESHOLD, LIMITS, NOVICE_MONTHS_THRESHOLD, NOVICE_RPE_MAX, RECOMMENDATION_POLICY, SAFETY,
+  HARD_SESSION_SYSTEMIC_THRESHOLD, LIMITS, NOVICE_MONTHS_THRESHOLD, NOVICE_RPE_MAX,
+  PROGRAM_POLICY, RECOMMENDATION_POLICY, SAFETY,
 } from './constants.ts'
 import { addDays, dayNumber, dayOfWeek, sessionStartMinutes } from './dates.ts'
 import { observedSessionWork, predictSessionLoad } from './load.ts'
-import { latestPerformance } from './observations.ts'
-import type { PlanWeekInput, SafetyFloorResult, SafetyViolation, Session } from './types.ts'
+import { hasCleanBlockObservation, hasCleanThrowObservation, latestPerformance } from './observations.ts'
+import { exerciseMetadata, resolvedConditioningBaselines } from './program.ts'
+import type { FixedCommitment, PlanWeekInput, SafetyFloorResult, SafetyViolation, Session } from './types.ts'
 
 function number(value: number, label: string, positive = false): number {
   if (!Number.isFinite(value) || (positive ? value <= 0 : value < 0)) {
@@ -31,7 +33,11 @@ function samePrescription(left: Session, right: Session): boolean {
 }
 
 /** An independent finite veto; scheduling estimates do not diagnose injury or prescribe rehabilitation. */
-export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]): SafetyFloorResult {
+export function checkSafety(
+  input: PlanWeekInput,
+  sessions: readonly Session[],
+  options: { sourceCommitments?: readonly FixedCommitment[] } = {},
+): SafetyFloorResult {
   const violations: SafetyViolation[] = []
   const fail = (rule: string, items: readonly Session[], message: string): void => {
     violations.push({ rule, sessionIds: items.map(item => item.id), message })
@@ -48,6 +54,11 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
     const lastDay = firstDay + 6
     const peakDay = dayNumber(block.goal.peakDate)
     const baseline = athlete.baseline
+    const sourceCommitments = [...(options.sourceCommitments ?? block.goal.fixedCommitments)]
+      .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+    const sourceProof = new Map(sourceCommitments.map((commitment, index) => [
+      commitment.id, { commitment, sessionId: `fixed-${index + 1}-${weekStart}` },
+    ]))
     number(baseline.weeklyRunMinutes, 'baseline weekly run minutes')
     number(baseline.longestRunMinutes, 'baseline longest run')
     number(baseline.runsPerWeek, 'baseline run frequency')
@@ -65,10 +76,14 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
       number(session.predictedLoad.systemic, 'predicted systemic AU')
       number(session.predictedLoad.structural, 'predicted structural AU')
       sessionStartMinutes(session)
-      predictSessionLoad(session, athlete, library)
+      const calculated = predictSessionLoad(session, athlete, library)
+      if (block.program && session.kind !== 'commitment' && !(session.kind === 'workout' && session.sourceCommitmentId)
+        && (calculated.systemic !== session.predictedLoad.systemic || calculated.structural !== session.predictedLoad.structural)) {
+        fail('predictedLoadIntegrity', [session], 'Generated session cost must equal the deterministic built-in estimate.')
+      }
       totalMinutes = number(totalMinutes + session.durationMin, 'total scheduled minutes')
       if (day < firstDay || day > lastDay) fail('requestedWeek', [session], 'Session is outside the requested seven-day week.')
-      if (session.kind !== 'commitment' && day > peakDay) {
+      if (session.kind !== 'commitment' && !(session.kind === 'workout' && session.sourceCommitmentId) && day > peakDay) {
         fail('goalDateBoundary', [session], 'Generated or pinned running and strength must not extend beyond the goal date; established commitments remain visible.')
       }
       if (!athlete.availableDays.includes(dayOfWeek(session.date))) {
@@ -101,11 +116,13 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
       number(fixed.estimatedLoad.structural, 'fixed structural AU')
       const matching = sessions.filter(session => session.id === sessionId)
       const actual = matching[0]
-      if (matching.length !== 1 || !actual || actual.kind !== 'commitment'
+      const preservedCommitment = actual?.kind === 'commitment'
+      const preservedSportWorkout = actual?.kind === 'workout' && actual.sourceCommitmentId === fixed.id
+      if (matching.length !== 1 || !actual || (!preservedCommitment && !preservedSportWorkout)
         || actual.date !== expectedDate || actual.startTime !== fixed.startTime
         || actual.durationMin !== fixed.durationMin || actual.discipline !== fixed.discipline
-        || actual.modality !== fixed.modality || actual.label !== fixed.label
-        || !actual.pinned || actual.isCalibration
+        || actual.modality !== fixed.modality || !('label' in actual) || actual.label !== fixed.label
+        || !actual.pinned || (preservedCommitment && actual.isCalibration)
         || actual.predictedLoad.systemic !== fixed.estimatedLoad.systemic
         || actual.predictedLoad.structural !== fixed.estimatedLoad.structural) {
         violations.push({ rule: 'fixedCommitmentPreserved', sessionIds: [sessionId],
@@ -124,6 +141,21 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
       if (session.kind === 'commitment' && !fixedIds.has(session.id) && !pinnedIds.has(session.id)) {
         fail('establishedCommitment', [session], 'A commitment must come from a supplied fixed commitment or preserved pin.')
       }
+      if (session.kind === 'workout' && session.sourceCommitmentId && !fixedIds.has(session.id) && !pinnedIds.has(session.id)) {
+        fail('establishedCommitment', [session], 'An embedded sport workout must come from a supplied fixed commitment.')
+      }
+      if (session.kind === 'workout' && session.sourceCommitmentId) {
+        const proof = sourceProof.get(session.sourceCommitmentId)
+        const commitment = proof?.commitment
+        if (!commitment || proof.sessionId !== session.id || session.durationMin !== commitment.durationMin
+          || session.discipline !== commitment.discipline || session.modality !== commitment.modality
+          || session.label !== commitment.label || !session.pinned
+          || session.predictedLoad.systemic !== commitment.estimatedLoad.systemic
+          || session.predictedLoad.structural !== commitment.estimatedLoad.structural) {
+          fail('sourceCommitmentIntegrity', [session],
+            'An embedded sport workout must retain its original stable ID, label, duration, modality, supplied cost, and source commitment.')
+        }
+      }
     }
 
     const pastWeeks = context.completedWeeks.filter(week => dayNumber(week.weekStart) + 7 <= firstDay)
@@ -136,7 +168,8 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
     const unresolvedDisruption = latestWeek?.disrupted === true
       && dayNumber(latestWeek.weekStart) + 6 >= dayNumber(baseline.asOf)
     const hold = athlete.safetyHold !== null || unresolved || unresolvedDisruption
-    const generated = sessions.filter(session => session.kind === 'run' || session.kind === 'strength')
+    const generated = sessions.filter(session => session.kind === 'run' || session.kind === 'strength'
+      || session.kind === 'conditioning' || (session.kind === 'workout' && !session.sourceCommitmentId))
     if (hold && generated.length) {
       fail('safetyHold', generated,
         'Pain, illness, a return-from-break hold, or the latest disrupted completed week blocks generated running and lifting. No return or rehabilitation prescription is inferred.')
@@ -144,7 +177,7 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
 
     const runs = sessions.filter(session => session.discipline === 'run')
     const lifts = sessions.filter(session => session.discipline === 'strength')
-    if (runs.length > Math.min(baseline.runsPerWeek, LIMITS.maxRuns)) {
+    if (!block.program && runs.length > Math.min(baseline.runsPerWeek, LIMITS.maxRuns)) {
       fail('runFrequency', runs, 'Run frequency exceeds the established baseline or engine limit.')
     }
     if (lifts.length > Math.min(baseline.liftsPerWeek, LIMITS.maxLifts)) {
@@ -153,7 +186,10 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
     let runMinutes = 0
     for (const run of runs) {
       runMinutes = number(runMinutes + run.durationMin, 'weekly run minutes')
-      if (run.durationMin > Math.min(baseline.longestRunMinutes, LIMITS.maxRunMinutes)) {
+      const programBaseline = block.program && run.kind === 'conditioning'
+        ? resolvedConditioningBaselines(athlete).find(item => item.modality === run.modality) : undefined
+      const longest = programBaseline?.longestSessionMinutes ?? baseline.longestRunMinutes
+      if (run.durationMin > Math.min(longest, LIMITS.maxRunMinutes)) {
         fail('longestRun', [run], 'Run duration exceeds the longest established run or the engine limit.')
       }
       if (run.kind === 'run' && (run.endurancePrescription.effort !== 'conversational'
@@ -170,9 +206,42 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
       ? number(reference.runMinutes, 'completed weekly run minutes') * (1 + SAFETY.maxWeeklyVolumeIncreasePct / 100)
       : baseline.weeklyRunMinutes
     number(referenceCap, 'weekly progression cap')
-    const weeklyRunCap = Math.min(baseline.weeklyRunMinutes, referenceCap, LIMITS.maxWeeklyRunMinutes)
+    const configuredRunCap = block.program
+      ? resolvedConditioningBaselines(athlete).filter(item => item.modality === 'run_road' || item.modality === 'run_trail')
+        .reduce((sum, item) => sum + item.weeklyMinutes, 0)
+      : baseline.weeklyRunMinutes
+    const weeklyRunCap = block.program ? Math.min(configuredRunCap, referenceCap, LIMITS.maxWeeklyRunMinutes)
+      : Math.min(baseline.weeklyRunMinutes, referenceCap, LIMITS.maxWeeklyRunMinutes)
     if (runMinutes > weeklyRunCap) {
       fail('weeklyRunVolume', runs, 'Run minutes exceed the baseline or the 10% ceiling over the latest comparable nondisrupted, non-deload completed week.')
+    }
+    if (block.program) {
+      const conditioning = sessions.filter((session): session is Extract<Session, { kind: 'conditioning' }> =>
+        session.kind === 'conditioning')
+      const configuredBaselines = resolvedConditioningBaselines(athlete)
+      for (const configured of configuredBaselines) {
+        const matching = conditioning.filter(session => session.modality === configured.modality)
+        if (matching.length > configured.sessionsPerWeek) {
+          fail('conditioningFrequency', matching, `${configured.modality} frequency exceeds its explicit established baseline.`)
+        }
+        if (matching.reduce((sum, session) => sum + session.durationMin, 0) > configured.weeklyMinutes) {
+          fail('conditioningVolume', matching, `${configured.modality} minutes exceed its explicit established baseline.`)
+        }
+        for (const session of matching) {
+          if (session.durationMin > configured.longestSessionMinutes) {
+            fail('conditioningLongest', [session], `${configured.modality} duration exceeds its explicit longest established session.`)
+          }
+        }
+      }
+      for (const session of conditioning) {
+        if (!configuredBaselines.some(item => item.modality === session.modality)) {
+          fail('conditioningBaseline', [session], `No explicit ${session.modality} baseline was supplied; running minutes are never reused for another modality.`)
+        }
+      }
+      if (sessions.some(session => session.kind === 'run' || session.kind === 'strength')) {
+        fail('programSessionKinds', sessions.filter(session => session.kind === 'run' || session.kind === 'strength'),
+          'Opt-in programming uses typed conditioning/workout sessions; legacy generated session kinds cannot bypass its checks.')
+      }
     }
 
     for (const session of sessions) {
@@ -191,6 +260,7 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
             `A recommended strength session cannot exceed ${RECOMMENDATION_POLICY.maxSessionSets} total working sets or ${RECOMMENDATION_POLICY.maxSessionReps} total repetitions, regardless of how many exercise cards were selected.`)
         }
       }
+
       const exercises = new Set<string>()
       for (const prescription of session.strengthPrescription) {
         const exercise = library.exercises.find(item => item.id === prescription.exerciseId)
@@ -244,9 +314,123 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
               'A suggested weight must exactly match this exercise’s latest eligible performance at the same reps and target effort; otherwise omit it.')
           }
         }
+        }
       }
-    }
 
+    const programWorkouts = sessions.filter((session): session is Extract<Session, { kind: 'workout' }> =>
+          session.kind === 'workout' && session.discipline === 'strength')
+        for (const session of programWorkouts) {
+          if (!block.program || !block.workoutTemplates) {
+            fail('programWorkout', [session], 'Typed strength workouts require a frozen opt-in program.')
+            continue
+          }
+          if (session.durationMin > baseline.liftDurationMin) {
+            fail('liftDuration', [session], 'Strength duration exceeds the established session duration.')
+          }
+          const template = block.workoutTemplates.find(item => item.label === session.label)
+          if (!template || template.exerciseIds.length !== session.blocks.length
+            || template.exerciseIds.some((id, index) => session.blocks[index]?.unit === 'throws'
+              || (session.blocks[index] as Exclude<typeof session.blocks[number], { unit: 'throws' }>).exerciseId !== id)) {
+            fail('frozenWorkoutTemplate', [session], 'Workout blocks must exactly use one frozen Strength A/B exercise sequence.')
+          }
+          let workUnits = 0
+          let repetitions = 0
+          let needsCalibration = false
+          const seen = new Set<string>()
+          for (const blockItem of session.blocks) {
+            if (blockItem.unit === 'throws') {
+              fail('programWorkout', [session], 'Strength workouts cannot contain throw blocks.')
+              continue
+            }
+            const exercise = library.exercises.find(item => item.id === blockItem.exerciseId)
+            const profile = exercise?.profile
+            const execution = exercise ? exerciseMetadata(exercise.id).execution : undefined
+            if (!exercise || !profile || exercise.highSkill || seen.has(blockItem.exerciseId)
+              || !exercise.requirements?.every(resource => block.program!.resources.includes(resource))
+              || profile.prescription.unit !== blockItem.unit || execution?.style !== blockItem.executionStyle
+              || execution?.ballistic !== false) {
+              fail('programExerciseProfile', [session],
+                `Exercise ${blockItem.exerciseId} must retain its reviewed profile and supplied resource requirements.`)
+              continue
+            }
+            seen.add(blockItem.exerciseId)
+            workUnits += blockItem.sets
+            if (blockItem.unit === 'reps' && profile.prescription.unit === 'reps') {
+              const baselineObserved = athlete.baseline.exercises.some(item => item.exerciseId === blockItem.exerciseId)
+              if (!baselineObserved && !hasCleanBlockObservation(input, blockItem.exerciseId, 'reps')) needsCalibration = true
+              repetitions += blockItem.sets * blockItem.reps
+              if (blockItem.sets > profile.prescription.sets || blockItem.reps !== profile.prescription.reps
+                || blockItem.targetRPE !== profile.prescription.targetRPE
+                || blockItem.role !== (session.blocks.indexOf(blockItem) === 0 ? 'anchor' : 'accessory')) {
+                fail('programDose', [session], `Exercise ${blockItem.exerciseId} exceeds or changes its built-in first-exposure dose.`)
+              }
+              if (blockItem.suggestedWeightKg !== undefined) {
+                const performance = latestPerformance(input, blockItem.exerciseId)
+                if (!performance || performance.weightKg !== blockItem.suggestedWeightKg
+                  || performance.reps !== blockItem.reps || performance.actualRPE !== blockItem.targetRPE) {
+                  fail('observedWeightOnly', [session],
+                    'A suggested weight must exactly match the latest clean same-exercise repetitions log.')
+                }
+              }
+            } else if (blockItem.unit === 'seconds' && profile.prescription.unit === 'seconds') {
+              const observed = hasCleanBlockObservation(input, blockItem.exerciseId, 'seconds')
+              if (!observed) needsCalibration = true
+              const expectedRole = exercise.template === 'mobility' ? 'mobility' : 'carry'
+              if (blockItem.sets > profile.prescription.sets || blockItem.seconds !== profile.prescription.seconds
+                || blockItem.role !== expectedRole) {
+                fail('programDose', [session], `Exercise ${blockItem.exerciseId} exceeds or changes its built-in timed dose.`)
+              }
+            }
+          }
+          if (needsCalibration && !session.isCalibration) {
+            fail('programCalibration', [session], 'First exposures must remain marked as calibration until clean matching-unit logs exist.')
+          }
+          if (workUnits > PROGRAM_POLICY.maxSessionWorkUnits || repetitions > PROGRAM_POLICY.maxSessionRepetitions) {
+            fail('programSessionWork', [session],
+              'A typed strength workout cannot exceed the legacy first-exposure ceiling of 8 work units or 64 repetitions.')
+          }
+        }
+
+        const throwWorkouts = sessions.filter((session): session is Extract<Session, { kind: 'workout' }> =>
+          session.kind === 'workout' && session.discipline === 'sport')
+        const throwByDay = new Map<number, number>()
+        let weeklyThrows = 0
+        for (const session of throwWorkouts) {
+          const comfortable = block.program?.comfortableThrowsPerPractice
+          const commitment = sourceProof.get(session.sourceCommitmentId ?? '')?.commitment
+          const blocks = session.blocks.filter((item): item is Extract<typeof item, { unit: 'throws' }> => item.unit === 'throws')
+          const throws = blocks.reduce((sum, item) => sum + item.throws, 0)
+          weeklyThrows += throws
+          const day = dayNumber(session.date)
+          throwByDay.set(day, (throwByDay.get(day) ?? 0) + throws)
+          const calibrated = hasCleanThrowObservation(input, session.sourceCommitmentId ?? '')
+          const expectedThrows = comfortable === undefined ? undefined : calibrated ? comfortable
+            : Math.max(1, Math.floor(comfortable * PROGRAM_POLICY.throwingCalibrationFraction))
+          const throwBlock = blocks[0]
+          if (!block.program || block.program.goal !== 'dodgeball' || comfortable === undefined || !commitment
+            || commitment.discipline !== 'sport' || commitment.modality !== 'court_sport'
+            || blocks.length !== 1 || throwBlock?.drillId !== 'dodgeball-controlled-target-throw'
+            || throwBlock.intent !== 'controlled_technique' || !throwBlock.embedded
+            || throws !== expectedThrows || session.isCalibration !== !calibrated) {
+            fail('throwingExposure', [session],
+              'Controlled target throws must retain the deterministic calibrated dose inside an established court practice and at or below the user-established administrative exposure cap; this is not a validated injury-safe threshold.')
+          }
+          if (hold && throws > 0) {
+            fail('throwingHealthHold', [session], 'Pain, illness, or return-from-break holds block prescribed throwing technique.')
+          }
+        }
+        if (block.program?.comfortableThrowsPerPractice !== undefined) {
+          for (const [day, throws] of throwByDay) {
+            const practices = throwWorkouts.filter(session => dayNumber(session.date) === day).length
+            if (throws > practices * block.program.comfortableThrowsPerPractice) {
+              fail('dailyThrowingExposure', throwWorkouts.filter(session => dayNumber(session.date) === day),
+                'Daily throwing exceeds the summed explicit comfortable practice counts.')
+            }
+          }
+          if (weeklyThrows > throwWorkouts.length * block.program.comfortableThrowsPerPractice) {
+            fail('weeklyThrowingExposure', throwWorkouts, 'Weekly throwing exceeds the summed explicit comfortable practice counts.')
+          }
+        }
     const neighbors = context.neighboringSessions.filter(session => {
       const day = dayNumber(session.date)
       const log = context.recentSessions.find(record => record.session.id === session.id)?.log
@@ -258,9 +442,11 @@ export function checkSafety(input: PlanWeekInput, sessions: readonly Session[]):
     const hardDays = new Map<number, Session[]>()
     const durations = new Map<Session, number>()
     const lowerBody = (session: Session): boolean => session.discipline === 'strength'
-      && (session.kind === 'commitment' || (session.kind === 'strength'
-        && session.strengthPrescription.some(prescription =>
-          library.exercises.find(exercise => exercise.id === prescription.exerciseId)?.competesWithRunning)))
+      && (session.kind === 'commitment'
+        || (session.kind === 'strength' && session.strengthPrescription.some(prescription =>
+          library.exercises.find(exercise => exercise.id === prescription.exerciseId)?.competesWithRunning))
+        || (session.kind === 'workout' && session.blocks.some(blockItem => blockItem.unit !== 'throws'
+          && library.exercises.find(exercise => exercise.id === blockItem.exerciseId)?.competesWithRunning)))
     for (const session of combined) {
       if (allIds.has(session.id)) fail('uniqueSessionIds', [session], 'Neighboring and scheduled sessions must not reuse IDs.')
       allIds.add(session.id)

@@ -5,16 +5,20 @@ import { test } from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
-import { LIMITS, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { LIMITS, PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { recommendProgram } from '../../engine/program.ts'
 import { recommendationForExercise } from '../../engine/recommendations.ts'
 import { AssistantError, ASSISTANT_TIMEOUT_MS } from './assistant.ts'
 import {
   applyGoalProposal, buildGoalProposalRequest, buildSetupAssistantContext, eligibleSetupExercises,
-  MAX_EXERCISE_REFINEMENT_LENGTH, MAX_GOAL_TEXT_LENGTH, MAX_PROPOSED_EXERCISES,
+  maxProposedExercises, minProposedExercises, MAX_EXERCISE_REFINEMENT_LENGTH,
+  MAX_GOAL_TEXT_LENGTH, MAX_PROPOSED_EXERCISES,
   parseGoalProposal, parseGoalProposalForReview, proposalExerciseChanges, requestGoalProposal,
 } from './setup-assistant.ts'
 import type { GoalProposal, GoalProposalPurpose } from './setup-assistant.ts'
 import type { CampaignDraft } from './types.ts'
+import { equipmentForResources, parseResources, programResources } from './equipment.ts'
+import type { ResourceId } from './equipment.ts'
 
 function draft(): CampaignDraft {
   return {
@@ -40,6 +44,24 @@ function proposal(): GoalProposal {
     eventDate: '2030-11-20', priorities: ['change_of_direction', 'power', 'repeat_sprint'],
     exerciseIds: ['bodyweight-squat', 'push-up', 'dumbbell-row', 'band-rotation'],
   }
+}
+
+function programDraft(resources: ResourceId[] = ['kettlebell', 'floor_space', 'carry_space']): CampaignDraft {
+  const input = draft()
+  input.resources = parseResources([...resources])
+  input.equipment = equipmentForResources(input.resources)
+  const exactResources = programResources(input.resources)
+  const recommended = recommendProgram(exactResources, 'dodgeball')
+  input.program = {
+    version: 1,
+    libraryVersion: PROGRAM_LIBRARY_VERSION,
+    goal: 'dodgeball',
+    resources: exactResources,
+    conditioningBaselines: [],
+    selectedExerciseIds: [...recommended.exerciseIds],
+  }
+  input.recommendedSetup!.exerciseIds = [...recommended.exerciseIds]
+  return input
 }
 
 const config = {
@@ -112,7 +134,8 @@ test('unknown keys and numerical prescription overrides reject the entire respon
   for (const key of [
     'sets', 'reps', 'weight', 'weightKg', 'targetRPE', 'durationMin', 'weeklyRunMinutes',
     'typicalRunMinutes', 'timeBudget', 'weeklyTimeBudgetMin', 'availableDays', 'practiceDays',
-    'placement', 'exerciseObjects', 'explanation', 'prescription', 'volume', 'requestText',
+    'placement', 'exerciseObjects', 'explanation', 'prescription', 'profile', 'profileId',
+    'tempo', 'executionStyle', 'dose', 'volume', 'requestText',
   ]) {
     assert.throws(() => parseGoalProposal(JSON.stringify({ ...proposal(), [key]: 100 }), draft()), /extra fields/, key)
   }
@@ -122,6 +145,48 @@ test('unknown keys and numerical prescription overrides reject the entire respon
   assert.throws(() => parseGoalProposal(
     JSON.stringify(proposal()).replace(/}$/, ',"__proto__":{"sets":99}}'), draft(),
   ), /extra fields/)
+})
+
+test('kettlebell-only programs expose bounded profile metadata and accept only viable engine selections', () => {
+  const input = programDraft()
+  const context = buildSetupAssistantContext(input)
+  assert.equal(MAX_PROPOSED_EXERCISES, RECOMMENDATION_POLICY.maxExercises)
+  assert.equal(minProposedExercises(input), PROGRAM_POLICY.minSelectedExercises)
+  assert.equal(maxProposedExercises(input), PROGRAM_POLICY.maxSelectedExercises)
+  assert.equal(context.program?.libraryVersion, PROGRAM_LIBRARY_VERSION)
+  assert.deepEqual(context.currentExerciseIds, input.program?.selectedExerciseIds)
+  assert.ok(context.allowedCatalog.some(item => item.id === 'kettlebell-goblet-squat'))
+  assert.ok(context.allowedCatalog.some(item => item.id === 'kettlebell-suitcase-carry'))
+  assert.ok(context.allowedCatalog.every(item => !('kind' in item) || item.kind !== 'exercise'
+    || ('unit' in item && 'profile' in item && 'execution' in item && 'description' in item && 'focus' in item && 'purpose' in item)))
+  assert.doesNotMatch(JSON.stringify(context.allowedCatalog), /schedulingEstimate|systemic|structural|costMultiplier/)
+  assert.match(buildGoalProposalRequest(input, config.model).messages[0].content,
+    new RegExp(`${PROGRAM_POLICY.minSelectedExercises} to ${PROGRAM_POLICY.maxSelectedExercises} unique IDs`))
+  const next = {
+    ...proposal(),
+    exerciseIds: [...input.recommendedSetup!.exerciseIds],
+  }
+  assert.deepEqual(parseGoalProposal(JSON.stringify(next), input).exerciseIds, next.exerciseIds)
+  assert.throws(() => parseGoalProposal(JSON.stringify({
+    ...next, exerciseIds: ['kettlebell-goblet-squat'],
+  }), input), new RegExp(`${PROGRAM_POLICY.minSelectedExercises} to ${PROGRAM_POLICY.maxSelectedExercises}`))
+})
+
+test('slow-lowering and fast-intent variants are canonical program IDs, not AI tempo overrides', () => {
+  const input = programDraft(['dumbbell', 'barbell', 'rack', 'bench', 'floor_space'])
+  const context = buildSetupAssistantContext(input)
+  const slow = context.allowedCatalog.find(item => item.id === 'back-squat-slow-lowering')
+  const fast = context.allowedCatalog.find(item => item.id === 'goblet-squat-fast-concentric')
+  assert.ok(slow && 'kind' in slow && slow.kind === 'exercise' && slow.execution.style === 'slow_lowering')
+  assert.ok(fast && 'kind' in fast && fast.kind === 'exercise' && fast.execution.style === 'fast_concentric_intent')
+  assert.equal(fast && 'kind' in fast && fast.kind === 'exercise' && fast.execution.ballistic, false)
+  const selected = ['back-squat-slow-lowering', 'dumbbell-romanian-deadlift', 'push-up', 'dumbbell-row']
+  assert.deepEqual(parseGoalProposal(JSON.stringify({ ...proposal(), exerciseIds: selected }), input).exerciseIds, selected)
+  for (const forbidden of ['tempo', 'executionStyle', 'profile', 'sets']) {
+    assert.throws(() => parseGoalProposal(JSON.stringify({
+      ...proposal(), exerciseIds: selected, [forbidden]: 'invented',
+    }), input), /extra fields/)
+  }
 })
 
 test('strict schema rejects missing fields, duplicate keys, prose, unknown enums and malformed arrays', () => {

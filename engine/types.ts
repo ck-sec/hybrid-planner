@@ -12,6 +12,38 @@ export type MovementPattern =
   | 'knee_dominant' | 'hip_dominant' | 'horizontal_push' | 'vertical_push'
   | 'horizontal_pull' | 'vertical_pull' | 'unilateral_lower' | 'carry' | 'core' | 'rotational'
 export type Equipment = 'barbell' | 'dumbbell' | 'kettlebell' | 'machine' | 'cable' | 'bodyweight' | 'bands' | 'none'
+export type Resource = Equipment | 'bench' | 'rack' | 'pull_up_bar' | 'stable_step' | 'floor_space'
+  | 'anchor_point' | 'carry_space' | 'dodgeball' | 'court_space' | 'safe_target'
+export type PrescriptionUnit = 'reps' | 'seconds'
+export type ProgramGoal = 'balanced' | 'endurance' | 'strength' | 'dodgeball'
+export type ConditioningModality = 'run_road' | 'run_trail' | 'bike_road' | 'bike_gravel' | 'row' | 'ski_erg'
+export type ExecutionStyle = 'controlled' | 'slow_lowering' | 'fast_concentric_intent' | 'ballistic_logging_only'
+export interface ExecutionProfile {
+  style: ExecutionStyle
+  label: string
+  eccentricSeconds?: 2 | 3
+  concentricIntent: 'controlled' | 'fast' | 'not_applicable'
+  ballistic: boolean
+}
+
+export interface RepPrescriptionTemplate {
+  unit: 'reps'
+  sets: number
+  reps: number
+  targetRPE: TargetRPE
+}
+export interface SecondsPrescriptionTemplate {
+  unit: 'seconds'
+  sets: number
+  seconds: number
+}
+export type ExercisePrescriptionTemplate = RepPrescriptionTemplate | SecondsPrescriptionTemplate
+export interface ExerciseProfile {
+  version: 'scheduling-estimate-1'
+  /** Reviewed, hand-authored scheduling estimate; not an injury-risk coefficient. */
+  schedulingEstimate: Load
+  prescription: ExercisePrescriptionTemplate
+}
 
 export interface Exercise {
   id: string
@@ -22,8 +54,43 @@ export interface Exercise {
   coefficients: Load
   competesWithRunning: boolean
   highSkill: boolean
+  /** Required only by the extensible library. Legacy library entries omit these fields. */
+  requirements?: readonly Resource[]
+  label?: string
+  template?: 'squat' | 'hinge' | 'push' | 'pull' | 'unilateral' | 'carry' | 'core' | 'rotation' | 'mobility'
+  profile?: ExerciseProfile
 }
 export interface ExerciseLibrary { version: string; exercises: readonly Exercise[] }
+
+export interface ConditioningBaseline {
+  modality: ConditioningModality
+  weeklyMinutes: number
+  longestSessionMinutes: number
+  sessionsPerWeek: number
+}
+export interface ProgramConfigV1 {
+  version: 1
+  libraryVersion: 'exercise-profiles-1'
+  goal: ProgramGoal
+  resources: readonly Resource[]
+  /**
+   * Additional modality-specific baselines. Existing baseline running is retained.
+   * One exactly equivalent run baseline may replace its implicit run_road representation.
+   */
+  conditioningBaselines: readonly ConditioningBaseline[]
+  selectedExerciseIds?: readonly string[]
+  /** User-established administrative exposure cap; not a validated injury-safe threshold. */
+  comfortableThrowsPerPractice?: number
+  includeMobility?: boolean
+}
+export interface SportDrillMetadata {
+  id: 'dodgeball-controlled-target-throw'
+  label: string
+  sport: 'dodgeball'
+  unit: 'throws'
+  requirements: readonly Resource[]
+  intent: 'controlled_technique'
+}
 
 export interface ExerciseObservation {
   exerciseId: string
@@ -65,6 +132,8 @@ export interface AthleteState {
   safetyHold: SafetyHold | null
   /** Explicitly selected recommendations, not fabricated performance observations. */
   recommendedExerciseIds?: readonly string[]
+  /** Opt-in. Absence retains the complete v0.2 planning policy. */
+  program?: ProgramConfigV1
 }
 
 export type Discipline = 'run' | 'bike' | 'swim' | 'strength' | 'sport' | 'mobility'
@@ -113,6 +182,13 @@ export interface Block {
   goal: Goal
   phases: readonly Phase[]
   anchors: readonly AnchorAssignment[]
+  /** Frozen opt-in programming contract. Absence identifies a legacy block. */
+  program?: ProgramConfigV1
+  workoutTemplates?: readonly FrozenWorkoutTemplate[]
+}
+export interface FrozenWorkoutTemplate {
+  label: 'Strength A' | 'Strength B'
+  exerciseIds: readonly string[]
 }
 export interface StrengthPrescription {
   exerciseId: string
@@ -151,9 +227,72 @@ export interface CommitmentSession extends SessionBase {
   modality: Modality
   label: string
 }
-export type Session = RunSession | StrengthSession | CommitmentSession
+export interface ConditioningSession extends SessionBase {
+  kind: 'conditioning'
+  discipline: 'run' | 'bike' | 'sport'
+  modality: ConditioningModality
+  conditioningPrescription: { intent: 'easy'; effort: 'conversational' }
+}
+export interface RepsWorkoutBlock {
+  unit: 'reps'
+  exerciseId: string
+  sets: number
+  reps: number
+  targetRPE: TargetRPE
+  role: 'anchor' | 'accessory'
+  suggestedWeightKg?: number
+  executionStyle: Exclude<ExecutionStyle, 'ballistic_logging_only'>
+}
+export interface SecondsWorkoutBlock {
+  unit: 'seconds'
+  exerciseId: string
+  sets: number
+  seconds: number
+  role: 'carry' | 'mobility'
+  executionStyle: 'controlled'
+}
+export interface ThrowsWorkoutBlock {
+  unit: 'throws'
+  drillId: 'dodgeball-controlled-target-throw'
+  throws: number
+  intent: 'controlled_technique'
+  /** The throws are allocated within this established commitment, never appended. */
+  embedded: true
+}
+export type WorkoutBlock = RepsWorkoutBlock | SecondsWorkoutBlock | ThrowsWorkoutBlock
+export interface WorkoutSession extends SessionBase {
+  kind: 'workout'
+  discipline: 'strength' | 'sport'
+  modality: 'lifting' | 'court_sport'
+  label: string
+  blocks: readonly WorkoutBlock[]
+  /** Present only when a sport workout represents an existing fixed commitment. */
+  sourceCommitmentId?: string
+}
+export type Session = RunSession | StrengthSession | CommitmentSession | ConditioningSession | WorkoutSession
 export type SkipReason = 'life' | 'too_tired' | 'pain' | 'illness' | 'weather' | 'other'
 export interface SetLog { exerciseId: string; weightKg: number; reps: number; actualRPE: TargetRPE }
+export interface RepsBlockLog {
+  unit: 'reps'
+  blockIndex: number
+  exerciseId: string
+  sets: readonly SetLog[]
+}
+export interface SecondsBlockLog {
+  unit: 'seconds'
+  blockIndex: number
+  exerciseId: string
+  seconds: number
+  /** Optional observed external load for a carry; never a generated suggestion. */
+  weightKg?: number
+}
+export interface ThrowsBlockLog {
+  unit: 'throws'
+  blockIndex: number
+  drillId: 'dodgeball-controlled-target-throw'
+  throws: number
+}
+export type BlockLog = RepsBlockLog | SecondsBlockLog | ThrowsBlockLog
 export interface SessionLog {
   sessionId: string
   status: 'completed' | 'partial' | 'skipped'
@@ -161,6 +300,7 @@ export interface SessionLog {
   actualEffort?: SessionEffortRating
   actualDurationMin?: number
   sets?: readonly SetLog[]
+  blockLogs?: readonly BlockLog[]
   painFlag: boolean
   notes: string
 }

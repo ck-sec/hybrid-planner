@@ -1,6 +1,9 @@
-import { RECOMMENDATION_POLICY } from '../../engine/constants.ts'
-import { DEFAULT_LIBRARY } from '../../engine/library.ts'
-import { RESOURCE_CATALOG, parseResources } from './equipment.ts'
+import { DEFAULT_LIBRARY, LEGACY_LIBRARY } from '../../engine/library.ts'
+import { SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
+import type { ProgramConfigV1, Resource } from '../../engine/types.ts'
+import {
+  RESOURCE_CATALOG, equipmentAvailable, exerciseAvailable, parseResources, programResourcesForResources,
+} from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 
 export interface WorkoutCard {
@@ -24,8 +27,41 @@ export const WORKOUT_CARD_LIMITS = {
   cues: 1_000,
 } as const
 
-export const WORKOUT_CARD_EXERCISES = Object.freeze(DEFAULT_LIBRARY.exercises.filter(exercise => !exercise.highSkill
-  && (RECOMMENDATION_POLICY.supportedExerciseIds as readonly string[]).includes(exercise.id)))
+export interface WorkoutCardCatalogItem {
+  id: string
+  name: string
+  kind: 'exercise' | 'sport_drill'
+  requirements: readonly Resource[]
+}
+
+export const WORKOUT_CARD_EXERCISES: readonly WorkoutCardCatalogItem[] = Object.freeze([
+  ...DEFAULT_LIBRARY.exercises
+    .filter(exercise => !exercise.highSkill && exercise.template && exercise.profile && exercise.requirements)
+    .map(exercise => Object.freeze({
+      id: exercise.id,
+      name: exercise.label ?? exercise.name,
+      kind: 'exercise' as const,
+      requirements: Object.freeze([...(exercise.requirements ?? [])]),
+    })),
+  ...SUPPORTED_SPORT_DRILLS.map(drill => Object.freeze({
+    id: drill.id,
+    name: drill.label,
+    kind: 'sport_drill' as const,
+    requirements: Object.freeze([...drill.requirements]),
+  })),
+])
+
+export function workoutCardAvailable(
+  id: string, resources: readonly ResourceId[], program?: ProgramConfigV1,
+): boolean {
+  const item = WORKOUT_CARD_EXERCISES.find(entry => entry.id === id)
+  if (!item) return false
+  if (!program && LEGACY_LIBRARY.exercises.some(exercise => exercise.id === id)) {
+    return exerciseAvailable(id, resources)
+  }
+  const exact = program?.resources ?? programResourcesForResources(resources)
+  return equipmentAvailable(item.requirements, exact)
+}
 
 const cardKeys = ['id', 'exerciseId', 'title', 'purpose', 'instructions', 'cues', 'resources', 'source', 'status'] as const
 const forbiddenIds = new Set(['__proto__', 'constructor', 'prototype'])

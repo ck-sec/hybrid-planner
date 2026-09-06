@@ -10,6 +10,7 @@ import {
   RUN_COST_PER_MINUTE,
   STANDARD_SET_REPS,
   TRAIL_STRUCTURAL_MULTIPLIER,
+  PROGRAM_POLICY,
 } from './constants.ts'
 import { dayNumber, sessionStartMinutes, timeMinutes } from './dates.ts'
 import type {
@@ -54,7 +55,11 @@ function multiplier(calibration: Calibration): number {
 export function predictSessionLoad(session: Session, athlete: AthleteState, library: ExerciseLibrary): Load {
   const minutes = nonnegative(session.durationMin, 'session duration')
   if (session.kind === 'commitment') return validLoad(session.predictedLoad)
+  if (session.kind === 'workout' && session.sourceCommitmentId) return validLoad(session.predictedLoad)
   const common = multiplier(athlete.calibration)
+  if (session.kind === 'conditioning') {
+    return multiply(PROGRAM_POLICY.conditioningCostPerMinute[session.modality], minutes * common)
+  }
   if (session.kind === 'run') {
     return multiply({
       systemic: RUN_COST_PER_MINUTE.systemic * minutes,
@@ -63,25 +68,84 @@ export function predictSessionLoad(session: Session, athlete: AthleteState, libr
     }, common)
   }
   let total: Load = { systemic: 0, structural: 0 }
-  for (const prescription of session.strengthPrescription) {
+  const prescriptions = session.kind === 'strength'
+    ? session.strengthPrescription.map(prescription => ({ ...prescription, unit: 'reps' as const }))
+    : session.blocks
+  for (const prescription of prescriptions) {
+    if (prescription.unit === 'throws') continue
     const exercise = library.exercises.find(item => item.id === prescription.exerciseId)
     if (!exercise) throw new RangeError(`Unknown exercise: ${prescription.exerciseId}`)
     const sets = nonnegative(prescription.sets, 'sets')
-    const reps = nonnegative(prescription.reps, 'reps')
-    const rpe = nonnegative(prescription.targetRPE, 'target RPE')
-    if (!Number.isInteger(sets) || !Number.isInteger(reps) || sets === 0 || reps === 0
-      || rpe < 6 || rpe > 10 || !Number.isInteger(rpe * 2)) {
-      throw new RangeError('Strength sets, reps, or target RPE are invalid')
+    if (!Number.isInteger(sets) || sets === 0) throw new RangeError('Strength sets are invalid')
+    let doseFactor: number
+    if (prescription.unit === 'reps') {
+      const reps = nonnegative(prescription.reps, 'reps')
+      const rpe = nonnegative(prescription.targetRPE, 'target RPE')
+      if (!Number.isInteger(reps) || reps === 0 || rpe < 6 || rpe > 10 || !Number.isInteger(rpe * 2)) {
+        throw new RangeError('Strength repetitions or target RPE are invalid')
+      }
+      if (prescription.suggestedWeightKg !== undefined) nonnegative(prescription.suggestedWeightKg, 'suggested weight')
+      const effort = Math.min(MAX_COST_RPE_FACTOR, Math.max(MIN_COST_RPE_FACTOR, rpe / REFERENCE_SET_RPE))
+      doseFactor = sets * (reps / STANDARD_SET_REPS) * effort
+    } else {
+      const seconds = nonnegative(prescription.seconds, 'seconds')
+      if (!Number.isInteger(seconds) || seconds === 0) throw new RangeError('Timed prescription is invalid')
+      doseFactor = sets * (seconds / 30)
     }
-    if (prescription.suggestedWeightKg !== undefined) nonnegative(prescription.suggestedWeightKg, 'suggested weight')
     const observations = athlete.baseline.exercises.filter(item =>
       item.exerciseId === prescription.exerciseId && dayNumber(item.date) <= dayNumber(session.date))
     const latest = observations.reduce<typeof observations[number] | undefined>(
       (current, item) => !current || dayNumber(item.date) > dayNumber(current.date) ? item : current, undefined)
     const conservative = !latest || nonnegative(latest.experienceMonths, 'experience months') < NOVICE_MONTHS_THRESHOLD
-    const effort = Math.min(MAX_COST_RPE_FACTOR, Math.max(MIN_COST_RPE_FACTOR, rpe / REFERENCE_SET_RPE))
-    const factor = nonnegative(sets * (reps / STANDARD_SET_REPS) * effort * common
+    const factor = nonnegative(doseFactor * common
       * (conservative ? FIRST_EXPOSURE_COST_MULTIPLIER : 1), 'strength load factor')
+    total = add(total, multiply(validLoad(exercise.coefficients), factor))
+  }
+  return total
+}
+
+function workoutOverrunLoad(
+  session: Extract<Session, { kind: 'workout' }>,
+  logs: NonNullable<RecentSession['log']>['blockLogs'],
+  input: PlanWeekInput,
+): Load {
+  if (session.sourceCommitmentId) return { systemic: 0, structural: 0 }
+  if (!logs) return { systemic: 0, structural: 0 }
+  let total: Load = { systemic: 0, structural: 0 }
+  for (const log of logs) {
+    const block = session.blocks[log.blockIndex]
+    if (!block || block.unit !== log.unit || block.unit === 'throws' || log.unit === 'throws') continue
+    const exerciseId = block.exerciseId
+    if (log.exerciseId !== exerciseId) continue
+    const exercise = input.library.exercises.find(item => item.id === exerciseId)
+    if (!exercise) throw new RangeError(`Unknown exercise: ${exerciseId}`)
+    let plannedFactor: number
+    let actualFactor: number
+    if (block.unit === 'reps' && log.unit === 'reps') {
+      const plannedEffort = Math.min(MAX_COST_RPE_FACTOR,
+        Math.max(MIN_COST_RPE_FACTOR, block.targetRPE / REFERENCE_SET_RPE))
+      plannedFactor = block.sets * (block.reps / STANDARD_SET_REPS) * plannedEffort
+      actualFactor = log.sets.reduce((sum, set) => {
+        const effort = Math.min(MAX_COST_RPE_FACTOR,
+          Math.max(MIN_COST_RPE_FACTOR, set.actualRPE / REFERENCE_SET_RPE))
+        return sum + (set.reps / STANDARD_SET_REPS) * effort
+      }, 0)
+    } else if (block.unit === 'seconds' && log.unit === 'seconds') {
+      plannedFactor = block.sets * (block.seconds / 30)
+      actualFactor = log.seconds / 30
+    } else {
+      continue
+    }
+    const excess = Math.max(0, actualFactor - plannedFactor)
+    if (excess === 0) continue
+    const observations = input.athlete.baseline.exercises.filter(item =>
+      item.exerciseId === exerciseId && dayNumber(item.date) <= dayNumber(session.date))
+    const latest = observations.reduce<typeof observations[number] | undefined>(
+      (current, item) => !current || dayNumber(item.date) > dayNumber(current.date) ? item : current, undefined)
+    const conservative = !latest
+      || nonnegative(latest.experienceMonths, 'experience months') < NOVICE_MONTHS_THRESHOLD
+    const factor = excess * multiplier(input.athlete.calibration)
+      * (conservative ? FIRST_EXPOSURE_COST_MULTIPLIER : 1)
     total = add(total, multiply(validLoad(exercise.coefficients), factor))
   }
   return total
@@ -104,13 +168,22 @@ export function observedSessionWork(record: RecentSession, input: PlanWeekInput)
   if (log.sessionId !== session.id) throw new RangeError('Log session ID does not match its session')
   if (log.status === 'skipped') return null
   if (log.status !== 'completed' && log.status !== 'partial') throw new RangeError('Invalid log status')
-  let load = predictSessionLoad(session, input.athlete, input.library)
+  const predicted = predictSessionLoad(session, input.athlete, input.library)
+  let load = predicted
   const duration = log.actualDurationMin === undefined
     ? nonnegative(session.durationMin, 'planned duration')
     : nonnegative(log.actualDurationMin, 'actual duration')
   if (log.actualDurationMin !== undefined) {
     if (session.durationMin <= 0) throw new RangeError('A duration-scaled session needs positive planned minutes')
-    load = multiply(load, duration / session.durationMin)
+    load = multiply(predicted, duration / session.durationMin)
+  }
+  if (session.kind === 'workout' && !session.sourceCommitmentId && log.blockLogs) {
+    const overrun = workoutOverrunLoad(session, log.blockLogs, input)
+    const actualDoseFloor = add(predicted, overrun)
+    load = {
+      systemic: Math.max(load.systemic, actualDoseFloor.systemic),
+      structural: Math.max(load.structural, actualDoseFloor.structural),
+    }
   }
   // A partial session with no actual duration retains its full estimate, never an invented percentage.
   return { load, duration }
