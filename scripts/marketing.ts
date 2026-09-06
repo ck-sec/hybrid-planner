@@ -85,7 +85,7 @@ function layout(path: string, title: string, description: string, body: string, 
     '@type': 'WebApplication', name: 'Hybrid Coach', url: `${siteOrigin}/app/`,
     applicationCategory: 'HealthApplication', operatingSystem: 'Web browser',
     isAccessibleForFree: true, license: `${sourceUrl}/blob/main/LICENSE`,
-    description: 'A free, MIT-licensed, local-first training planner for running and lifting. Plan and log offline after the first successful load. Optional AI sharing is user-controlled; external providers may charge.',
+    description: 'A free, MIT-licensed, local-first training planner for running, lifting and your other sports in one week. Plan and log offline after the first successful load. Optional AI sharing is user-controlled; external providers may charge.',
   })
   if (options.article) graph.push({
     '@type': 'BreadcrumbList', itemListElement: [
@@ -106,10 +106,10 @@ ${options.noindex ? '<meta name="robots" content="noindex, follow">' : `<link re
 <meta property="og:title" content="${escapeHtml(title)}"><meta property="og:description" content="${escapeHtml(description)}">
 <meta property="og:url" content="${url}"><meta property="og:image" content="${siteOrigin}/social-card.png">
 <meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Hybrid Coach. Your data. Your workouts. Stay yours. Local-first training planner.">
+<meta property="og:image:alt" content="Hybrid Coach. Running and lifting. One plan that fits. Room for your other sports.">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${escapeHtml(title)}">
 <meta name="twitter:description" content="${escapeHtml(description)}"><meta name="twitter:image" content="${siteOrigin}/social-card.png">
-<meta name="twitter:image:alt" content="Hybrid Coach. Your data. Your workouts. Stay yours. Local-first training planner.">
+<meta name="twitter:image:alt" content="Hybrid Coach. Running and lifting. One plan that fits. Room for your other sports.">
 ${options.article ? `<meta property="article:published_time" content="${publishedDate}"><meta property="article:modified_time" content="${publishedDate}">` : ''}
 <link rel="icon" type="image/svg+xml" href="${root}favicon.svg">
 <link rel="stylesheet" href="${root}marketing.css">
@@ -134,13 +134,13 @@ function cta(root: string): string {
 
 function home(): string {
   const sampleDays = [
-    ['M', 'run'], ['T', 'lift'], ['W', 'rest'], ['T', 'run'],
+    ['M', 'run'], ['T', 'lift'], ['W', 'sport'], ['T', 'run'],
     ['F', 'rest'], ['S', 'lift'], ['S', 'rest'],
   ]
   return `<section class="hero wrap">
     <div class="hero-copy"><p class="eyebrow"><span class="short-line"></span> Local-first. Open source. Free.</p>
-      <h1>Your data.<br>Your workouts.<br><span class="serif">Stay yours.</span></h1>
-      <p class="hero-description">AI is useful for talking through training. Keeping the plan in a chat is the hard part. Keep your running, lifting, equipment and actual workouts organised here, with or without AI.</p>
+      <h1>Running<br>and lifting.<br><span class="serif">One plan that fits.</span></h1>
+      <p class="hero-description">And room for the other sports you love. Bring your runs, lifts and practices into one week that fits your life, with your equipment, commitments and recovery in view. One plan, not competing schedules.</p>
       <div class="hero-actions"><a class="button" href="./app/">Open your planner ${arrow}</a><a class="text-link" href="#why-this-exists">Why this exists ${arrow}</a></div>
       <p class="hero-promise">No account. No subscription. No telemetry.<br>Plan and log offline after your first successful load.</p>
     </div>
@@ -151,6 +151,7 @@ function home(): string {
         <ul class="sample-week">
           <li class="sample-day run"><span class="day-dot" aria-hidden="true"></span><span><strong>Easy run</strong><small>Start from your comfortable routine</small></span></li>
           <li class="sample-day lift"><span class="day-dot" aria-hidden="true"></span><span><strong>Strength</strong><small>Your exercises. Your equipment.</small></span></li>
+          <li class="sample-day sport"><span class="day-dot" aria-hidden="true"></span><span><strong>Your other sport</strong><small>Practice belongs in the same week</small></span></li>
           <li class="sample-day rest"><span class="day-dot" aria-hidden="true"></span><span><strong>Room to recover</strong><small>Space for life, not catch-up work</small></span></li>
         </ul>
         <div class="library-preview"><span class="eyebrow">From your exercise library</span><strong>My dumbbell row</strong><p>Your description &middot; Your focus &middot; Your why</p><span class="equipment-tag">Dumbbells + bench</span></div>
@@ -176,7 +177,7 @@ function home(): string {
     <div class="how-title"><p class="eyebrow">Three steps. One starting point.</p><h2>Tell it once.<br><span class="serif">Build from there.</span></h2><p>Collect your context once, before any optional AI conversation. No second onboarding interview.</p><a class="text-link" href="./app/">Build my starting week ${arrow}</a></div>
     <ol class="steps">
       <li><span aria-hidden="true">01</span><div><h3>Goal</h3><p>Write what you want from training, in your own words. Add an event date if you have one; otherwise, use a 12-week progress review.</p></div></li>
-      <li><span aria-hidden="true">02</span><div><h3>Routine</h3><p>Enter your recent, comfortable training, session lengths, equipment, and available space. Add availability and fixed commitments so the plan starts from real life.</p></div></li>
+      <li><span aria-hidden="true">02</span><div><h3>Routine</h3><p>Enter your recent, comfortable training, session lengths, equipment, and available space. Add practices for your other sports as fixed sessions, so running and lifting fit around them.</p></div></li>
       <li><span aria-hidden="true">03</span><div><h3>Review</h3><p>Check the exercise lineup and your starting point. Keep the built-in choices, edit your library, or ask your own AI for suggestions. You approve the result before building.</p></div></li>
     </ol>
   </div></section>
@@ -198,6 +199,7 @@ function home(): string {
   <section class="section wrap faq-section"><div><p class="eyebrow">Good questions</p><h2>Clear choices.<br>Honest limits.</h2><p>An early, open project. Here&rsquo;s what to know before you start.</p></div><div class="faq-list">
     ${[
       ['Is Hybrid Coach really free?', 'The planner is free and MIT licensed. There is no trial, subscription, or account. Optional third-party AI services are separate and may charge for API use.'],
+      ['Can my other sports fit into the plan?', 'Yes. Add your usual practices or activities as fixed sessions alongside running and lifting, with their days, start time and duration. Keep them in the same week rather than juggling separate schedules. This organises your training around those sessions; it does not generate a complete sport-specific coaching programme for every activity.'],
       ['Do I need AI to use it?', 'No. Built-in planning, manual custom exercises, logging, and weekly review work without AI or an API key. Optional AI can suggest exercises and explain your recorded work. You approve changes; the engine controls the quantities, loads, scheduling, and safety checks.'],
       ['What would I share with AI?', 'Only the brief you explicitly choose to share. A setup brief contains your goal, routine, equipment, and planning context, not training logs. A weekly-review brief also includes that week&rsquo;s actual logs, notes, and recorded health flags. Preview it before sharing. Neither brief exports the entire training history or API keys; your provider&rsquo;s policies apply.'],
       ['Can I use it offline?', 'Yes, after your first successful load and once the app confirms its offline copy is ready. Reopen /app/ in the same browser to plan and log offline. Remote AI still needs connectivity. The API connection is memory-only and clears when you reload or disconnect.'],
@@ -266,7 +268,7 @@ function privacy(): string {
 
 export function marketingPages(): MarketingPage[] {
   const pages = [
-    { path: '/', title: 'Local-First Training Planner for Running & Lifting | Hybrid Coach', description: 'Your data. Your workouts. Stay yours. Free, open-source planning for running and lifting. Offline after setup, optional AI, no accounts or telemetry.', body: home() },
+    { path: '/', title: 'Free Hybrid Training Planner for Running & Lifting | Hybrid Coach', description: 'Running, lifting and your other sports in one plan. Free, open-source and local-first, with offline planning, optional AI and training records you own.', body: home() },
     { path: '/learn/', title: 'Hybrid Training Guides: Running, Lifting & Real Life | Hybrid Coach', description: 'Learn how to combine running and strength training, arrange same-day sessions, and adapt busy weeks. Practical guides with sources and honest limits.', body: learningHub() },
     { path: '/method/', title: 'How the Hybrid Coach Training Engine Works', description: 'A local planning engine, your exercise library, and an optional AI harness. See who sets the work, what you approve, and how training history is kept.', body: method() },
     { path: '/privacy/', title: 'Privacy & Your Local Training Data | Hybrid Coach', description: 'Local browser storage, offline planning, and backups you control. What the static host sees and what you choose to share with AI. No accounts or telemetry.', body: privacy() },

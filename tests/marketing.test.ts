@@ -16,9 +16,9 @@ test('every public page is crawlable HTML with unique search and social metadata
     assert.ok(page.html.includes(`<link rel="canonical" href="${siteOrigin}${page.path}">`))
     assert.ok(page.html.includes(`<meta name="description" content="${escapeHtml(page.description)}">`))
     assert.match(page.html, /property="og:image"/)
-    assert.match(page.html, /property="og:image:alt" content="Hybrid Coach\. Your data\. Your workouts\. Stay yours\./)
+    assert.match(page.html, /property="og:image:alt" content="Hybrid Coach\. Running and lifting\. One plan that fits\. Room for your other sports\./)
     assert.match(page.html, /name="twitter:card" content="summary_large_image"/)
-    assert.match(page.html, /name="twitter:image:alt" content="Hybrid Coach\. Your data\. Your workouts\. Stay yours\./)
+    assert.match(page.html, /name="twitter:image:alt" content="Hybrid Coach\. Running and lifting\. One plan that fits\. Room for your other sports\./)
     assert.doesNotMatch(page.html, /noindex|src="https?:|id="root"|\/src\/main|<form\b/)
     const schema = page.html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1]
     assert.ok(schema)
@@ -27,7 +27,7 @@ test('every public page is crawlable HTML with unique search and social metadata
   }
 })
 
-test('public pages use a privacy-first hero and abstract training visual, not sports artwork', () => {
+test('public pages lead with hybrid training and room for other sports without sport-specific artwork', () => {
   const pages = marketingPages()
   for (const page of pages) {
     assert.doesNotMatch(page.html, /Bangkok|dodgeball|court|throwing|view=legacy|original planner|planner archive/i)
@@ -37,18 +37,25 @@ test('public pages use a privacy-first hero and abstract training visual, not sp
   }
   const home = pages.find(page => page.path === '/')
   assert.ok(home)
-  assert.match(home.html, /<h1>Your data\.<br>Your workouts\.<br><span class="serif">Stay yours\.<\/span><\/h1>/)
+  assert.equal(home.title, 'Free Hybrid Training Planner for Running & Lifting | Hybrid Coach')
+  assert.match(home.html, /<h1>Running<br>and lifting\.<br><span class="serif">One plan that fits\.<\/span><\/h1>/)
   assert.match(home.html, /class="calendar-preview" aria-hidden="true"/)
   assert.match(home.html, /class="library-preview"/)
   assert.match(home.html, /<figcaption>Illustrative workspace, not a personal prescription\.<\/figcaption>/)
   const hero = home.html.match(/<section class="hero wrap">([^]*?)<\/section>/)?.[1]
   assert.ok(hero)
+  assert.match(hero, /room for the other sports you love/)
+  assert.match(hero, /Your other sport/)
+  assert.match(hero, /Practice belongs in the same week/)
+  assert.match(home.html, /Add practices for your other sports as fixed sessions/)
+  assert.match(home.html, /does not generate a complete sport-specific coaching programme for every activity/)
   assert.doesNotMatch(hero, /customExercises|version-[12]|workload profile|dose limits|<code>/)
   assert.match(hero, /No account\. No subscription\. No telemetry\./)
   assert.match(hero, /offline after your first successful load/)
   assert.match(hero, /href="\.\/app\/">Open your planner/)
   assert.match(home.description, /[Ll]ocal|[Oo]ffline/)
   assert.match(home.description, /optional AI/)
+  assert.match(home.description, /other sports in one plan/)
   assert.match(home.html, /"isAccessibleForFree":true,"license":"https:\/\/github\.com\/ck-sec\/hybrid-planner\/blob\/main\/LICENSE"/)
   assert.match(home.html, /"description":"A free, MIT-licensed, local-first training planner[^"]*offline after the first successful load[^"]*AI sharing is user-controlled/)
 })

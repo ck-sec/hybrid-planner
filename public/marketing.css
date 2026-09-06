@@ -55,6 +55,7 @@ ul,ol{padding-left:1.4em}
 .calendar-day>i{display:block;background:var(--lapis);border-radius:2px;height:4px;margin-top:5px}
 .calendar-day>i:last-child{width:65%;opacity:.3}
 .calendar-day.lift>i{background:var(--berry)}
+.calendar-day.sport>i{background:var(--plum)}
 .calendar-day.rest{background:#efe9e3}
 .calendar-day.rest>i{background:#c6bfb9}
 .sample-week{margin:0;list-style:none;padding:0 23px}
@@ -63,6 +64,7 @@ ul,ol{padding-left:1.4em}
 .sample-day strong{display:block;font-size:13px;line-height:1.4;font-weight:650}
 .sample-day small{display:block;color:var(--muted);font-size:11px;line-height:1.6}
 .sample-day.lift .day-dot{background:var(--berry)}
+.sample-day.sport .day-dot{background:var(--plum)}
 .sample-day.rest .day-dot{background:#bfb9b4;height:12px}
 .sample-day.rest strong{font-weight:400;color:var(--muted)}
 .library-preview{margin:12px 23px 20px;border:1px solid #cfc4d3;border-left:3px solid var(--berry);border-radius:5px;padding:12px 14px}
