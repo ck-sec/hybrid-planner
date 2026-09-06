@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
-import { emptyCampaign, normalizeRecommendedDraft, parseCampaign } from './model.ts'
+import { confirmSetupEquipment, emptyCampaign, exampleCampaign, normalizeRecommendedDraft, parseCampaign } from './model.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import { applySetupProposal } from './setup-proposal.ts'
 import { parseGoalProposalForReview } from './setup-assistant.ts'
 import type { GoalProposal } from './setup-assistant.ts'
+import { PROGRAM_LIBRARY_VERSION } from '../../engine/constants.ts'
+import { recommendProgram } from '../../engine/program.ts'
+import { programResources } from './equipment.ts'
+import { stageCustomExercises } from './custom-exercises.ts'
+import { buildHandoff } from './handoff.ts'
 
 function draft() {
   const state = emptyCampaign('2026-09-07')
@@ -111,4 +116,80 @@ test('AI text bounds match persisted campaign bounds before applying a proposal'
   assert.doesNotThrow(() => parseCampaign(JSON.parse(JSON.stringify(applied))))
   assert.throws(() => applySetupProposal(state, { ...maximum, label: `${maximum.label}G` }, 'interpret_goal'), /goal name/)
   assert.throws(() => applySetupProposal(state, { ...maximum, location: `${maximum.location}L` }, 'interpret_goal'), /location/)
+})
+
+test('staged custom definitions survive proposal application without changing baseline or active history', () => {
+  const state = draft()
+  const resources = programResources(['dumbbell', 'floor_space'])
+  const exerciseIds = [...recommendProgram(resources, 'balanced').exerciseIds]
+  state.draft = normalizeRecommendedDraft({
+    ...state.draft, resources: ['dumbbell', 'floor_space'], equipment: ['bodyweight', 'dumbbell'],
+    program: { version: 1, libraryVersion: PROGRAM_LIBRARY_VERSION, goal: 'balanced', resources, conditioningBaselines: [], selectedExerciseIds: exerciseIds },
+    recommendedSetup: { ...state.draft.recommendedSetup!, exerciseIds },
+  })
+
+  test('generic classification of a legacy goal preserves explicit strength emphasis and intent', () => {
+    let state = confirmSetupEquipment(exampleCampaign('2026-09-07'), ['floor_space', 'kettlebell'])
+    state = { ...state, draft: { ...state.draft, program: { ...state.draft.program!, goal: 'strength' } } }
+    const before = structuredClone(state)
+    const proposal = buildHandoff(state, { purpose: 'interpret_goal' }).example.proposal!
+    assert.equal(state.draft.goalKind, 'dodgeball')
+    assert.equal(proposal.goalKind, 'custom')
+    const next = applySetupProposal(state, proposal, 'interpret_goal', state.draft.eventDate)
+    assert.equal(next.draft.program?.goal, 'strength')
+    assert.equal(next.draft.goalKind, state.draft.goalKind)
+    assert.equal(next.draft.goalLabel, state.draft.goalLabel)
+    assert.deepEqual(next.draft.priorities, state.draft.priorities)
+    assert.deepEqual(next.draft.program?.conditioningBaselines, state.draft.program?.conditioningBaselines)
+    assert.equal(next.draft.weeklyRunMinutes, state.draft.weeklyRunMinutes)
+    assert.deepEqual(state, before)
+  })
+
+  test('equivalent generic legacy classification cannot invalidate an established throwing baseline', () => {
+    let state = confirmSetupEquipment(exampleCampaign('2026-09-07'), ['floor_space', 'kettlebell', 'dodgeballs', 'court', 'safe_target'])
+    state = { ...state, draft: normalizeRecommendedDraft({
+      ...state.draft, practiceDays: [1], program: { ...state.draft.program!, comfortableThrowsPerPractice: 30 },
+    }) }
+    const proposal = buildHandoff(state, { purpose: 'interpret_goal' }).example.proposal!
+    const next = applySetupProposal(state, proposal, 'interpret_goal', state.draft.eventDate)
+    assert.equal(next.draft.goalKind, 'dodgeball')
+    assert.equal(next.draft.program?.goal, 'dodgeball')
+    assert.equal(next.draft.program?.comfortableThrowsPerPractice, 30)
+    assert.deepEqual(next.draft.practiceDays, state.draft.practiceDays)
+    assert.deepEqual(parseCampaign(next), next)
+  })
+
+  test('a genuine new goal updates inferred defaults but never overwrites an explicit programming emphasis', () => {
+    for (const emphasis of ['balanced', 'strength'] as const) {
+      let state = confirmSetupEquipment(exampleCampaign('2026-09-07'), ['floor_space', 'kettlebell'])
+      state = { ...state, draft: {
+        ...state.draft, goalKind: 'hybrid', program: { ...state.draft.program!, goal: emphasis },
+      } }
+      const proposal = {
+        ...buildHandoff(state, { purpose: 'interpret_goal' }).example.proposal!,
+        goalKind: 'running' as const, label: 'My running goal', priorities: ['aerobic_base' as const],
+      }
+      const next = applySetupProposal(state, proposal, 'interpret_goal', state.draft.eventDate)
+      assert.equal(next.draft.goalKind, 'running')
+      assert.equal(next.draft.goalLabel, 'My running goal')
+      assert.equal(next.draft.program?.goal, emphasis === 'balanced' ? 'endurance' : 'strength')
+      assert.deepEqual(next.draft.program?.conditioningBaselines, state.draft.program?.conditioningBaselines)
+      assert.equal(next.draft.weeklyRunMinutes, state.draft.weeklyRunMinutes)
+    }
+  })
+  state.draft = stageCustomExercises(state.draft, [{
+    version: 1, id: 'custom-dumbbell-kickstand-hinge', name: 'Dumbbell kickstand hinge',
+    profileId: 'controlled_hinge', requirements: ['dumbbell'],
+    description: 'Use the rear foot as a light support while hinging the hips.',
+    focus: 'Keep the movement controlled.', why: 'A distinct hinge variation using familiar equipment.',
+  }])
+  const selection = ['custom-dumbbell-kickstand-hinge', ...exerciseIds.slice(0, 3)]
+  const next = applySetupProposal(state, { ...proposal(), exerciseIds: selection }, 'suggest_exercises')
+  assert.deepEqual(next.draft.program?.customExercises, state.draft.program?.customExercises)
+  assert.deepEqual(next.draft.recommendedSetup?.exerciseIds, selection)
+  assert.deepEqual(next.draft.program?.selectedExerciseIds, [...selection].sort())
+  assert.equal(next.draft.weeklyRunMinutes, state.draft.weeklyRunMinutes)
+  assert.deepEqual(next.draft.exercises, state.draft.exercises)
+  assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(next))), next)
+  assert.throws(() => applySetupProposal({ ...state, weeks: [{} as typeof state.weeks[number]] }, proposal(), 'suggest_exercises'), /committed/)
 })

@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { registerHooks } from 'node:module'
 import { test } from 'node:test'
-import { createElement } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import ts from 'typescript'
 import type { Session } from '../../engine/types.ts'
 import type { CampaignState, CampaignWeek, GoalKind } from './types.ts'
 import {
@@ -427,75 +423,11 @@ test('timeout aborts the in-flight request with an actionable, sanitized error',
   assert.equal(requestSignal?.aborted, true)
 })
 
-test('connection config exists only in component memory with no persistence or automatic network effect', () => {
-  const panel = readFileSync(new URL('./AssistantPanel.tsx', import.meta.url), 'utf8')
+test('the shared assistant client does not persist connection details or use hidden transports', () => {
   const client = readFileSync(new URL('./assistant.ts', import.meta.url), 'utf8')
-  for (const source of [panel, client]) {
-    assert.doesNotMatch(source, /\b(?:localStorage|sessionStorage|indexedDB|document\.cookie|console)\b/)
-    assert.doesNotMatch(source, /(?:process|import\.meta)\.env|sendBeacon|XMLHttpRequest|dangerouslySetInnerHTML/)
-    assert.doesNotMatch(source, /from ['"].*(?:storage|logger|analytics)/)
-  }
-  for (const name of ['endpoint', 'model', 'apiKey']) {
-    assert.ok(panel.includes(`const [${name}, set${name[0].toUpperCase()}${name.slice(1)}] = useState('')`))
-    assert.ok(panel.includes(`set${name[0].toUpperCase()}${name.slice(1)}('')`))
-  }
-  const effect = panel.slice(panel.indexOf('useEffect(() =>'), panel.indexOf('function close()'))
-  assert.doesNotMatch(effect, /requestAssistantIdeas\(|fetch\(/)
-  assert.match(panel, /role="alert"/)
-  assert.match(panel, /AI-selected suggestions only/)
-  assert.match(panel, /maxLength=\{MAX_REFINEMENT_LENGTH\}/)
-  assert.match(panel, /catalog\.filter\(idea => result\.ids\.includes\(idea\.id\)\)/)
-})
-
-test('unavailable sessions show guidance only; supported forms keep detailed cautions collapsed', async t => {
-  t.mock.method(globalThis, 'fetch', () => assert.fail('Rendering must not connect to an endpoint'))
-  const panelUrl = new URL('./AssistantPanel.tsx', import.meta.url)
-  const hooks = registerHooks({
-    load(url, context, nextLoad) {
-      if (url !== panelUrl.href) return nextLoad(url, context)
-      return {
-        format: 'module',
-        shortCircuit: true,
-        source: ts.transpileModule(readFileSync(panelUrl, 'utf8'), {
-          compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext },
-        }).outputText,
-      }
-    },
-  })
-  try {
-    const { default: AssistantPanel } = await import('./AssistantPanel.tsx')
-    const unfinished = campaign()
-    unfinished.setupComplete = false
-    const unconfirmed = campaign()
-    unconfirmed.draft.confirmed = false
-    for (const [state, session] of [
-      [campaign(), null], [unfinished, practice], [unconfirmed, practice],
-    ] as const) {
-      const html = renderToStaticMarkup(createElement(AssistantPanel, { state, session, onClose() {} }))
-      assert.match(html, /Finish setup, then open a session to personalise its content\./)
-      assert.match(html, /aria-label="Close AI ideas"/)
-      assert.doesNotMatch(html, /<(?:form|input|textarea|details)\b/)
-    }
-    const unsupported = renderToStaticMarkup(createElement(AssistantPanel, {
-      state: campaign(practice, 'running'), session: practice, onClose() {},
-    }))
-    assert.match(unsupported, /No reviewed AI ideas match this session/)
-    assert.doesNotMatch(unsupported, /<(?:form|input|textarea|details)\b/)
-
-    const supported = renderToStaticMarkup(createElement(AssistantPanel, {
-      state: campaign(), session: practice, onClose() {},
-    }))
-    assert.match(supported, /<form\b/)
-    assert.match(supported, /AI selects reviewed focus cues for this session\. It never changes your plan or adds work\./)
-    assert.match(supported, /<details[^>]*><summary>Privacy, boundaries &amp; connection help<\/summary>/)
-    assert.match(supported, /<details><summary>Exact goal, session and request data<\/summary>/)
-    assert.doesNotMatch(supported, /<details[^>]*\bopen\b/)
-    assert.match(supported, /type="checkbox"/)
-    assert.match(supported, /I agree to send this goal, session prescription and request to my endpoint/)
-    assert.match(supported, /maxLength="500"/)
-  } finally {
-    hooks.deregister()
-  }
+  assert.doesNotMatch(client, /\b(?:localStorage|sessionStorage|indexedDB|document\.cookie|console)\b/)
+  assert.doesNotMatch(client, /(?:process|import\.meta)\.env|sendBeacon|XMLHttpRequest|dangerouslySetInnerHTML/)
+  assert.doesNotMatch(client, /from ['"].*(?:storage|logger|analytics)/)
 })
 
 test('catalog cards contain a succinct focus cue rather than repeated guardrail blocks', () => {

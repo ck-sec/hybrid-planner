@@ -11,20 +11,22 @@ import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { recommendationForExercise } from '../../engine/recommendations.ts'
 import type { Equipment, ProgramConfigV1 } from '../../engine/types.ts'
 import {
-  availableProgramExercises, equipmentAvailable, equipmentForResources, exerciseAvailable,
+  availableProgramExercises, customResourceId, equipmentAvailable, equipmentForResources, exerciseAvailable,
+  MAX_CUSTOM_RESOURCES, MAX_CUSTOM_RESOURCE_SLUG_LENGTH, MAX_RESOURCES,
   maxExerciseSelection, parseResources, programResources, recommendForResources,
   RESOURCE_CATALOG, RESOURCE_PRESETS, resourceLabels, resourcesForEquipment,
 } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 
-test('resource catalog covers explicit strength, cardio and sport capabilities, not implicit bodyweight', () => {
+test('fresh resource catalog covers strength and cardio without a prescribed sport', () => {
   assert.deepEqual(RESOURCE_CATALOG.map(resource => resource.id).sort(), [
-    'anchor_point', 'bands', 'barbell', 'bench', 'bike', 'cable', 'carry_space', 'cones', 'court',
-    'dodgeballs', 'dumbbell', 'floor_space', 'kettlebell', 'machine', 'open_space', 'partner',
-    'pull_up_bar', 'rack', 'rower', 'safe_target', 'ski_erg', 'stable_step', 'treadmill', 'wall',
+    'anchor_point', 'bands', 'barbell', 'bench', 'bike', 'cable', 'carry_space',
+    'dumbbell', 'floor_space', 'kettlebell', 'machine',
+    'pull_up_bar', 'rack', 'rower', 'ski_erg', 'stable_step', 'treadmill',
   ])
-  assert.deepEqual([...new Set(RESOURCE_CATALOG.map(resource => resource.group))], ['strength', 'cardio', 'sport'])
+  assert.deepEqual([...new Set(RESOURCE_CATALOG.map(resource => resource.group))], ['strength', 'cardio'])
   assert.equal(new Set(RESOURCE_CATALOG.map(resource => resource.label)).size, RESOURCE_CATALOG.length)
+  assert.doesNotMatch(JSON.stringify(RESOURCE_CATALOG), /dodgeball|court|safe_target/i)
 })
 
 test('resource parsing is bounded, canonical and non-mutating', () => {
@@ -46,7 +48,44 @@ test('resource parsing rejects unknown, duplicate and malformed values rather th
     ['constructor'], ['__proto__'], [1], [null], [['dumbbell']], [{ id: 'dumbbell' }],
     Array(1), ['rower', 'rower'], ['barbell', 'dumbbell', 'barbell'],
   ]) assert.throws(() => parseResources(invalid), /resource|duplicate/i)
-  assert.throws(() => parseResources(Array(RESOURCE_CATALOG.length + 1).fill('dumbbell')), /at most/)
+  assert.throws(() => parseResources(Array(MAX_RESOURCES + 1).fill('dumbbell')), /at most/)
+})
+
+test('custom gear is canonical, bounded, labelled and never aliases known strength equipment', () => {
+  assert.equal(customResourceId('  Exercise   Mat  '), 'custom:exercise-mat')
+  assert.equal(customResourceId('Medicine--Ball'), 'custom:medicine-ball')
+  assert.equal(customResourceId('Ball'), 'custom:ball')
+  const resources = parseResources(['floor_space', customResourceId('Mat'), customResourceId('Ball')])
+  assert.deepEqual(resources, ['custom:ball', 'custom:mat', 'floor_space'])
+  assert.deepEqual(resourceLabels(resources), ['Ball', 'Mat', 'Floor space'])
+  assert.deepEqual(parseResources(JSON.parse(JSON.stringify(resources))), resources)
+  assert.deepEqual(equipmentForResources(['custom:dumbbell', 'custom:ball']), ['bodyweight'])
+  assert.deepEqual(programResources(['custom:mat', 'rower', 'custom:ball']), ['bodyweight', 'custom:ball', 'custom:mat'])
+  assert.equal(customResourceId('a'.repeat(MAX_CUSTOM_RESOURCE_SLUG_LENGTH)), `custom:${'a'.repeat(48)}`)
+  const all = Array.from({ length: MAX_CUSTOM_RESOURCES }, (_, i) => customResourceId(`Item ${i}`))
+  assert.equal(parseResources(all).length, 16)
+  assert.throws(() => parseResources([...all, 'custom:extra']), /at most 16/)
+})
+
+test('custom gear rejects malformed, ambiguous and duplicate resource IDs', () => {
+  for (const name of ['', ' ', '-', 'Ball!', '<script>', '../mat', 'custom:mat', 'a\nb', 'a'.repeat(49), 'a'.repeat(121)]) {
+    assert.throws(() => customResourceId(name), /name|resource/i)
+  }
+  for (const id of ['custom:', 'custom:Ball', 'custom:two words', 'custom:a--b', 'custom:-mat', 'custom:mat-', 'custom:__proto__', `custom:${'a'.repeat(49)}`]) {
+    assert.throws(() => parseResources([id]), /resource/i)
+  }
+  assert.throws(() => parseResources([customResourceId('Ball'), customResourceId(' BALL ')]), /duplicate/)
+})
+
+test('legacy sport resource IDs still roundtrip and map to exact engine aliases', () => {
+  const saved = ['dodgeballs', 'court', 'safe_target', 'partner', 'cones', 'wall', 'open_space']
+  assert.deepEqual(parseResources(saved), [...saved].sort())
+  assert.deepEqual(programResources(parseResources(saved)), ['bodyweight', 'court_space', 'dodgeball', 'safe_target'])
+  assert.doesNotMatch(resourceLabels(parseResources(saved)).join(', '), /dodgeball/i)
+  const full = [...RESOURCE_CATALOG.map(resource => resource.id), ...saved,
+    ...Array.from({ length: MAX_CUSTOM_RESOURCES }, (_, i) => customResourceId(`Gear ${i}`))]
+  assert.equal(full.length, MAX_RESOURCES)
+  assert.equal(parseResources(full).length, MAX_RESOURCES)
 })
 
 test('legacy inference keeps broad gear without assuming supports, space or cardio machines', () => {
@@ -184,6 +223,38 @@ test('program helpers use exact engine resources, profiles and the program exerc
   assert.equal(maxExerciseSelection(program), PROGRAM_POLICY.maxSelectedExercises)
 })
 
+test('program capability helpers resolve custom definitions and preserve explicit custom selections', () => {
+  const resources: ResourceId[] = ['floor_space', 'custom:mat']
+  const program: ProgramConfigV1 = {
+    version: 1, libraryVersion: PROGRAM_LIBRARY_VERSION, goal: 'balanced',
+    resources: programResources(resources), conditioningBaselines: [],
+    customExercises: [{
+      version: 1, id: 'custom-mat-squat', name: 'Mat stance squat', profileId: 'controlled_squat',
+      requirements: ['bodyweight', 'custom:mat', 'floor_space'],
+      description: 'Stand on a flat mat and squat with control.', focus: 'Use a comfortable range.',
+      why: 'A familiar controlled movement for this goal.',
+    }],
+  }
+  const before = JSON.stringify(DEFAULT_LIBRARY)
+  assert.equal(exerciseAvailable('custom-mat-squat', resources), false)
+  assert.equal(exerciseAvailable('custom-mat-squat', [], program), true)
+  assert.equal(exerciseAvailable('custom-unreviewed', resources, program), false)
+  const metadata = availableProgramExercises([], program)
+  assert.ok(metadata.some(item => item.id === 'custom-mat-squat'))
+  const initial = recommendForResources([], program)
+  const selected = [...initial.slice(0, PROGRAM_POLICY.minSelectedExercises - 1), 'custom-mat-squat']
+  assert.deepEqual(recommendForResources([], { ...program, selectedExerciseIds: selected }).toSorted(), selected.toSorted())
+  assert.ok(!availableProgramExercises(resources).some(item => item.id === 'custom-mat-squat'))
+  const archived: ProgramConfigV1 = { ...program, resources: ['bodyweight', 'floor_space'], selectedExerciseIds: initial }
+  const archivedBefore = structuredClone(archived)
+  assert.equal(exerciseAvailable('custom-mat-squat', resources, archived), false)
+  assert.ok(!availableProgramExercises(resources, archived).some(item => item.id === 'custom-mat-squat'))
+  assert.deepEqual(recommendForResources([], archived).toSorted(), initial.toSorted())
+  assert.throws(() => recommendForResources([], { ...archived, selectedExerciseIds: selected }), /resources/)
+  assert.deepEqual(archived, archivedBefore)
+  assert.equal(JSON.stringify(DEFAULT_LIBRARY), before)
+})
+
 test('every strength-capability combination produces deterministic, supported and available recommendations', () => {
   const capabilities = RESOURCE_CATALOG.filter(resource => resource.group === 'strength').map(resource => resource.id)
   const libraryBefore = JSON.stringify(DEFAULT_LIBRARY)
@@ -235,16 +306,29 @@ test('equipment picker is accessible, controlled and changes resources only on e
     }))
     assert.doesNotMatch(html, /<form|<details[^>]*\bopen=/)
     assert.match(html, /<legend>What can you train with\?<\/legend>/)
-    assert.match(html, /<summary>Choose individual equipment &amp; spaces<\/summary>/)
+    assert.match(html, /<summary>Adjust strength &amp; cardio equipment \(optional\)<\/summary>/)
+    assert.match(html, /<summary>Add other gear \(optional\)<\/summary>/)
     assert.match(html, /<p[^>]*role="status"[^>]*>.*Bodyweight · Rower · SkiErg<\/p>/)
     assert.match(html, /Presets replace your selection/)
-    for (const group of ['Strength equipment', 'Cardio equipment', 'Sport, space &amp; partners']) {
+    for (const group of ['Strength equipment', 'Cardio equipment']) {
       assert.ok(html.includes(`<legend>${group}</legend>`))
     }
     const renderedButtons = html.match(/<button\b[^>]*>/g) ?? []
-    assert.equal(renderedButtons.length, RESOURCE_PRESETS.length)
+    assert.equal(renderedButtons.length, RESOURCE_PRESETS.length + 1)
     assert.ok(renderedButtons.every(button => button.includes('type="button"')))
-    assert.equal((html.match(/<label\b/g) ?? []).length, RESOURCE_CATALOG.length)
+    assert.equal((html.match(/<label\b/g) ?? []).length, RESOURCE_CATALOG.length + 1)
+    assert.doesNotMatch(html, /Dodgeball|Safe throwing|Court<|throw count/i)
+    const customHtml = renderToStaticMarkup(createElement(EquipmentPicker, {
+      value: ['custom:ball', 'dodgeballs'], onChange() { assert.fail('Saved resources must not be rewritten on render') },
+    }))
+    assert.match(customHtml, /Remove Ball/)
+    assert.match(customHtml, /saved equipment/)
+    assert.doesNotMatch(customHtml, /Dodgeball/i)
+    const limitHtml = renderToStaticMarkup(createElement(EquipmentPicker, {
+      value: Array.from({ length: MAX_CUSTOM_RESOURCES }, (_, i) => customResourceId(`Gear ${i}`)), onChange() {},
+    }))
+    assert.match(limitHtml, /Up to 16 custom items/)
+    assert.match(limitHtml, /<button[^>]*disabled=""[^>]*>Add equipment<\/button>/)
 
     const changes: ResourceId[][] = []
     const tree = EquipmentPicker({ value, onChange: next => changes.push(next) })
@@ -273,6 +357,14 @@ test('equipment picker is accessible, controlled and changes resources only on e
       assert.notEqual(next, RESOURCE_PRESETS[index]!.resources)
     }
     assert.equal(changes.length, 0)
+
+    const savedTree = EquipmentPicker({ value: ['custom:ball', 'dodgeballs'], onChange: next => changes.push(next) })
+    const savedRower = elements(savedTree).find(element => element.type === 'input' && element.props.value === 'rower')!
+    change(savedRower, true)
+    assert.deepEqual(changes.pop(), ['custom:ball', 'dodgeballs', 'rower'])
+    const removeCustom = elements(savedTree).find(element => element.type === 'button' && element.props['aria-label'] === 'Remove Ball')!
+    ;(removeCustom.props.onClick as () => void)()
+    assert.deepEqual(changes.pop(), ['dodgeballs'])
 
     const disabledProps = { value, disabled: true, onChange: () => assert.fail('Disabled controls must not change resources') }
     assert.match(renderToStaticMarkup(createElement(EquipmentPicker, disabledProps)), /<fieldset[^>]*disabled=""/)

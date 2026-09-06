@@ -1,8 +1,8 @@
-import { DEFAULT_LIBRARY, LEGACY_LIBRARY } from '../../engine/library.ts'
+import { DEFAULT_LIBRARY, LEGACY_LIBRARY, resolveProgramLibrary } from '../../engine/library.ts'
 import { SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
 import type { ProgramConfigV1, Resource } from '../../engine/types.ts'
 import {
-  RESOURCE_CATALOG, equipmentAvailable, exerciseAvailable, parseResources, programResourcesForResources,
+  MAX_RESOURCES, RESOURCE_CATALOG, equipmentAvailable, exerciseAvailable, parseResources, programResourcesForResources,
 } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 
@@ -51,10 +51,30 @@ export const WORKOUT_CARD_EXERCISES: readonly WorkoutCardCatalogItem[] = Object.
   })),
 ])
 
+const GENERIC_CARD_EXERCISES = Object.freeze(WORKOUT_CARD_EXERCISES.filter(item => item.kind === 'exercise'))
+
+/** Includes unavailable historical definitions so their saved links stay readable. */
+export function workoutCardCatalog(program?: ProgramConfigV1): readonly WorkoutCardCatalogItem[] {
+  const library = resolveProgramLibrary(program)
+  if (library === DEFAULT_LIBRARY) {
+    return program?.goal === 'dodgeball' ? WORKOUT_CARD_EXERCISES : GENERIC_CARD_EXERCISES
+  }
+  return Object.freeze([
+    ...library.exercises.filter(exercise => exercise.highSkill === false
+      && exercise.template && exercise.profile && exercise.requirements)
+      .map(exercise => Object.freeze({
+        id: exercise.id, name: exercise.label ?? exercise.name, kind: 'exercise' as const,
+        requirements: Object.freeze([...(exercise.requirements ?? [])]),
+      })),
+    ...(program?.goal === 'dodgeball' ? WORKOUT_CARD_EXERCISES.filter(item => item.kind === 'sport_drill') : []),
+  ])
+}
+
 export function workoutCardAvailable(
   id: string, resources: readonly ResourceId[], program?: ProgramConfigV1,
 ): boolean {
   const item = WORKOUT_CARD_EXERCISES.find(entry => entry.id === id)
+    ?? workoutCardCatalog(program).find(entry => entry.id === id)
   if (!item) return false
   if (!program && LEGACY_LIBRARY.exercises.some(exercise => exercise.id === id)) {
     return exerciseAvailable(id, resources)
@@ -63,9 +83,54 @@ export function workoutCardAvailable(
   return equipmentAvailable(item.requirements, exact)
 }
 
+function resourceId(resource: Resource): ResourceId | null {
+  if (resource === 'bodyweight' || resource === 'none') return null
+  if (resource === 'dodgeball') return 'dodgeballs'
+  if (resource === 'court_space') return 'court'
+  return resource
+}
+
+export function workoutCardMissingResources(
+  card: WorkoutCard, resources: readonly ResourceId[], program?: ProgramConfigV1,
+): ResourceId[] {
+  const missing = card.resources.filter(resource => !resources.includes(resource))
+  const item = WORKOUT_CARD_EXERCISES.find(entry => entry.id === card.exerciseId)
+    ?? workoutCardCatalog(program).find(entry => entry.id === card.exerciseId)
+  if (item) {
+    if (!program && LEGACY_LIBRARY.exercises.some(exercise => exercise.id === item.id)) {
+      const candidates = item.requirements.flatMap(resource => {
+        const id = resourceId(resource)
+        return id === null ? [] : [id]
+      })
+      // Legacy notes use their original support guards, not newly inferred supports.
+      missing.push(...candidates.filter(resource => !resources.includes(resource)
+        && !exerciseAvailable(item.id, candidates.filter(id => id !== resource))))
+    } else {
+      const exact = program?.resources ?? programResourcesForResources(resources)
+      for (const requirement of item.requirements) {
+        const id = resourceId(requirement)
+        if (id !== null && !exact.includes(requirement)) missing.push(id)
+      }
+    }
+  }
+  return [...new Set(missing)].sort()
+}
+
+/** Saved legacy resources remain editable without advertising them in fresh generic notes. */
+export function workoutCardResourceOptions(
+  resources: readonly ResourceId[], savedResources: readonly ResourceId[] = [],
+): ResourceId[] {
+  const available = parseResources(resources)
+  const saved = parseResources(savedResources)
+  return [...new Set([
+    ...RESOURCE_CATALOG.map(resource => resource.id),
+    ...available.filter(resource => resource.startsWith('custom:')),
+    ...saved,
+  ])].sort()
+}
+
 const cardKeys = ['id', 'exerciseId', 'title', 'purpose', 'instructions', 'cues', 'resources', 'source', 'status'] as const
 const forbiddenIds = new Set(['__proto__', 'constructor', 'prototype'])
-const exerciseIds = new Set(WORKOUT_CARD_EXERCISES.map(exercise => exercise.id))
 
 function plainText(value: unknown, field: 'title' | 'purpose' | 'instructions' | 'cues'): string {
   const max = WORKOUT_CARD_LIMITS[field]
@@ -78,8 +143,10 @@ function plainText(value: unknown, field: 'title' | 'purpose' | 'instructions' |
   return value
 }
 
-export function moveWorkoutCard(cards: readonly WorkoutCard[], id: string, direction: -1 | 1): WorkoutCard[] {
-  const result = parseWorkoutCards([...cards])
+export function moveWorkoutCard(
+  cards: readonly WorkoutCard[], id: string, direction: -1 | 1, program?: ProgramConfigV1,
+): WorkoutCard[] {
+  const result = parseWorkoutCards([...cards], program)
   const index = result.findIndex(card => card.id === id)
   if (index < 0 || index + direction < 0 || index + direction >= result.length) throw new Error('This note cannot move further in the notebook.')
   const original = result[index]
@@ -88,15 +155,17 @@ export function moveWorkoutCard(cards: readonly WorkoutCard[], id: string, direc
   return result
 }
 
-export function saveWorkoutCard(cards: readonly WorkoutCard[], edited: WorkoutCard, original: WorkoutCard | null): WorkoutCard[] {
-  const current = parseWorkoutCards([...cards])
-  const next = parseWorkoutCards([edited])[0]
+export function saveWorkoutCard(
+  cards: readonly WorkoutCard[], edited: WorkoutCard, original: WorkoutCard | null, program?: ProgramConfigV1,
+): WorkoutCard[] {
+  const current = parseWorkoutCards([...cards], program)
+  const next = parseWorkoutCards([edited], program)[0]
   const previous = current.find(card => card.id === next.id)
-  const expected = original === null ? undefined : parseWorkoutCards([original])[0]
+  const expected = original === null ? undefined : parseWorkoutCards([original], program)[0]
   if ((expected && expected.id !== next.id) || JSON.stringify(previous) !== JSON.stringify(expected)) {
     throw new Error('This note changed while the editor was open. Your saved changes are safe. Cancel and reopen the note before editing again.')
   }
-  return parseWorkoutCards(previous ? current.map(card => card.id === next.id ? next : card) : [...current, next])
+  return parseWorkoutCards(previous ? current.map(card => card.id === next.id ? next : card) : [...current, next], program)
 }
 
 function cardRecord(value: unknown): Record<string, unknown> {
@@ -127,8 +196,9 @@ function arrayEntries(value: unknown, max: number, label: string): unknown[] {
   })
 }
 
-export function parseWorkoutCards(value: unknown): WorkoutCard[] {
+export function parseWorkoutCards(value: unknown, program?: ProgramConfigV1): WorkoutCard[] {
   const ids = new Set<string>()
+  const exerciseIds = new Set([...WORKOUT_CARD_EXERCISES, ...workoutCardCatalog(program)].map(exercise => exercise.id))
   const cards: WorkoutCard[] = []
   for (const entry of arrayEntries(value, MAX_WORKOUT_CARDS, 'The reference notebook')) {
     const item = cardRecord(entry)
@@ -153,7 +223,7 @@ export function parseWorkoutCards(value: unknown): WorkoutCard[] {
       purpose: plainText(item.purpose, 'purpose'),
       instructions: plainText(item.instructions, 'instructions'),
       cues: plainText(item.cues, 'cues'),
-      resources: parseResources(arrayEntries(item.resources, RESOURCE_CATALOG.length, 'Card resources')),
+      resources: parseResources(arrayEntries(item.resources, MAX_RESOURCES, 'Card resources')),
       source: item.source,
       status: item.status,
     })

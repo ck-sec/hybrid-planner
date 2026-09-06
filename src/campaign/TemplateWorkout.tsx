@@ -27,7 +27,7 @@ export default function TemplateWorkout({ state, session, readOnly, update }: {
     const exerciseId = block.unit === 'throws' ? block.drillId : block.exerciseId
     const exercise = block.unit === 'throws' ? undefined : week.input.library.exercises.find(item => item.id === block.exerciseId)
     if (block.unit !== 'throws' && !exercise) throw new Error('This workout block is missing its saved exercise identity.')
-    const metadata = exercise ? exerciseMetadata(exercise.id) : undefined
+    const metadata = exercise ? exerciseMetadata(exercise.id, week.input.library) : undefined
     const name = exercise?.name ?? 'Controlled target throws'
     const saved = log?.blockLogs?.find(item => item.blockIndex === blockIndex)
     const overrun = overruns.find(item => item.blockIndex === blockIndex)
@@ -50,7 +50,11 @@ export default function TemplateWorkout({ state, session, readOnly, update }: {
             : `Up to ${block.throws} controlled throws within practice`}</p>
       </div><span className="cf-tag">{block.unit === 'throws' ? 'Within practice' : block.unit === 'seconds' ? carry ? 'Carry' : 'Timed' : block.role}</span></div>
       {metadata && <p className="cf-template-execution">{metadata.execution.label}{metadata.execution.eccentricSeconds !== undefined && ` · Lower for ${metadata.execution.eccentricSeconds} seconds`}</p>}
-      {exercise && metadata && <ExerciseGuide name={name} guide={exerciseGuidance(exercise, { execution: metadata.execution.label, goal: week.input.block.goal.label, slot: block.unit === 'throws' ? 'practice' : block.role })} />}
+      {exercise && metadata && <ExerciseGuide name={name} guide={exerciseGuidance(exercise, {
+        execution: metadata.execution.label, goal: week.input.block.goal.label,
+        slot: block.unit === 'throws' ? 'practice' : block.role,
+        customExercise: week.input.athlete.program?.customExercises?.find(item => item.id === exercise.id),
+      })} />}
       {overrun && <p role="status" className="cf-card cf-small">{overrun.message} Your actual record is kept. This does not raise prescriptions or count as successful calibration.</p>}
       {block.unit === 'throws' && <div className="cf-card cf-stack"><h3>Description</h3><p>Use an established clear court lane and designated safe target. Make deliberate, submaximal throws and reset between attempts.</p><h3>What to focus on</h3><p>Finish balanced; stop when technique deteriorates or pain appears. This is not maximal throwing or extra conditioning.</p><h3>Why this block</h3><p>It makes controlled technique visible inside existing practice. The count is an exposure ceiling based on your own routine, not medical clearance or a validated injury threshold.</p></div>}
       {block.unit === 'reps' ? <>
@@ -84,7 +88,7 @@ export default function TemplateWorkout({ state, session, readOnly, update }: {
         <p className="cf-small">{block.unit === 'seconds' ? 'Record only what you did. Seconds are not repetitions; no RIR rating is required.' : 'Include warm-up, drill and game throws. The planned count is not extra permission to throw.'}</p>
         <button type="submit" className="cf-button cf-secondary" disabled={readOnly}>{saved ? 'Update recorded total' : 'Log actual total'}</button>
       </form>}
-      <details className="cf-details"><summary>Personal description, focus &amp; why</summary><WorkoutCards cards={state.cards ?? []} exerciseId={exerciseId} resources={resources} program={draft.program} readOnly={state.selectedWeek < state.weeks.length - 1} onChange={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards) })) }} /></details>
+      <details className="cf-details"><summary>Personal description, focus &amp; why</summary><WorkoutCards cards={state.cards ?? []} exerciseId={exerciseId} resources={resources} program={draft.program} readOnly={state.selectedWeek < state.weeks.length - 1} onChange={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards, previous.draft.program) })) }} /></details>
     </section>
   })}</div>
 }

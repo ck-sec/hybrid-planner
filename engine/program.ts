@@ -1,7 +1,8 @@
 import { PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY } from './constants.ts'
 import { DEFAULT_LIBRARY } from './library.ts'
+import { CUSTOM_EXERCISE_PROFILES } from './custom-exercise-profiles.ts'
 import type {
-  AthleteState, ConditioningBaseline, ExecutionProfile, Exercise, ExerciseLibrary, ExerciseProfile,
+  AthleteState, ConditioningBaseline, CustomExerciseSpec, ExecutionProfile, Exercise, ExerciseLibrary, ExerciseProfile,
   FrozenWorkoutTemplate, ProgramGoal, Resource, SportDrillMetadata,
 } from './types.ts'
 
@@ -93,6 +94,9 @@ export function recommendProgram(
     || selectedExerciseIds.length > PROGRAM_POLICY.maxSelectedExercises)) {
     throw new Error(`Select ${PROGRAM_POLICY.minSelectedExercises} to ${PROGRAM_POLICY.maxSelectedExercises} exercises for the frozen A/B templates; no selected exercise is silently omitted.`)
   }
+  if (selectedExerciseIds && new Set(selectedExerciseIds).size !== selectedExerciseIds.length) {
+    throw new Error('Selected exercises must have unique IDs; no duplicate selection is silently omitted.')
+  }
   const selected: Exercise[] = []
   const add = (exercise: Exercise | undefined): void => {
     if (exercise && !selected.some(item => item.id === exercise.id)
@@ -172,6 +176,7 @@ export interface ExerciseMetadata {
   focusCues: readonly string[]
   purpose: string
   execution: ExecutionProfile
+  custom?: CustomExerciseSpec
 }
 
 const CONTENT: Readonly<Record<NonNullable<Exercise['template']>, {
@@ -227,6 +232,7 @@ const CONTENT: Readonly<Record<NonNullable<Exercise['template']>, {
 }
 
 function executionFor(exercise: Exercise): ExecutionProfile {
+  if (exercise.custom) return { ...CUSTOM_EXERCISE_PROFILES[exercise.custom.profileId].execution }
   if (exercise.highSkill) {
     return {
       style: 'ballistic_logging_only', label: 'Ballistic — logging only',
@@ -270,14 +276,15 @@ function metadataFor(exercise: Exercise): ExerciseMetadata {
     id: exercise.id, label: exercise.label, unit: exercise.profile.prescription.unit,
     requirements: [...exercise.requirements], template: exercise.template,
     profile: cloneProfile(exercise.profile),
-    description: content.description + variant,
-    focusCues: execution.style === 'slow_lowering'
+    description: exercise.custom?.description ?? content.description + variant,
+    focusCues: exercise.custom ? [exercise.custom.focus] : execution.style === 'slow_lowering'
       ? ['Lower for the full three seconds.', ...content.focusCues]
       : execution.style === 'fast_concentric_intent'
         ? ['Keep the lowering phase controlled.', 'Drive up with fast intent without leaving the support surface.', ...content.focusCues]
         : [...content.focusCues],
-    purpose: content.purpose,
+    purpose: exercise.custom?.why ?? content.purpose,
     execution,
+    ...(exercise.custom ? { custom: { ...exercise.custom, requirements: [...exercise.custom.requirements] } } : {}),
   }
 }
 
@@ -305,7 +312,12 @@ export function availableExerciseMetadata(
   })
 }
 
-export function exerciseMetadata(exerciseId: string): ExerciseMetadata {
+export function exerciseMetadata(exerciseId: string, library: ExerciseLibrary = DEFAULT_LIBRARY): ExerciseMetadata {
+  if (library !== DEFAULT_LIBRARY) {
+    const exercise = library.exercises.find(item => item.id === exerciseId)
+    if (!exercise) throw new Error('Exercise has no supported program metadata.')
+    return metadataFor(exercise)
+  }
   const metadata = EXERCISE_METADATA[exerciseId]
   if (!metadata) throw new Error('Exercise has no supported built-in metadata.')
   return metadata
@@ -315,7 +327,7 @@ export function exerciseDefaultPrescription(
   exerciseId: string, library: ExerciseLibrary = DEFAULT_LIBRARY,
 ): ExerciseProfile {
   const exercise = library.exercises.find(item => item.id === exerciseId)
-  if (!exercise?.profile || exercise.highSkill) throw new Error('Exercise has no supported built-in prescription profile.')
+  if (!exercise?.profile || exercise.highSkill) throw new Error('Exercise has no supported prescription profile.')
   return cloneProfile(exercise.profile)
 }
 

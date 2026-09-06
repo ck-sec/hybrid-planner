@@ -181,8 +181,8 @@ export interface AssistantMessage {
 export function buildAssistantJsonBody(
   model: string, messages: readonly AssistantMessage[], maxCompletionTokens = 256,
 ) {
-  if (!Number.isInteger(maxCompletionTokens) || maxCompletionTokens < 1 || maxCompletionTokens > 2_048) {
-    throw new AssistantError('The requested JSON response limit must be between 1 and 2048 tokens.')
+  if (!Number.isInteger(maxCompletionTokens) || maxCompletionTokens < 1 || maxCompletionTokens > 6_144) {
+    throw new AssistantError('The requested JSON response limit must be between 1 and 6144 tokens.')
   }
   return {
     model: validateModel(model),

@@ -135,7 +135,7 @@ function requestedProgramSessions(input: PlanWeekInput): Session[] {
       if (!exercise?.profile) throw new InputError([`Frozen exercise ${exerciseId} has no reviewed profile.`])
       const dose = exercise.profile.prescription
       const sets = Math.max(1, Math.floor(dose.sets * fraction))
-      const execution = exerciseMetadata(exerciseId).execution
+      const execution = exerciseMetadata(exerciseId, library).execution
       if (execution.style === 'ballistic_logging_only') {
         throw new InputError([`Frozen exercise ${exerciseId} is logging-only and cannot be prescribed.`])
       }
@@ -307,6 +307,11 @@ export function planWeek(rawInput: PlanWeekInput): WeekPlan {
     'Slow-lowering variants use a fixed reviewed tempo and separate exercise history; the engine assumes no universal optimal tempo and never transfers starting load from the conventional variant.',
     'Target RPE is a bounded prescription cue, not a precise RIR measurement. Repetition-in-reserve evidence is primarily from experienced adults doing traditional resistance training and ratings become less reliable farther from failure.',
     'Timed work and controlled throws keep their own units. The user-established throw ceiling is an administrative exposure cap, not a validated injury-safe threshold. Throws stay inside the established practice duration and supplied commitment cost, which cannot isolate throwing fatigue from the rest of practice.',
+  )
+  if (input.block.program?.customExercises?.length) warnings.push(
+    'Custom exercise names and prose do not validate a technique or make it physiologically safe. '
+    + 'User review must confirm a controlled, nonballistic, low-skill fit to the chosen workload profile. '
+    + 'Only quantities, execution style, duration, and placement are engine-bounded; custom movements have separate histories.',
   )
   if (input.block.program) {
     const overruns = input.context.recentSessions.reduce((count, record) =>

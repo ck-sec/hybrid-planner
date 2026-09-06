@@ -25,22 +25,28 @@ test('confirming equipment uses the expanded library by default without AI or in
   }
 })
 
-test('the standard pre-goal handoff includes equipped kettlebells before any optional switch', () => {
+test('the final setup handoff includes equipment and the complete routine, never an early partial brief', () => {
   let state = confirmSetupEquipment(emptyCampaign('2026-09-07'), ['kettlebell', 'floor_space', 'carry_space'])
   state = { ...state, step: 1, draft: { ...state.draft, eventDate: '2026-12-04', recommendedSetup: {
-    ...state.draft.recommendedSetup!, mode: 'assisted', goalText: 'Dodgeball worlds in Bangkok; I like kettlebells.',
+    ...state.draft.recommendedSetup!, mode: 'assisted', goalText: 'Build balanced fitness with kettlebells and running.',
   } } }
+  assert.throws(() => buildHandoff(state, scope), /Complete your usual training rhythm/)
+  state = { ...state, step: 5, draft: normalizeRecommendedDraft({
+    ...state.draft, runsPerWeek: 2, liftsPerWeek: 2, liftDurationMin: 40,
+    recommendedSetup: { ...state.draft.recommendedSetup!, typicalRunMinutes: 30 },
+  }) }
   const handoff = buildHandoff(state, scope)
   assert.equal(handoff.context.catalog.label, 'Expanded exercise library')
   assert.equal(handoff.context.catalog.maximumSelection, 7)
   assert.ok(handoff.context.allowedCatalog.some(item => item.id === 'kettlebell-goblet-squat'))
   assert.ok(handoff.context.allowedCatalog.some(item => item.id === 'kettlebell-suitcase-carry'))
   assert.equal(handoff.context.goal.date, '2026-12-04')
-  const proposal = { ...handoff.example.proposal!, goalKind: 'dodgeball' as const, label: 'Dodgeball worlds', location: 'Bangkok' }
+  assert.match(JSON.stringify(handoff.context), /"weeklyRunMinutes":60/)
+  const proposal = { ...handoff.example.proposal!, goalKind: 'custom' as const, label: 'Balanced fitness', location: '' }
   const next = applySetupProposal(state, proposal, 'interpret_goal', '2026-12-04')
-  assert.equal(next.draft.program?.goal, 'dodgeball')
+  assert.equal(next.draft.program?.goal, 'balanced')
   assert.equal(next.draft.eventDate, '2026-12-04')
-  assert.equal(next.draft.weeklyRunMinutes, 0)
+  assert.equal(next.draft.weeklyRunMinutes, 60)
   assert.deepEqual(parseCampaign(next), next)
 })
 

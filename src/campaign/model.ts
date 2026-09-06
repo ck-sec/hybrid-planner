@@ -5,7 +5,7 @@ import {
 } from '../../engine/calendar.ts'
 import { CAMPAIGN_POLICY, LIMITS, MAX_LOGGED_SETS_PER_BLOCK, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from '../../engine/dates.ts'
-import { DEFAULT_LIBRARY, LEGACY_LIBRARY, libraryForVersion } from '../../engine/library.ts'
+import { DEFAULT_LIBRARY, LEGACY_LIBRARY, libraryForVersion, resolveProgramLibrary } from '../../engine/library.ts'
 import { predictSessionLoad } from '../../engine/load.ts'
 import { fixedSessions, planWeek, requestedSessions } from '../../engine/planner.ts'
 import { recommendationForExercise, recommendedExercises } from '../../engine/recommendations.ts'
@@ -213,6 +213,7 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
   const candidate = object(value, 'Campaign draft')
   const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...['recommendedSetup', 'resources', 'program'].filter(key => Object.hasOwn(candidate, key))])
   const program = Object.hasOwn(raw, 'program') ? parseProgramConfig(raw.program) : undefined
+  const library = program ? resolveProgramLibrary(program) : DEFAULT_LIBRARY
   const draftNumber = (value: unknown, label: string, min: number, max: number, integer = false): number =>
     ready ? number(value, label, min, max, integer) : number(value, label, -1_000_000, 1_000_000)
   const draftDate = (value: unknown, label: string): string =>
@@ -223,7 +224,7 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
     if (setup.version !== 1) fail('Unsupported recommended setup version.')
     const exerciseIds = unique(array(setup.exerciseIds, 'Recommended exercises', program ? LIMITS.maxProgramExercises : RECOMMENDATION_POLICY.maxExercises).map(value => {
       const id = text(value, 'Recommended exercise ID', 80)
-      if (program) exerciseDefaultPrescription(id)
+      if (program) exerciseDefaultPrescription(id, library)
       else recommendationForExercise(id)
       return id
     }), 'Recommended exercises')
@@ -238,7 +239,7 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
   const exercises = array(raw.exercises, 'Exercise observations', LIMITS.maxExercises).map((value): ExerciseObservation => {
     const item = object(value, 'Exercise observation', ['exerciseId', 'date', 'weightKg', 'sets', 'reps', 'actualRPE', 'experienceMonths'])
     const exerciseId = text(item.exerciseId, 'Exercise ID', 80)
-    if (!DEFAULT_LIBRARY.exercises.some(exercise => exercise.id === exerciseId)) fail(`Unknown exercise ${exerciseId}.`)
+    if (!library.exercises.some(exercise => exercise.id === exerciseId)) fail(`Unknown exercise ${exerciseId}.`)
     const actualRPE = draftNumber(item.actualRPE, 'Observed set RPE', 6, 10)
     if (ready && !Number.isInteger(actualRPE * 2)) fail('Observed set RPE must use half-point steps.')
     return {
@@ -293,11 +294,11 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
     equal(result.weeklyRunMinutes, derived.weeklyRunMinutes, 'Derived weekly running time')
     equal(result.weeklyTimeBudgetMin, derived.weeklyTimeBudgetMin, 'Derived normal training time')
     for (const id of recommendedSetup.exerciseIds) {
-      const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === id)!
+      const exercise = library.exercises.find(item => item.id === id)!
       if (!exercise.equipment.every(item => item === 'none' || result.equipment.includes(item))) {
         fail(`Your equipment does not support the selected ${exercise.name}. Choose another card or correct the available equipment.`)
       }
-      if (program && !availableExerciseMetadata(program.resources).some(item => item.id === id)) {
+      if (program && !availableExerciseMetadata(program.resources, library).some(item => item.id === id)) {
         fail(`Your equipment or space does not support ${exercise.name}. Review its template requirements before planning.`)
       }
       if (!program && result.resources && !exerciseAvailable(id, result.resources)) {
@@ -394,7 +395,7 @@ export function buildCampaign(state: CampaignState): CampaignState {
 
 function initialCampaignInput(draft: CampaignDraft): PlanWeekInput {
   const athlete = baselineForDraft(draft)
-  const library = draft.program ? DEFAULT_LIBRARY : LEGACY_LIBRARY
+  const library = draft.program ? resolveProgramLibrary(draft.program) : LEGACY_LIBRARY
   const block = generateBlock(athlete, goalForDraft(draft), draft.startDate, library)
   const input: PlanWeekInput = { athlete, block, weekIndex: 0, library,
     context: { recentSessions: [], completedWeeks: [], neighboringSessions: [], pinnedSessions: [] } }
@@ -412,6 +413,9 @@ function revisedCampaignInput(weeks: CampaignWeek[], previousDraft: CampaignDraf
     'liftsPerWeek', 'liftDurationMin', 'weeklyTimeBudgetMin', 'exercises',
   ] as const
   for (const key of fixedFields) equal(draft[key], previousDraft[key], `Revision ${key}`)
+  for (const exercise of previousDraft.program?.customExercises ?? []) {
+    equal(draft.program?.customExercises?.find(item => item.id === exercise.id), exercise, `Saved custom exercise ${exercise.id}`)
+  }
   if (!draft.recommendedSetup || !previousDraft.recommendedSetup) fail('Revisions require a recommended exercise selection.')
   equal(draft.recommendedSetup.typicalRunMinutes, previousDraft.recommendedSetup.typicalRunMinutes, 'Revision running baseline')
   const carried = nextCalendarInput(weeks)
@@ -616,7 +620,7 @@ function validateSets(session: Session, log: SessionLog): void {
 function parseWeek(value: unknown): CampaignWeek {
   const raw = object(value, 'Campaign week', ['input', 'plan', 'logs', 'removed', 'changes'])
   const input = parsePlanWeekInput(raw.input)
-  equal(input.library, libraryForVersion(input.library.version), 'Stored exercise library')
+  equal(input.library, input.athlete.program ? resolveProgramLibrary(input.athlete.program) : libraryForVersion(input.library.version), 'Stored exercise library')
   equal(input.athlete.calibration, { version: 1, costMultiplier: 1, observationCount: 0 }, 'Disabled calibration')
   const p = object(raw.plan, 'Stored plan', ['engineVersion', 'policyVersion', 'libraryVersion', 'weekIndex', 'weekStart', 'phase', 'intent', 'sessions', 'totalScore', 'penalties', 'warnings', 'omitted', 'feasibility', 'safety', 'audit'])
   const sessions = array(p.sessions, 'Scheduled sessions', 20).map(parseSession)
@@ -786,7 +790,7 @@ export function parseCampaign(value: unknown): CampaignState {
     version: 1, step: number(raw.step, 'Setup step', 0, 10, true), setupComplete,
     sample: boolean(raw.sample, 'Sample flag'), draft, weeks,
     selectedWeek: number(raw.selectedWeek, 'Selected week', 0, Math.max(0, weeks.length - 1), true), setDrafts,
-    ...(Object.hasOwn(raw, 'cards') ? { cards: parseWorkoutCards(raw.cards) } : {}),
+    ...(Object.hasOwn(raw, 'cards') ? { cards: parseWorkoutCards(raw.cards, draft.program) } : {}),
     ...(revisions ? { revisions } : {}),
   }
 }

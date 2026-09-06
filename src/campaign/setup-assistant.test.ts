@@ -19,6 +19,7 @@ import type { GoalProposal, GoalProposalPurpose } from './setup-assistant.ts'
 import type { CampaignDraft } from './types.ts'
 import { equipmentForResources, parseResources, programResources } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
+import { stageCustomExercises } from './custom-exercises.ts'
 
 function draft(): CampaignDraft {
   return {
@@ -363,7 +364,7 @@ test('date recovery never permits invalid types, extra fields or incompatible ex
   ), /repeats a field/i)
 })
 
-test('request minimizes data to goal text, gear, current IDs and the non-prescriptive allowed catalog', () => {
+test('final request includes baseline and schedule context, never secrets or unrelated profile data', () => {
   const input = draft()
   for (const purpose of ['interpret_goal', 'suggest_exercises'] as const) {
     const body = buildGoalProposalRequest(input, config.model, purpose)
@@ -377,16 +378,22 @@ test('request minimizes data to goal text, gear, current IDs and the non-prescri
     assert.match(body.messages[0].content, /separate date picker/)
     assert.match(body.messages[0].content, /Baseline quantities remain user-entered/)
     const context = JSON.parse(body.messages[1].content)
-    assert.deepEqual(Object.keys(context).sort(), ['allowedCatalog', 'currentExerciseIds', 'equipment', 'goalText', 'requestText'])
+    assert.deepEqual(Object.keys(context).sort(), ['allowedCatalog', 'baseline', 'calendarConstraints', 'currentExerciseIds', 'equipment', 'goalText', 'requestText'])
     assert.equal(context.goalText, input.recommendedSetup!.goalText)
     assert.equal(context.requestText, '')
     assert.deepEqual(context.currentExerciseIds, input.recommendedSetup!.exerciseIds)
+    assert.equal(context.baseline.weeklyRunMinutes, input.weeklyRunMinutes)
+    assert.equal(context.baseline.weeklyTimeBudgetMin, input.weeklyTimeBudgetMin)
+    assert.deepEqual(context.baseline.exercises, input.exercises)
+    assert.deepEqual(context.calendarConstraints.availableDaysMondayZero, input.availableDays)
+    assert.equal(context.calendarConstraints.startDate, input.startDate)
+    assert.equal(context.calendarConstraints.practiceTime, input.practiceTime)
     for (const item of context.allowedCatalog) {
       assert.deepEqual(Object.keys(item).sort(), ['equipment', 'id', 'name', 'pattern'])
       assert.notEqual(item.id, 'snatch')
     }
     const text = JSON.stringify(body)
-    for (const hidden of ['PRIVATE', input.startDate, '2031-01-01', '2026-08-01', '18:30', config.apiKey, config.endpoint]) {
+    for (const hidden of [input.goalLabel, input.location, '2031-01-01', config.apiKey, config.endpoint]) {
       assert.equal(text.includes(hidden), false, hidden)
     }
   }
@@ -412,6 +419,49 @@ test('missing free text, classic mode, unavailable gear and malformed selections
   assert.doesNotThrow(() => buildSetupAssistantContext({
     ...draft(), recommendedSetup: { ...draft().recommendedSetup!, exerciseIds: [] },
   }))
+})
+
+test('initial interpretation cannot connect before the athlete fills the training rhythm', async () => {
+  let calls = 0
+  for (const input of [
+    { ...draft(), availableDays: [] },
+    { ...draft(), runsPerWeek: 0 },
+    { ...draft(), liftsPerWeek: 0 },
+    { ...draft(), liftDurationMin: 0 },
+    { ...draft(), liftDurationMin: Infinity },
+    { ...draft(), liftsPerWeek: 1.5 },
+    { ...draft(), runsPerWeek: LIMITS.maxRuns + 1 },
+    { ...draft(), practiceDuration: 0 },
+    { ...draft(), recommendedSetup: { ...draft().recommendedSetup!, typicalRunMinutes: 0 } },
+  ]) {
+    await assert.rejects(requestGoalProposal({ draft: input, config, consent: true }, async () => {
+      calls++
+      return response()
+    }), /training rhythm/)
+  }
+  assert.equal(calls, 0)
+})
+
+test('custom IDs resolve only against a staged program and exact confirmed custom gear', () => {
+  const input = programDraft(['kettlebell', 'floor_space', 'carry_space', 'custom:sandbag'])
+  const spec = {
+    version: 1, id: 'custom-sandbag-hinge', name: 'Sandbag hinge', profileId: 'controlled_hinge',
+    requirements: ['custom:sandbag'], description: 'Move the hips back with the bag held close.',
+    focus: 'Control the load path.', why: 'A hinge variation for the available equipment.',
+  }
+  const selection = [spec.id, ...input.recommendedSetup!.exerciseIds.slice(0, 3)]
+  const suggestion = { ...proposal(), exerciseIds: selection }
+  assert.throws(() => parseGoalProposal(JSON.stringify(suggestion), input), /exercise IDs/)
+  const staged = stageCustomExercises(input, [spec])
+  const context = buildSetupAssistantContext(staged)
+  assert.deepEqual(parseGoalProposal(JSON.stringify(suggestion), staged).exerciseIds, selection)
+  assert.ok(context.allowedCatalog.some(item => item.id === spec.id && item.name === spec.name))
+  assert.ok(context.resourceLabels?.includes('Sandbag'))
+  assert.ok(context.program?.resources.includes('custom:sandbag'))
+  assert.deepEqual(proposalExerciseChanges(staged, suggestion).find(item => item.exercise.id === spec.id)?.change, 'added')
+  const selected = { ...staged, recommendedSetup: { ...staged.recommendedSetup!, exerciseIds: selection } }
+  assert.deepEqual(buildSetupAssistantContext(selected).currentExerciseIds, selection)
+  assert.throws(() => parseGoalProposal(JSON.stringify({ ...suggestion, exerciseIds: selection.slice(0, 3) }), staged), /4 to 7/)
 })
 
 test('exercise refinements are explicit bounded data, with empty requests meaning tailor from the goal', async () => {
@@ -548,7 +598,7 @@ test('the validated apply closure can forward purpose without changing the singl
   assert.deepEqual(received[1].proposal.exerciseIds, proposal().exerciseIds)
 })
 
-test('SSR shows no broken form for missing input, and a human-readable, escaped review without auto-apply', async t => {
+test('the retained goal review renders escaped suggestions without obsolete forms or network actions', async t => {
   t.mock.method(globalThis, 'fetch', () => assert.fail('Rendering must never connect'))
   const panelUrl = new URL('./SetupAssistantPanel.tsx', import.meta.url)
   const hooks = registerHooks({
@@ -562,49 +612,10 @@ test('SSR shows no broken form for missing input, and a human-readable, escaped 
       }
     },
   })
-  let applied = 0
-  let connected = 0
   try {
-    const { default: SetupAssistantPanel, GoalProposalReview } = await import('./SetupAssistantPanel.tsx')
-    for (const input of [
-      { ...draft(), recommendedSetup: undefined },
-      { ...draft(), equipment: [] },
-      { ...draft(), recommendedSetup: { ...draft().recommendedSetup!, goalText: '' } },
-    ]) {
-      const html = renderToStaticMarkup(createElement(SetupAssistantPanel, { draft: input, onApply() { applied += 1 }, onClose() {} }))
-      assert.match(html, /role="status"/)
-      assert.match(html, /aria-label="Close goal assistant"/)
-      assert.doesNotMatch(html, /<(?:form|input|select)\b/)
-    }
-    const html = renderToStaticMarkup(createElement(SetupAssistantPanel, { draft: draft(), onApply() { applied += 1 }, onClose() {} }))
-    assert.match(html, /<form\b/)
-    assert.match(html, /Interpret my goal/)
-    assert.match(html, /Suggest exercise changes/)
-    assert.doesNotMatch(html, /<textarea\b/)
-    assert.doesNotMatch(html, /Apply these suggestions/)
-    assert.match(html, /<details class="cf-details cf-connection-details" open=/)
-    assert.doesNotMatch(html, /<details class="cf-assistant-details"[^>]*\bopen\b/)
-    assert.match(html, /The endpoint, model and API key clear when this panel closes/)
-    const inherited = renderToStaticMarkup(createElement(SetupAssistantPanel, {
-      draft: draft(), initialConfig: config, onApply() {}, onClose() {},
-      onConnect() { connected += 1 },
-    }))
-    assert.ok(inherited.includes(`value="${config.endpoint}"`))
-    assert.ok(inherited.includes(`value="${config.model}"`))
-    assert.ok(inherited.includes(`value="${config.apiKey}"`))
-    assert.match(inherited, /Connection kept only in this open tab; disconnect or reload clears it\./)
-    assert.doesNotMatch(inherited, /type="checkbox"[^>]*\bchecked\b/)
-    assert.match(inherited, /type="submit"[^>]*disabled/ )
-    assert.doesNotMatch(inherited, /<details[^>]*\bopen\b/)
-    assert.equal(connected, 0)
-    const exerciseMode = renderToStaticMarkup(createElement(SetupAssistantPanel, {
-      draft: draft(), initialConfig: config, initialPurpose: 'suggest_exercises',
-      onApply(next) { assert.ok(next); applied += 1 }, onClose() {},
-    }))
-    assert.match(exerciseMode, /<textarea[^>]*maxLength="500"/)
-    assert.match(exerciseMode, /What exercise-card changes would you like/)
-    assert.match(exerciseMode, /<option value="suggest_exercises" selected=""/)
-    assert.match(exerciseMode, /I agree to send my goal, change request, equipment and exercise selection/)
+    const module = await import('./SetupAssistantPanel.tsx')
+    assert.deepEqual(Object.keys(module), ['GoalProposalReview'])
+    const { GoalProposalReview } = module
     const review = renderToStaticMarkup(createElement(GoalProposalReview, { draft: { ...draft(), eventDate: '' }, proposal: proposal() }))
     assert.match(review, /Bangkok/)
     assert.match(review, /20 November 2030/)
@@ -614,6 +625,7 @@ test('SSR shows no broken form for missing input, and a human-readable, escaped 
     assert.match(review, />Removed</)
     assert.match(review, />Kept</)
     assert.doesNotMatch(review, /targetRPE|suggestedWeightKg/)
+    assert.doesNotMatch(review, /<(?:form|input|select|textarea|button)\b/)
     assert.match(review, /cf-goal-proposal/)
     for (const change of ['added', 'kept', 'removed']) assert.ok(review.includes(`cf-proposal-card cf-proposal-${change}`))
     const exerciseReview = renderToStaticMarkup(createElement(GoalProposalReview, {
@@ -638,13 +650,12 @@ test('SSR shows no broken form for missing input, and a human-readable, escaped 
     }))
     assert.doesNotMatch(escaped, /<script>|<img /)
     assert.match(escaped, /&lt;script&gt;/)
-    assert.equal(applied, 0)
   } finally {
     hooks.deregister()
   }
 })
 
-test('setup config stays in memory, transport is shared, and apply is only an explicit button action', () => {
+test('the shared goal review and setup transport do not persist connection details', () => {
   const panel = readFileSync(new URL('./SetupAssistantPanel.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('./setup-assistant.ts', import.meta.url), 'utf8')
   for (const source of [panel, client]) {
@@ -654,22 +665,6 @@ test('setup config stays in memory, transport is shared, and apply is only an ex
   }
   assert.match(client, /await requestAssistantJson\(/)
   assert.doesNotMatch(client, /await fetch(?:er)?\(|new AbortController|setTimeout\(/)
-  for (const name of ['endpoint', 'model', 'apiKey']) {
-    assert.ok(panel.includes(`const [${name}, set${name[0].toUpperCase()}${name.slice(1)}] = useState(() => initialConfig?.${name} ?? '')`))
-    assert.ok(panel.includes(`set${name[0].toUpperCase()}${name.slice(1)}('')`))
-  }
-  assert.doesNotMatch(panel.slice(panel.indexOf('async function submit'), panel.indexOf('function apply()')), /onApply\(|applyGoalProposal\(/)
-  const request = panel.slice(panel.indexOf('async function submit'), panel.indexOf('function apply()'))
-  assert.ok(request.indexOf('await requestGoalProposal(') < request.indexOf('onConnect?.('))
-  assert.match(request, /if \(activeRequest\.current === controller\) \{\s*setResult\([^]*?onConnect\?\.\(\{ endpoint, model, apiKey \}\)/)
-  assert.equal(panel.match(/onConnect\?\.\(/g)?.length, 1)
-  assert.match(request, /setConsentFor\(null\)/)
-  assert.match(panel, /onClick=\{apply\}/)
-  assert.match(panel, /applyGoalProposal\(draft, proposal, next => onApply\(next, purpose, confirmedDate\)\)/)
-  assert.match(panel, /JSON\.stringify\(\[context, draft\.startDate, draft\.eventDate, purpose\]\)/)
-  assert.match(panel, /validateSetupDate\(draft\.startDate, draft\.eventDate\)/)
-  assert.match(panel, /buildSetupAssistantContext\(draft, purpose === 'suggest_exercises' \? requestText : ''\)/)
-  assert.match(panel, /setRequestText\(event\.target\.value\); setConsentFor\(null\)/)
-  assert.match(panel, /role="alert"/)
-  assert.doesNotMatch(panel.slice(panel.indexOf('useEffect(() =>'), panel.indexOf('function close()')), /requestGoalProposal\(/)
+  assert.doesNotMatch(panel, /export default|SetupAssistantPanelProps|useState|useEffect/)
+  assert.doesNotMatch(panel, /requestGoalProposal\(|requestAssistantJson\(|fetch\(|applyGoalProposal\(/)
 })

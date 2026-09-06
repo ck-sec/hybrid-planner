@@ -9,10 +9,11 @@ import { PROGRAM_LIBRARY_VERSION } from '../../engine/constants.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
 import type { ProgramConfigV1 } from '../../engine/types.ts'
-import { RESOURCE_CATALOG, parseResources } from './equipment.ts'
+import { MAX_RESOURCES, RESOURCE_CATALOG, parseResources } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 import {
-  MAX_WORKOUT_CARDS, WORKOUT_CARD_LIMITS, parseWorkoutCards, saveWorkoutCard, workoutCardAvailable,
+  MAX_WORKOUT_CARDS, WORKOUT_CARD_LIMITS, moveWorkoutCard, parseWorkoutCards, saveWorkoutCard,
+  workoutCardAvailable, workoutCardCatalog, workoutCardMissingResources, workoutCardResourceOptions,
 } from './workout-cards.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 
@@ -22,8 +23,98 @@ function card(change: Partial<WorkoutCard> = {}): WorkoutCard {
     purpose: '', instructions: '', cues: '', resources: [], source: 'user', status: 'draft',
     ...change,
   }
-
 }
+
+function customProgram(): ProgramConfigV1 {
+  return {
+    version: 1, libraryVersion: PROGRAM_LIBRARY_VERSION, goal: 'balanced',
+    resources: ['bodyweight', 'floor_space', 'custom:rowing-handles'],
+    conditioningBaselines: [],
+    customExercises: [{
+      version: 1, id: 'custom-supported-handle-row', name: 'Supported handle row',
+      profileId: 'controlled_pull', requirements: ['custom:rowing-handles'],
+      description: 'A reviewed controlled pulling variation.',
+      focus: 'Move without momentum.', why: 'A pulling option using the confirmed handles.',
+    }],
+  }
+}
+
+test('approved custom exercise links round-trip, save edits, and reorder without becoming unlinked notes', () => {
+  const program = customProgram()
+  const linked = card({ exerciseId: 'custom-supported-handle-row', resources: ['custom:rowing-handles'] })
+  const before = structuredClone(program)
+  assert.deepEqual(parseWorkoutCards([linked], program), [linked])
+  const saved = saveWorkoutCard([], linked, null, program)
+  const edited = saveWorkoutCard(saved, { ...linked, title: 'My handle setup', cues: 'Keep a steady position.' }, linked, program)
+  assert.equal(edited[0].exerciseId, linked.exerciseId)
+  assert.equal(edited[0].title, 'My handle setup')
+  assert.equal(edited.filter(note => note.exerciseId === linked.exerciseId).length, 1)
+  const all = saveWorkoutCard(edited, card({ id: 'other-note' }), null, program)
+  assert.equal(moveWorkoutCard(all, linked.id, 1, program)[1].exerciseId, linked.exerciseId)
+  assert.deepEqual(program, before)
+  assert.throws(() => saveWorkoutCard(edited, { ...linked, title: 'Stale editor' }, linked, program), /changed/)
+})
+
+test('custom note links require approved definitions on every parse, save and move boundary', () => {
+  const program = customProgram()
+  const linked = card({ exerciseId: 'custom-supported-handle-row' })
+  const other = card({ id: 'other-note' })
+  for (const scope of [undefined, { ...program, customExercises: [] }]) {
+    assert.throws(() => parseWorkoutCards([linked], scope), /supported/)
+    assert.throws(() => saveWorkoutCard([], linked, null, scope), /supported/)
+    assert.throws(() => moveWorkoutCard([linked, other], linked.id, 1, scope), /supported/)
+  }
+  assert.throws(() => parseWorkoutCards([card({ exerciseId: 'custom-unapproved' })], program), /supported/)
+  for (const field of ['profileId', 'profile', 'executionStyle', 'sets', 'load', 'durationMin']) {
+    assert.throws(() => parseWorkoutCards([{ ...linked, [field]: 1 }], program), /extra fields/)
+  }
+  const forgedProfile = structuredClone(program)
+  forgedProfile.customExercises![0]!.profileId = 'snatch' as never
+  assert.throws(() => parseWorkoutCards([linked], forgedProfile), /profileId/)
+  assert.throws(() => parseWorkoutCards([], { ...program, version: 2 } as never), /version/)
+  assert.throws(() => parseWorkoutCards([linked], {
+    ...program, customExercises: [{ ...program.customExercises![0], prescription: { sets: 100 } }],
+  } as never), /unknown field/)
+})
+
+test('custom catalog identity and exact resource availability survive absent historical gear', () => {
+  const program = customProgram()
+  const linked = card({ exerciseId: 'custom-supported-handle-row' })
+  const entry = workoutCardCatalog(program).find(item => item.id === linked.exerciseId)!
+  assert.equal(entry.name, 'Supported handle row')
+  assert.deepEqual(entry.requirements, ['custom:rowing-handles'])
+  assert.ok(Object.isFrozen(entry.requirements))
+  assert.equal(workoutCardCatalog().some(item => item.id === linked.exerciseId), false)
+  assert.equal(workoutCardAvailable(linked.exerciseId!, ['custom:rowing-handles']), false)
+  assert.equal(workoutCardAvailable(linked.exerciseId!, ['custom:rowing-handles'], program), true)
+  assert.deepEqual(workoutCardMissingResources(linked, ['custom:rowing-handles'], program), [])
+  const removedGear = { ...program, resources: ['bodyweight', 'floor_space'] as const }
+  assert.equal(workoutCardAvailable(linked.exerciseId!, ['custom:rowing-handles'], removedGear), false,
+    'A broad UI list cannot override exact confirmed program resources')
+  assert.deepEqual(workoutCardMissingResources(linked, [], removedGear), ['custom:rowing-handles'])
+  assert.equal(parseWorkoutCards([linked], removedGear)[0].exerciseId, linked.exerciseId)
+  assert.equal(saveWorkoutCard([linked], { ...linked, title: 'Keep for later' }, linked, removedGear)[0].exerciseId, linked.exerciseId)
+  assert.equal(workoutCardCatalog(removedGear).find(item => item.id === linked.exerciseId)?.name, entry.name)
+})
+
+test('resource options include confirmed custom gear without offering retired sport resources on fresh notes', () => {
+  assert.ok(workoutCardCatalog().every(item => item.kind === 'exercise'))
+  assert.ok(workoutCardCatalog(customProgram()).every(item => item.kind === 'exercise'))
+  assert.ok(workoutCardCatalog({ ...customProgram(), goal: 'dodgeball' }).some(item => item.kind === 'sport_drill'))
+  const fresh = workoutCardResourceOptions(['floor_space', 'custom:rowing-handles', 'dodgeballs'])
+  assert.ok(fresh.includes('custom:rowing-handles'))
+  assert.ok(fresh.includes('floor_space'))
+  assert.equal(fresh.includes('dodgeballs'), false)
+  assert.equal(fresh.includes('court'), false)
+  assert.equal(fresh.includes('safe_target'), false)
+  const saved = workoutCardResourceOptions([], ['custom:old-handles', 'dodgeballs', 'safe_target'])
+  assert.ok(saved.includes('custom:old-handles'))
+  assert.ok(saved.includes('dodgeballs'))
+  assert.ok(saved.includes('safe_target'))
+  const current = Array.from({ length: 16 }, (_, index) => `custom:new-${index}` as const)
+  const historical = Array.from({ length: 16 }, (_, index) => `custom:old-${index}` as const)
+  assert.equal(workoutCardResourceOptions(current, historical).filter(id => id.startsWith('custom:')).length, 32)
+})
 
 test('card availability preserves legacy support guards and uses exact metadata in program mode', () => {
   assert.equal(workoutCardAvailable('back-squat', ['barbell']), false)
@@ -182,6 +273,11 @@ test('unknown equipment and malformed resource lists cannot enter the notebook',
   assert.deepEqual(parsed[0].resources, parseResources(all))
   assert.notEqual(parsed[0].resources, all)
   assert.equal(all.length, RESOURCE_CATALOG.length)
+  const legacy: ResourceId[] = ['dodgeballs', 'cones', 'wall', 'court', 'partner', 'open_space', 'safe_target']
+  const expanded: ResourceId[] = [...all, ...legacy,
+    ...Array.from({ length: 16 }, (_, index) => `custom:kit-${index}` as const)]
+  assert.equal(expanded.length, MAX_RESOURCES)
+  assert.deepEqual(parseWorkoutCards([{ ...card(), resources: expanded }])[0].resources, parseResources(expanded))
 })
 
 test('AI prose stays a draft; reference claims are rejected rather than normalized', () => {
@@ -234,7 +330,7 @@ test('native notebook renders identity and provenance separately without form or
   })
   try {
     const { default: WorkoutCards } = await import('./WorkoutCards.tsx')
-    const render = (cards: WorkoutCard[], options: { exerciseId?: string; readOnly?: boolean; resources?: ResourceId[] } = {}) => renderToStaticMarkup(createElement(WorkoutCards, {
+    const render = (cards: WorkoutCard[], options: { exerciseId?: string; readOnly?: boolean; resources?: ResourceId[]; program?: ProgramConfigV1 } = {}) => renderToStaticMarkup(createElement(WorkoutCards, {
       cards, resources: [], onChange() { assert.fail('Rendering must not change cards') }, ...options,
     }))
     await t.test('custom title cannot replace the canonical exercise identity', () => {
@@ -248,7 +344,7 @@ test('native notebook renders identity and provenance separately without form or
       assert.match(html, /do not add work/)
       assert.match(html, /Edit/)
       assert.match(html, /Delete/)
-      assert.match(html, /Add note or drill/)
+      assert.match(html, /Add reference note/)
       assert.doesNotMatch(html, /<form|<input|<textarea|<select|dangerouslySetInnerHTML/)
       for (const button of html.matchAll(/<button\b[^>]*>/g)) assert.match(button[0], /type="button"/)
     })
@@ -296,6 +392,30 @@ test('native notebook renders identity and provenance separately without form or
       assert.doesNotMatch(render([note], { resources: ['dumbbell', 'bench', 'rower', 'cones'] }), /Unavailable for use/)
       assert.match(render([card({ exerciseId: 'pull-up' })]), /Missing: Pull-up bar/)
       assert.match(render([card({ exerciseId: 'back-squat' })]), /Missing: Barbell &amp; plates, Squat rack/)
+    })
+    await t.test('custom filtered notes keep their real identity and show only genuinely missing custom gear', () => {
+      const program = customProgram()
+      const note = card({ exerciseId: 'custom-supported-handle-row', title: 'My own setup' })
+      const html = render([note], { program, resources: ['floor_space', 'custom:rowing-handles'], exerciseId: note.exerciseId! })
+      assert.match(html, /Showing notes linked to Supported handle row/)
+      assert.match(html, /Catalog exercise: .*Supported handle row/)
+      assert.match(html, /My own setup/)
+      assert.doesNotMatch(html, /Unavailable for use|Unscheduled drill idea/)
+      const edited = saveWorkoutCard([note], { ...note, instructions: 'My saved setup detail.' }, note, program)
+      assert.match(render(edited, { program, exerciseId: note.exerciseId! }), /My saved setup detail/)
+      const missing = render(edited, {
+        program: { ...program, resources: ['bodyweight', 'floor_space'] }, exerciseId: note.exerciseId!,
+      })
+      assert.match(missing, /Missing: Rowing Handles/)
+      assert.doesNotMatch(missing, /Missing: .*Barbell|Missing: .*Dumbbell|Missing: .*Bench|Missing: .*Dodgeball/)
+    })
+    await t.test('stored sport-linked notes remain readable while fresh generic notebooks show no sport catalog', () => {
+      const old = card({ exerciseId: 'dodgeball-controlled-target-throw', resources: ['dodgeballs', 'court', 'safe_target'] })
+      assert.equal(parseWorkoutCards([old])[0].exerciseId, old.exerciseId)
+      const saved = render([old])
+      assert.match(saved, /Controlled target throws/)
+      assert.match(saved, /Ball \(saved equipment\)/)
+      assert.doesNotMatch(render([]), /Controlled target throws|Dodgeball|dodgeballs|Practice target/)
     })
   } finally {
     hooks.deregister()

@@ -13,7 +13,21 @@ export type MovementPattern =
   | 'horizontal_pull' | 'vertical_pull' | 'unilateral_lower' | 'carry' | 'core' | 'rotational'
 export type Equipment = 'barbell' | 'dumbbell' | 'kettlebell' | 'machine' | 'cable' | 'bodyweight' | 'bands' | 'none'
 export type Resource = Equipment | 'bench' | 'rack' | 'pull_up_bar' | 'stable_step' | 'floor_space'
-  | 'anchor_point' | 'carry_space' | 'dodgeball' | 'court_space' | 'safe_target'
+  | 'anchor_point' | 'carry_space' | 'dodgeball' | 'court_space' | 'safe_target' | `custom:${string}`
+export type CustomExerciseProfileId =
+  | 'controlled_squat' | 'controlled_hinge' | 'controlled_push' | 'controlled_pull'
+  | 'controlled_unilateral' | 'controlled_core' | 'controlled_rotation' | 'timed_carry' | 'timed_mobility'
+/** User-reviewed profile fit, not validation of a new technique. Prose has no execution authority. */
+export interface CustomExerciseSpec {
+  version: 1
+  id: string
+  name: string
+  profileId: CustomExerciseProfileId
+  requirements: readonly Resource[]
+  description: string
+  focus: string
+  why: string
+}
 export type PrescriptionUnit = 'reps' | 'seconds'
 export type ProgramGoal = 'balanced' | 'endurance' | 'strength' | 'dodgeball'
 export type ConditioningModality = 'run_road' | 'run_trail' | 'bike_road' | 'bike_gravel' | 'row' | 'ski_erg'
@@ -59,6 +73,7 @@ export interface Exercise {
   label?: string
   template?: 'squat' | 'hinge' | 'push' | 'pull' | 'unilateral' | 'carry' | 'core' | 'rotation' | 'mobility'
   profile?: ExerciseProfile
+  custom?: CustomExerciseSpec
 }
 export interface ExerciseLibrary { version: string; exercises: readonly Exercise[] }
 
@@ -79,6 +94,8 @@ export interface ProgramConfigV1 {
    */
   conditioningBaselines: readonly ConditioningBaseline[]
   selectedExerciseIds?: readonly string[]
+  /** Confirmed definitions, including inactive history. Current resources gate selection, not retention. */
+  customExercises?: readonly CustomExerciseSpec[]
   /** User-established administrative exposure cap; not a validated injury-safe threshold. */
   comfortableThrowsPerPractice?: number
   includeMobility?: boolean

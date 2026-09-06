@@ -1,11 +1,12 @@
 import { useId, useState } from 'react'
-import type { Exercise, ProgramConfigV1 } from '../../engine/types.ts'
+import type { CustomExerciseSpec, Exercise, ProgramConfigV1 } from '../../engine/types.ts'
 import { PROGRAM_POLICY } from '../../engine/constants.ts'
 import type { ResourceId } from './equipment.ts'
 import type { WorkoutCard } from './workout-cards.ts'
 import { exerciseGuidance } from './exercise-guidance.ts'
 import ExerciseGuide from './ExerciseGuide.tsx'
 import WorkoutCards from './WorkoutCards.tsx'
+import CustomExerciseEditor from './CustomExerciseEditor.tsx'
 import './exercise-pool.css'
 
 export interface ExerciseChoice {
@@ -15,7 +16,7 @@ export interface ExerciseChoice {
   prescription: string
 }
 
-export default function ExercisePoolEditor({ choices, selected, maxExercises, goal, resources, cards, program, onChange, onCards }: {
+export default function ExercisePoolEditor({ choices, selected, maxExercises, goal, resources, cards, program, onChange, onCards, onCreateCustom }: {
   choices: readonly ExerciseChoice[]
   selected: readonly string[]
   maxExercises: number
@@ -25,6 +26,7 @@ export default function ExercisePoolEditor({ choices, selected, maxExercises, go
   program?: ProgramConfigV1
   onChange: (ids: string[]) => void
   onCards: (cards: WorkoutCard[]) => void
+  onCreateCustom?: (exercise: CustomExerciseSpec) => boolean
 }) {
   const id = useId()
   const [query, setQuery] = useState('')
@@ -42,14 +44,14 @@ export default function ExercisePoolEditor({ choices, selected, maxExercises, go
       const variants = choices.filter(item => item.family === choice.family && (!selected.includes(item.exercise.id) || item.exercise.id === exerciseId))
       const alternatives = choices.filter(item => item.exercise.pattern === exercise.pattern && !selected.includes(item.exercise.id))
       return <article key={exerciseId} className="cf-pool-card">
-        <div className="cf-pool-heading"><div><p className="cf-kicker">{exercise.pattern.replaceAll('_', ' ')}</p><h3>{exercise.name}</h3></div><span className="cf-tag">Engine template</span></div>
+        <div className="cf-pool-heading"><div><p className="cf-kicker">{exercise.pattern.replaceAll('_', ' ')}</p><h3>{exercise.name}</h3></div><span className="cf-tag">{exercise.id.startsWith('custom-') ? 'Custom exercise' : 'Built-in exercise'}</span></div>
         <p className="cf-pool-dose">{choice.prescription}</p>
         {variants.length > 1 ? <label className="cf-field">Execution style<select value={exerciseId} onChange={event => {
           onChange(selected.map(item => item === exerciseId ? event.target.value : item))
           setEditing(null)
           setSwapping(null)
         }}>{variants.map(item => <option key={item.exercise.id} value={item.exercise.id}>{item.execution}</option>)}</select><span className="cf-small">Changing style selects a separate exercise variant. Loads are never copied from another variant.</span></label> : <p className="cf-small">Execution: {choice.execution}</p>}
-        <ExerciseGuide name={exercise.name} guide={exerciseGuidance(exercise, { execution: choice.execution, goal })} />
+        <ExerciseGuide name={exercise.name} guide={exerciseGuidance(exercise, { execution: choice.execution, goal, customExercise: program?.customExercises?.find(item => item.id === exerciseId) })} />
         <div className="cf-inline">
           <button type="button" className="cf-text-button" aria-expanded={editing === exerciseId} onClick={() => setEditing(editing === exerciseId ? null : exerciseId)}>Edit description &amp; notes</button>
           {alternatives.length > 0 && <button type="button" className="cf-text-button" aria-expanded={swapping === exerciseId} onClick={() => setSwapping(swapping === exerciseId ? null : exerciseId)}>Swap movement</button>}
@@ -69,5 +71,6 @@ export default function ExercisePoolEditor({ choices, selected, maxExercises, go
       {!available.length && <p role="status" className="cf-small">No additional equipped movements match this search.</p>}
       <p className="cf-small">{selected.length} of {maxExercises} movements selected. More selections do not increase the session workload limit.</p>
     </details>
+    {program && onCreateCustom && <CustomExerciseEditor resources={resources} existing={program.customExercises ?? []} onCreate={onCreateCustom} />}
   </section>
 }

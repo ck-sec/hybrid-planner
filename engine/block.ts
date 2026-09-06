@@ -26,7 +26,7 @@ export function generateBlock(
 ): Block {
   const athlete = parseAthlete(rawAthlete)
   const goal = parseGoal(rawGoal)
-  const library = parseLibrary(rawLibrary)
+  const library = parseLibrary(rawLibrary, athlete.program)
   parseISODate(startDate)
   if (dayOfWeek(startDate) !== 0) throw new InputError(['Blocks must begin on a Monday (day 0).'])
   if (dayNumber(athlete.baseline.asOf) > dayNumber(startDate)) throw new InputError(['The baseline cannot be observed after the block begins.'])

@@ -71,6 +71,9 @@ export const LIMITS = {
   maxProgramExercises: 7,
   maxWorkoutBlocks: 8,
   maxConditioningBaselines: 4,
+  maxCustomExercises: 32,
+  maxCustomResources: 16,
+  maxCustomResourceSlugLength: 48,
 } as const
 
 // Campaign-only heuristics; the versioned v0.2 engine policy above is unchanged.

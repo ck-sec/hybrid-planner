@@ -1,9 +1,10 @@
-import type { Equipment, Exercise, MovementPattern } from '../../engine/types.ts'
+import type { CustomExerciseSpec, Equipment, Exercise, MovementPattern } from '../../engine/types.ts'
 
 export interface ExerciseGuidanceOptions {
   execution?: string
   goal?: string
   slot?: string
+  customExercise?: CustomExerciseSpec
 }
 
 export interface ExerciseGuidanceContent {
@@ -353,6 +354,14 @@ function contextualWhy(base: string, options: ExerciseGuidanceOptions): string {
 }
 
 export function exerciseGuidance(exercise: Exercise, options: ExerciseGuidanceOptions = {}): ExerciseGuidanceContent {
+  if (exercise.id.startsWith('custom-')) {
+    const custom = options.customExercise
+    if (!custom || custom.id !== exercise.id) throw new Error('Custom exercise guidance needs its saved definition.')
+    return {
+      description: custom.description, focus: [custom.focus], why: custom.why,
+      execution: executionText(exercise, options.execution),
+    }
+  }
   const exact = GUIDANCE[exercise.id]
   const generic = PATTERN_GUIDANCE[exercise.pattern]
   const equipmentDetail = exact ? '' : exercise.equipment.map(item => EQUIPMENT_DETAIL[item]).find(Boolean) ?? ''

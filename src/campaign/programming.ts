@@ -1,7 +1,7 @@
 import { LIMITS, PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY } from '../../engine/constants.ts'
-import { DEFAULT_LIBRARY } from '../../engine/library.ts'
+import { resolveProgramLibrary } from '../../engine/library.ts'
 import { availableExerciseMetadata, exerciseMetadata, recommendProgram } from '../../engine/program.ts'
-import type { ProgramGoal } from '../../engine/types.ts'
+import type { ProgramGoal, Resource } from '../../engine/types.ts'
 import { equipmentForResources, parseResources, programResources, resourcesForEquipment } from './equipment.ts'
 import type { ExerciseChoice } from './ExercisePoolEditor.tsx'
 import type { CampaignDraft, GoalKind } from './types.ts'
@@ -13,11 +13,15 @@ const VARIANT_FAMILIES: Readonly<Record<string, string>> = {
   'dumbbell-bench-press-fast-concentric': 'dumbbell-bench-press',
 }
 
+export function programResourceLabel(resource: Resource): string {
+  return resource.startsWith('custom:') ? resource.slice(7).replaceAll('-', ' ') : resource.replaceAll('_', ' ')
+}
+
 export const PROGRAM_GOAL_LABELS: Readonly<Record<ProgramGoal, string>> = {
   balanced: 'Balanced run + lift',
   strength: 'Strength-led',
   endurance: 'Running support',
-  dodgeball: 'Dodgeball support',
+  dodgeball: 'Court-sport support (saved program)',
 }
 
 export function programGoalForKind(kind: GoalKind): ProgramGoal {
@@ -42,8 +46,9 @@ export function enableTemplateProgramming(draft: CampaignDraft): CampaignDraft {
 
 export function programmingChoices(draft: CampaignDraft): ExerciseChoice[] {
   if (!draft.program) throw new Error('Enable template programming before editing its exercise pool.')
-  return availableExerciseMetadata(programResources(draft.resources ?? resourcesForEquipment(draft.equipment))).map(metadata => {
-    const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === metadata.id)
+  const library = resolveProgramLibrary(draft.program)
+  return availableExerciseMetadata(programResources(draft.resources ?? resourcesForEquipment(draft.equipment)), library).map(metadata => {
+    const exercise = library.exercises.find(item => item.id === metadata.id)
     if (!exercise) throw new Error('Template metadata is missing its canonical exercise.')
     const dose = metadata.profile.prescription
     const tempo = metadata.execution.eccentricSeconds === undefined ? '' : `; lower for ${metadata.execution.eccentricSeconds} seconds`
@@ -65,7 +70,8 @@ export function selectProgramExercises(draft: CampaignDraft, ids: readonly strin
   }
   const choices = new Set(programmingChoices(draft).map(item => item.exercise.id))
   if (ids.some(id => !choices.has(id))) throw new Error('Each selected movement needs its stated equipment and execution template.')
-  for (const id of ids) exerciseMetadata(id)
+  const library = resolveProgramLibrary(draft.program)
+  for (const id of ids) exerciseMetadata(id, library)
   return {
     ...draft, confirmed: false,
     program: { ...draft.program, selectedExerciseIds: [...ids] },

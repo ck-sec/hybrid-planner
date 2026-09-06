@@ -1,0 +1,13 @@
+.cf-lean-onboarding .cf-step-progress { grid-template-columns: repeat(3, 1fr); }
+.cf-lean-onboarding .cf-goal-prompt textarea { min-height: 112px; }
+.cf-onboarding-routine { display: grid; gap: 18px; }
+.cf-onboarding-review { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--cf-line, #d5d8df); border-radius: 12px; }
+.cf-onboarding-review p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.cf-onboarding-review h2 { overflow-wrap: anywhere; }
+.cf-onboarding-lineup { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.cf-onboarding-lineup li { padding: 7px 11px; border-radius: 8px; background: var(--cf-neutral-soft, #f3f4f6); font-size: 13px; }
+.cf-lean-onboarding .cf-icon-button:disabled { opacity: .35; cursor: default; }
+.cf-lean-onboarding .cf-details > .cf-stack { padding-top: 16px; }
+@media (min-width: 1100px) {
+  .cf-onboarding-routine { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

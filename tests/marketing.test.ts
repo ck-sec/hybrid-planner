@@ -25,6 +25,35 @@ test('every public page is crawlable HTML with unique search and social metadata
   }
 })
 
+test('public examples focus on running and lifting without advertising retired screens', () => {
+  const pages = marketingPages()
+  for (const page of pages) {
+    assert.doesNotMatch(page.html, /Bangkok|dodgeball|view=legacy|original planner|planner archive/i)
+  }
+  const home = pages.find(page => page.path === '/')
+  assert.ok(home)
+  assert.match(home.html, /Keep my easy runs/)
+  assert.match(home.html, /make room to lift/)
+  assert.match(home.html, /illustrative goal/i)
+})
+
+test('setup, custom-exercise boundaries and scoped weekly sharing are described consistently', () => {
+  const pages = marketingPages()
+  const home = pages.find(page => page.path === '/')!.html
+  const method = pages.find(page => page.path === '/method/')!.html
+  const privacy = pages.find(page => page.path === '/privacy/')!.html
+  for (const heading of ['Goal', 'Routine', 'Review &amp; build']) {
+    assert.ok(home.includes(`<h3>${heading}</h3>`))
+  }
+  assert.match(method, /version-2[^]*customExercises[^]*version-1/)
+  assert.match(method, /historical IDs, prescriptions and weight records stay intact/)
+  assert.match(method, /manual custom exercises and weekly review are complete without AI/)
+  assert.match(privacy, /weekly-review brief additionally includes this week/)
+  assert.match(privacy, /sets, repetitions, seconds, weights, duration, effort, notes and recorded health flags/)
+  assert.match(privacy, /Neither brief exports the entire training history, raw activity files or API keys/)
+  assert.doesNotMatch(privacy, /excludes activity files, training logs and API keys|no logs (?:are|ever) sent/i)
+})
+
 test('internal links and fragments resolve without JavaScript at root or a subdirectory', () => {
   const pages = marketingPages()
   for (const prefix of ['', '/preview']) {

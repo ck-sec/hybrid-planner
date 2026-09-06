@@ -3,7 +3,7 @@ import type { DragEvent, PointerEvent } from 'react'
 import { addDays } from '../../engine/dates.ts'
 import { DAY_NAMES } from '../../engine/constants.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
-import type { Quality, Session } from '../../engine/types.ts'
+import type { ExerciseLibrary, Quality, Session } from '../../engine/types.ts'
 import { currentMonday, formatDay, formatWeek } from '../dates.ts'
 import BrandMark from '../BrandMark.tsx'
 import { observeOfflineWorker } from '../offline.ts'
@@ -34,7 +34,7 @@ type Update = (change: (state: CampaignState) => CampaignState) => boolean
 
 const goalIcons: Record<GoalKind, IconName> = { dodgeball: 'court', running: 'run', hybrid: 'dumbbell', custom: 'spark' }
 const qualityLabels: Record<Quality, string> = { aerobic_base: 'Endurance', threshold: 'Sustained effort', vo2max: 'Aerobic power', repeat_sprint: 'Repeated efforts', change_of_direction: 'Change of direction', max_strength: 'Strength', power: 'Power', strength_endurance: 'Strength endurance', shoulder_durability: 'Shoulder durability' }
-const exerciseName = (id: string) => DEFAULT_LIBRARY.exercises.find(exercise => exercise.id === id)?.name ?? id
+const exerciseName = (id: string, library: ExerciseLibrary = DEFAULT_LIBRARY) => library.exercises.find(exercise => exercise.id === id)?.name ?? id
 const sessionIcon = (session: Session): IconName => session.discipline === 'strength' ? 'dumbbell' : session.discipline === 'run' ? 'run' : 'court'
 const sessionTheme = (session: Session) => session.kind === 'conditioning' ? 'run'
   : session.kind === 'workout' ? session.discipline === 'strength' ? 'strength' : 'commitment' : session.kind
@@ -146,8 +146,13 @@ export default function CampaignApp() {
   const session = week?.plan.sessions.find(item => item.id === sessionId) ?? week?.removed.find(item => item.id === sessionId)
   const showHome = state?.setupComplete
   const coachingScope: HandoffScope = {
-    purpose: state?.setupComplete || state?.step === 3 ? 'suggest_exercises' : 'interpret_goal',
+    purpose: state?.setupComplete ? 'suggest_exercises' : 'interpret_goal',
     ...(state?.setupComplete && session ? { sessionId: session.id } : {}),
+  }
+  function reviewNextWeek() {
+    if (update(previous => ({ ...previous, selectedWeek: previous.weeks.length - 1 }))) {
+      setPanel(state?.draft.recommendedSetup ? 'revision' : 'next-week')
+    }
   }
 
   function exportData() {
@@ -173,8 +178,8 @@ export default function CampaignApp() {
       {!state ? <div className="cf-loading"><Icon name="lock" /><h1>{saveStatus === 'failed' ? 'Your data comes first.' : 'Making room for your training.'}</h1><p>{saveStatus === 'failed' ? 'Resolve the storage error to continue. Nothing has been reset.' : 'Opening your local notebook...'}</p></div>
         : !showHome ? <CampaignSetup state={state} update={update} onAI={() => setPanel('setup-ai')} connected={setupConnection !== undefined} onDisconnect={() => setSetupConnection(undefined)} />
           : session && week ? <Workout key={session.id} state={state} session={session} update={update} onBack={() => navigate('today')} onAction={action} onAI={() => setPanel('ai')} />
-            : tab === 'today' ? <CalendarHome state={state} update={update} onSession={selectSession} onAction={action} onAI={() => setPanel('ai')} onNext={() => setPanel('next-week')} />
-              : tab === 'plan' ? <PlanOverview state={state} onAI={() => setPanel('ai')} onNext={() => setPanel('next-week')} />
+            : tab === 'today' ? <CalendarHome state={state} update={update} onSession={selectSession} onAction={action} onAI={() => setPanel('ai')} onNext={reviewNextWeek} />
+              : tab === 'plan' ? <PlanOverview state={state} onAI={() => setPanel('ai')} onNext={reviewNextWeek} />
                 : <History state={state} />}
     </main>
     {showHome && !session && <nav className="cf-bottom-nav" aria-label="Mobile navigation">{(['today', 'plan', 'history'] as Tab[]).map((item, index) => <button key={item} aria-current={tab === item ? 'page' : undefined} onClick={() => navigate(item)}><Icon name={index === 0 ? 'calendar' : index === 1 ? 'court' : 'history'} /><span>{item === 'today' ? 'Your week' : item === 'plan' ? 'Plan' : 'History'}</span></button>)}</nav>}
@@ -186,23 +191,23 @@ export default function CampaignApp() {
           return update(() => next)
         }}
         onRevise={state.setupComplete && state.draft.recommendedSetup ? () => setPanel('revision') : undefined}
-        onCards={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards) })) }}
+        onCards={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards, previous.draft.program) })) }}
         onApply={(review, request, date) => update(previous => applyHandoff(previous, review, coachingScope, request, date))}
         onClose={() => setPanel(null)}
       />}
       {panel === 'next-week' && <section className="cf-stack"><div><p className="cf-kicker">ONE WEEK AT A TIME</p><h2>Ready for the next week?</h2></div><p>The engine uses your recorded training and fatigue skips. No catch-up work is added.</p><p className="cf-muted">The current week becomes read-only in this first release. Finish recording it before moving on; unlogged sessions will stay unknown, not completed.</p><div className="cf-inline"><button className="cf-button cf-primary" onClick={() => { update(nextCampaignWeek); setPanel(null); navigate('today') }}>Build next week <Icon name="arrow" /></button><button className="cf-button cf-secondary" onClick={() => setPanel(null)}>Stay here</button></div></section>}
       {panel === 'revision' && state && <ProgrammingRevision state={state} config={setupConnection} onConnect={setSetupConnection}
         onApply={next => update(() => parseCampaign(next))} onClose={() => { setPanel(null); navigate('today') }} />}
-      {panel === 'leave-example' && <section className="cf-stack"><h2>Make it your own.</h2><p>This clears the example campaign and any entries you made in it. Export a backup first if you'd like to keep them. The original planner archive is untouched.</p><div className="cf-inline"><button className="cf-button cf-secondary" onClick={exportData}>Export example</button><button className="cf-button cf-primary" onClick={() => { update(() => ({ ...emptyCampaign(addDays(currentMonday(), 7)), step: 1 })); setPanel(null); navigate('today') }}>Start my own campaign</button><button className="cf-text-button" onClick={() => setPanel('settings')}>Cancel</button></div></section>}
+      {panel === 'leave-example' && <section className="cf-stack"><h2>Make it your own.</h2><p>This clears the example campaign and any entries you made in it. Export a backup first if you'd like to keep them.</p><div className="cf-inline"><button className="cf-button cf-secondary" onClick={exportData}>Export example</button><button className="cf-button cf-primary" onClick={() => { update(() => ({ ...emptyCampaign(addDays(currentMonday(), 7)), step: 1 })); setPanel(null); navigate('today') }}>Start my own campaign</button><button className="cf-text-button" onClick={() => setPanel('settings')}>Cancel</button></div></section>}
       {panel === 'settings' && <section className="cf-stack">
         <div className="cf-dialog-header"><div><p className="cf-kicker">YOURS. ALWAYS.</p><h2>Your data &amp; settings</h2></div><button className="cf-icon-button" aria-label="Close settings" onClick={() => setPanel(null)}><Icon name="close" /></button></div>
         <div className="cf-card"><Icon name="lock" /><h3>On this device. Not our servers.</h3><p className="cf-muted">Training is stored in this browser. Clearing browser data removes it, so keep a backup. AI only connects when you explicitly ask it to.</p><p className="cf-small">{offline.message}</p></div>
         <button className="cf-button cf-primary" onClick={exportData} disabled={!state}><Icon name="download" />Export campaign backup</button>
-        {state && <div className="cf-card"><h3>Equipment &amp; space</h3><p>{resourceLabels(state.draft.resources ?? resourcesForEquipment(state.draft.equipment)).join(', ') || 'No kit'}</p><p className="cf-small">{state.setupComplete ? 'Saved sessions keep their original equipment, execution styles and prescriptions. Review an explicit next-week revision to change future exercises without losing history.' : 'Change this selection in Your equipment or Your base.'}</p></div>}
+        {state && <div className="cf-card"><h3>Equipment &amp; space</h3><p>{resourceLabels(state.draft.resources ?? resourcesForEquipment(state.draft.equipment)).join(', ') || 'No kit'}</p><p className="cf-small">{state.setupComplete ? 'Saved sessions keep their original equipment, execution styles and prescriptions. Review your week to change future exercises without losing history.' : 'Change this selection in Your routine.'}</p></div>}
         {state?.setupComplete && state.draft.recommendedSetup && <button type="button" className="cf-button cf-secondary" onClick={() => {
           update(previous => ({ ...previous, selectedWeek: previous.weeks.length - 1 }))
           setPanel('revision')
-        }}>Revise next week's exercises</button>}
+        }}>Review week &amp; shape the next</button>}
         {setupConnection && <button type="button" className="cf-text-button" onClick={() => setSetupConnection(undefined)}>Disconnect AI</button>}
         {state?.sample && <button className="cf-button cf-secondary" onClick={() => setPanel('leave-example')}>Leave the example &amp; start my own</button>}
         <label className="cf-field">Restore a campaign backup<input type="file" accept=".json,application/json" onChange={event => {
@@ -213,9 +218,7 @@ export default function CampaignApp() {
           void file.text().then(text => { setPendingRestore(parseCampaign(JSON.parse(text))); setNotice('') }).catch(error => { setPendingRestore(null); setNotice(errorMessage(error)) })
         }} /></label>
         {notice && <p role="alert" className="cf-error">{notice}</p>}
-        {pendingRestore && <div className="cf-card"><h3>Replace this campaign?</h3><p>This replaces your campaign and logs. Your original planner archive is not touched. Export a copy first.</p><div className="cf-inline"><button className="cf-button cf-danger" onClick={() => { update(() => pendingRestore); setPendingRestore(null); setPanel(null); navigate('today') }}>Replace campaign</button><button className="cf-button cf-secondary" onClick={() => setPendingRestore(null)}>Cancel</button></div></div>}
-        <div className="cf-card"><h3>Activity imports</h3><p className="cf-muted">Garmin FIT and Apple Health exports are the next import milestone. They are not parsed in this build. Start with your manual baseline; no missing values are invented.</p></div>
-        <a className="cf-text-button" href="?view=legacy">Open original planner &amp; archive <Icon name="arrow" /></a>
+        {pendingRestore && <div className="cf-card"><h3>Replace this campaign?</h3><p>This replaces your campaign and logs. Export a copy first.</p><div className="cf-inline"><button className="cf-button cf-danger" onClick={() => { update(() => pendingRestore); setPendingRestore(null); setPanel(null); navigate('today') }}>Replace campaign</button><button className="cf-button cf-secondary" onClick={() => setPendingRestore(null)}>Cancel</button></div></div>}
         <p className="cf-small">Open source. MIT. No accounts, telemetry, streaks, or automatic load increases.</p>
       </section>}
     </dialog>
@@ -345,7 +348,7 @@ function Workout({ state, session, update, onBack, onAction, onAI }: { state: Ca
         }}>Fill next set from last record <Icon name="arrow" size={15} /></button>}
       </section>
     })}</div>}
-    <details className="cf-details"><summary>Personal reference cards &amp; drill drafts</summary><WorkoutCards cards={state.cards ?? []} resources={sessionDraft.resources ?? resourcesForEquipment(sessionDraft.equipment)} program={sessionDraft.program} readOnly={readOnly} onChange={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards) })) }} /></details>
+    <details className="cf-details"><summary>Personal reference cards &amp; drill drafts</summary><WorkoutCards cards={state.cards ?? []} resources={sessionDraft.resources ?? resourcesForEquipment(sessionDraft.equipment)} program={sessionDraft.program} readOnly={readOnly} onChange={cards => { update(previous => ({ ...previous, cards: parseWorkoutCards(cards, previous.draft.program) })) }} /></details>
     {!removed && <button className="cf-ai-teaser" onClick={onAI}><Icon name="spark" /><div><strong>Make this session more yours</strong><span>Edit reference cards, use your AI chat or connect an API. Same locked prescription.</span></div><Icon name="chevron" size={18} /></button>}
     {showFinish && !readOnly && <form className="cf-card cf-stack" onSubmit={event => { event.preventDefault(); update(previous => completeCampaignSession(previous, session.id, duration, effort, pain)); setShowFinish(false) }}><h2>How did it go?</h2><div className="cf-two"><NumberField label="Actual duration" value={duration} min={1} max={1440} suffix="min" onChange={setDuration} /><NumberField label="Whole-session effort" value={effort} min={0} max={10} onChange={setEffort} /></div><label className="cf-check"><input type="checkbox" checked={pain} onChange={event => setPain(event.target.checked)} /><span>I experienced pain during or after this session.</span></label>{pain && <p className="cf-error">Pain pauses further planning. This app does not provide return-to-training advice.</p>}<button className="cf-button cf-primary">Confirm completion <Icon name="check" /></button></form>}
     <div className="cf-workout-footer"><span>{log?.status === 'completed' ? 'Session recorded' : `${recordedSets} set${recordedSets === 1 ? '' : 's'} recorded${recordedTotals ? ` · ${recordedTotals} block total${recordedTotals === 1 ? '' : 's'}` : ''}`}</span>{!readOnly ? <button className="cf-button cf-primary" onClick={() => setShowFinish(!showFinish)}>Finish session <Icon name="check" size={19} /></button> : <button className="cf-button cf-secondary" onClick={onBack}>Back to week <Icon name="arrow" /></button>}</div>
@@ -362,18 +365,18 @@ function PlanOverview({ state, onAI, onNext }: { state: CampaignState; onAI: () 
 function History({ state }: { state: CampaignState }) {
   const records = state.weeks.flatMap(week => Object.entries(week.logs).flatMap(([id, log]) => {
     const session = [...week.plan.sessions, ...week.removed].find(item => item.id === id)
-    return session ? [{ session, log }] : []
+    return session ? [{ session, log, library: week.input.library }] : []
   })).sort((a, b) => b.session.date.localeCompare(a.session.date))
   return <section className="cf-history cf-stack">
     <div className="cf-page-heading"><div><p className="cf-kicker">YOUR OWN REFERENCE POINT</p><h1>What you did.<br /><em>What you learned.</em></h1></div></div>
     <p className="cf-lead">Real weights. Real sessions. No streak to keep alive.</p>
-    {records.length === 0 ? <div className="cf-empty-state"><Icon name="history" size={36} /><h2>Your first entry starts with a session.</h2><p>Log sets or record a skip from your calendar. Your observations will appear here.</p></div> : records.map(({ session, log }) => {
+    {records.length === 0 ? <div className="cf-empty-state"><Icon name="history" size={36} /><h2>Your first entry starts with a session.</h2><p>Log sets or record a skip from your calendar. Your observations will appear here.</p></div> : records.map(({ session, log, library }) => {
       const sets = [...(log.sets ?? []), ...(log.blockLogs ?? []).flatMap(item => item.unit === 'reps' ? item.sets : [])]
       return <article className="cf-history-entry" key={session.id}>
         <div className="cf-history-heading"><span className={`cf-sport-icon cf-session-${session.kind}`}><Icon name={sessionIcon(session)} /></span><div><span className="cf-kicker">{session.date}</span><h2>{sessionTitle(session)}</h2></div><span className="cf-tag">{log.status === 'skipped' ? log.skipReason === 'too_tired' ? 'Fatigue skip' : 'Time skip' : log.status}</span></div>
-        {sets.map((set, index) => <div className="cf-history-set" key={index}><span>{exerciseName(set.exerciseId)}</span><strong>{set.weightKg} <small>kg</small> × {set.reps}</strong><span>RPE {set.actualRPE}</span></div>)}
+        {sets.map((set, index) => <div className="cf-history-set" key={index}><span>{exerciseName(set.exerciseId, library)}</span><strong>{set.weightKg} <small>kg</small> × {set.reps}</strong><span>RPE {set.actualRPE}</span></div>)}
         {log.blockLogs?.map(item => item.unit === 'reps' ? null : <div className="cf-history-set" key={`block-${item.blockIndex}`}>
-          <span>{item.unit === 'seconds' ? exerciseName(item.exerciseId) : 'Practice throwing exposure'}</span>
+          <span>{item.unit === 'seconds' ? exerciseName(item.exerciseId, library) : 'Practice throwing exposure'}</span>
           <strong>{item.unit === 'seconds' ? `${item.seconds} seconds` : `${item.throws} throws`}</strong>
           {item.unit === 'seconds' && item.weightKg !== undefined && <span>{item.weightKg} kg carried</span>}
         </div>)}

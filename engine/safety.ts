@@ -7,7 +7,8 @@ import { addDays, dayNumber, dayOfWeek, sessionStartMinutes } from './dates.ts'
 import { observedSessionWork, predictSessionLoad } from './load.ts'
 import { hasCleanBlockObservation, hasCleanThrowObservation, latestPerformance } from './observations.ts'
 import { exerciseMetadata, resolvedConditioningBaselines } from './program.ts'
-import type { FixedCommitment, PlanWeekInput, SafetyFloorResult, SafetyViolation, Session } from './types.ts'
+import { CUSTOM_EXERCISE_PROFILES, materializeCustomExercise } from './custom-exercise-profiles.ts'
+import type { Exercise, FixedCommitment, PlanWeekInput, SafetyFloorResult, SafetyViolation, Session } from './types.ts'
 
 function number(value: number, label: string, positive = false): number {
   if (!Number.isFinite(value) || (positive ? value <= 0 : value < 0)) {
@@ -16,15 +17,27 @@ function number(value: number, label: string, positive = false): number {
   return value
 }
 
-function samePrescription(left: Session, right: Session): boolean {
-  const stable = (value: unknown): string => {
-    if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
-    if (value !== null && typeof value === 'object') {
-      return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-        .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`).join(',')}}`
-    }
-    return JSON.stringify(value) ?? 'undefined'
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`).join(',')}}`
   }
+  return JSON.stringify(value) ?? 'undefined'
+}
+
+function sameExercise(left: Exercise, right: Exercise): boolean {
+  const normalize = (exercise: Exercise): Exercise => ({
+    ...exercise, equipment: [...exercise.equipment].sort(),
+    ...(exercise.requirements ? { requirements: [...exercise.requirements].sort() } : {}),
+    ...(exercise.custom ? { custom: {
+      ...exercise.custom, requirements: [...exercise.custom.requirements].sort(),
+    } } : {}),
+  })
+  return stable(normalize(left)) === stable(normalize(right))
+}
+
+function samePrescription(left: Session, right: Session): boolean {
   const { reason: leftReason, ...leftFields } = left
   const { reason: rightReason, ...rightFields } = right
   void leftReason
@@ -343,8 +356,17 @@ export function checkSafety(
               continue
             }
             const exercise = library.exercises.find(item => item.id === blockItem.exerciseId)
-            const profile = exercise?.profile
-            const execution = exercise ? exerciseMetadata(exercise.id).execution : undefined
+            const custom = block.program.customExercises?.find(item => item.id === blockItem.exerciseId)
+            if (exercise?.custom || exercise?.id.startsWith('custom-') || custom) {
+              const expected = custom ? materializeCustomExercise(custom) : undefined
+              if (!exercise || !expected || !sameExercise(exercise, expected)) {
+                fail('customExerciseIdentity', [session],
+                  'A custom exercise must exactly retain its approved spec and engine-owned workload profile.')
+                continue
+              }
+            }
+            const profile = custom ? CUSTOM_EXERCISE_PROFILES[custom.profileId].profile : exercise?.profile
+            const execution = exercise ? exerciseMetadata(exercise.id, library).execution : undefined
             if (!exercise || !profile || exercise.highSkill || seen.has(blockItem.exerciseId)
               || !exercise.requirements?.every(resource => block.program!.resources.includes(resource))
               || profile.prescription.unit !== blockItem.unit || execution?.style !== blockItem.executionStyle
@@ -362,7 +384,7 @@ export function checkSafety(
               if (blockItem.sets > profile.prescription.sets || blockItem.reps !== profile.prescription.reps
                 || blockItem.targetRPE !== profile.prescription.targetRPE
                 || blockItem.role !== (session.blocks.indexOf(blockItem) === 0 ? 'anchor' : 'accessory')) {
-                fail('programDose', [session], `Exercise ${blockItem.exerciseId} exceeds or changes its built-in first-exposure dose.`)
+                fail('programDose', [session], `Exercise ${blockItem.exerciseId} exceeds or changes its engine-owned first-exposure dose.`)
               }
               if (blockItem.suggestedWeightKg !== undefined) {
                 const performance = latestPerformance(input, blockItem.exerciseId)
@@ -378,7 +400,7 @@ export function checkSafety(
               const expectedRole = exercise.template === 'mobility' ? 'mobility' : 'carry'
               if (blockItem.sets > profile.prescription.sets || blockItem.seconds !== profile.prescription.seconds
                 || blockItem.role !== expectedRole) {
-                fail('programDose', [session], `Exercise ${blockItem.exerciseId} exceeds or changes its built-in timed dose.`)
+                fail('programDose', [session], `Exercise ${blockItem.exerciseId} exceeds or changes its engine-owned timed dose.`)
               }
             }
           }

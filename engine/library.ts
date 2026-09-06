@@ -1,7 +1,8 @@
 import legacyData from './exercises.json' with { type: 'json' }
 import defaultData from './exercises-v1.json' with { type: 'json' }
-import { parseLibrary } from './validation.ts'
-import type { ExerciseLibrary } from './types.ts'
+import { materializeCustomExercise } from './custom-exercise-profiles.ts'
+import { parseLibrary, parseProgramConfig } from './validation.ts'
+import type { ExerciseLibrary, ProgramConfigV1 } from './types.ts'
 
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') {
@@ -24,4 +25,15 @@ export function libraryForVersion(version: string): ExerciseLibrary {
   const library = LIBRARIES[version]
   if (!library) throw new Error(`Unsupported exercise library version: ${version}.`)
   return library
+}
+
+/** Resolve only confirmed specs; the built-in snapshots are never extended in place. */
+export function resolveProgramLibrary(program?: ProgramConfigV1): ExerciseLibrary {
+  if (program === undefined) return DEFAULT_LIBRARY
+  const parsed = parseProgramConfig(program)
+  if (!parsed.customExercises?.length) return DEFAULT_LIBRARY
+  return freeze(parseLibrary({
+    version: DEFAULT_LIBRARY.version,
+    exercises: [...DEFAULT_LIBRARY.exercises, ...parsed.customExercises.map(materializeCustomExercise)],
+  }, parsed))
 }

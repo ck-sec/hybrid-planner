@@ -1,11 +1,11 @@
 import { PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
-import { DEFAULT_LIBRARY, LEGACY_LIBRARY } from '../../engine/library.ts'
+import { DEFAULT_LIBRARY, LEGACY_LIBRARY, resolveProgramLibrary } from '../../engine/library.ts'
 import { availableExerciseMetadata, recommendProgram, SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
 import type { ExerciseMetadata } from '../../engine/program.ts'
 import { recommendedExercises } from '../../engine/recommendations.ts'
 import type { Equipment, ProgramConfigV1, ProgramGoal, Resource } from '../../engine/types.ts'
 
-type ResourceGroup = 'strength' | 'cardio' | 'sport'
+type ResourceGroup = 'strength' | 'cardio'
 
 export const RESOURCE_CATALOG = [
   { id: 'dumbbell', label: 'Dumbbells', group: 'strength' },
@@ -25,16 +25,22 @@ export const RESOURCE_CATALOG = [
   { id: 'ski_erg', label: 'SkiErg', group: 'cardio' },
   { id: 'bike', label: 'Bike', group: 'cardio' },
   { id: 'treadmill', label: 'Treadmill', group: 'cardio' },
-  { id: 'dodgeballs', label: 'Dodgeballs', group: 'sport' },
-  { id: 'cones', label: 'Cones', group: 'sport' },
-  { id: 'wall', label: 'Wall', group: 'sport' },
-  { id: 'court', label: 'Court', group: 'sport' },
-  { id: 'partner', label: 'Training partner', group: 'sport' },
-  { id: 'open_space', label: 'Open space', group: 'sport' },
-  { id: 'safe_target', label: 'Safe throwing target', group: 'sport' },
 ] as const satisfies readonly { id: string; label: string; group: ResourceGroup }[]
 
-export type ResourceId = (typeof RESOURCE_CATALOG)[number]['id']
+const LEGACY_RESOURCE_LABELS = {
+  dodgeballs: 'Ball (saved equipment)',
+  cones: 'Cones',
+  wall: 'Wall',
+  court: 'Playing space (saved equipment)',
+  partner: 'Training partner',
+  open_space: 'Open space',
+  safe_target: 'Practice target (saved equipment)',
+} as const
+
+export type ResourceId = (typeof RESOURCE_CATALOG)[number]['id'] | keyof typeof LEGACY_RESOURCE_LABELS | `custom:${string}`
+export const MAX_CUSTOM_RESOURCES = 16
+export const MAX_CUSTOM_RESOURCE_SLUG_LENGTH = 48
+const customResourcePattern = /^custom:[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 export const RESOURCE_PRESETS = [
   { label: 'No kit', resources: ['floor_space'] },
@@ -42,9 +48,16 @@ export const RESOURCE_PRESETS = [
   { label: 'Gym', resources: ['bands', 'barbell', 'cable', 'dumbbell', 'floor_space', 'kettlebell', 'machine'] },
 ] as const satisfies readonly { label: string; resources: readonly ResourceId[] }[]
 
-const resourceIds: readonly ResourceId[] = RESOURCE_CATALOG.map(resource => resource.id).sort()
+const resourceIds: readonly ResourceId[] = [
+  ...RESOURCE_CATALOG.map(resource => resource.id),
+  ...Object.keys(LEGACY_RESOURCE_LABELS) as (keyof typeof LEGACY_RESOURCE_LABELS)[],
+].sort()
+export const MAX_RESOURCES = resourceIds.length + MAX_CUSTOM_RESOURCES
 const knownResourceIds: ReadonlySet<string> = new Set(resourceIds)
-const labels = new Map<ResourceId, string>(RESOURCE_CATALOG.map(resource => [resource.id, resource.label]))
+const labels = new Map<ResourceId, string>([
+  ...RESOURCE_CATALOG.map(resource => [resource.id, resource.label] as [ResourceId, string]),
+  ...Object.entries(LEGACY_RESOURCE_LABELS) as [ResourceId, string][],
+])
 const strengthResources = [
   'bands', 'barbell', 'cable', 'dumbbell', 'kettlebell', 'machine',
 ] as const satisfies readonly (ResourceId & Equipment)[]
@@ -62,16 +75,35 @@ const PROGRAM_RESOURCE_IDS = new Set<Resource>([
 
 /** Bodyweight is implicit; persisted resources must contain only explicit, unique capabilities. */
 export function parseResources(value: unknown): ResourceId[] {
-  if (!Array.isArray(value) || value.length > resourceIds.length) {
-    throw new Error(`Resources must be an array of at most ${resourceIds.length} resource IDs.`)
+  if (!Array.isArray(value) || value.length > MAX_RESOURCES) {
+    throw new Error(`Resources must be an array of at most ${MAX_RESOURCES} resource IDs.`)
   }
   const seen = new Set<ResourceId>()
+  let customCount = 0
   for (const id of value) {
-    if (typeof id !== 'string' || !knownResourceIds.has(id)) throw new Error('Choose only known resource IDs.')
+    if (typeof id !== 'string') throw new Error('Choose valid resource IDs.')
+    if (!knownResourceIds.has(id)) {
+      if (!customResourcePattern.test(id) || id.slice(7).length > MAX_CUSTOM_RESOURCE_SLUG_LENGTH) {
+        throw new Error('Custom resource IDs need a lowercase name of up to 48 letters, numbers and single hyphens.')
+      }
+      customCount += 1
+      if (customCount > MAX_CUSTOM_RESOURCES) throw new Error('Choose at most 16 custom resources.')
+    }
     if (seen.has(id as ResourceId)) throw new Error('Resources must not contain duplicate IDs.')
     seen.add(id as ResourceId)
   }
-  return resourceIds.filter(id => seen.has(id))
+  return [...seen].sort()
+}
+
+/** Free-form gear names become portable IDs, never engine equipment aliases. */
+export function customResourceId(value: string): `custom:${string}` {
+  if (typeof value !== 'string' || value.length > 120 || !/^[a-zA-Z0-9 -]+$/.test(value)) {
+    throw new Error('Use a short equipment name with letters, numbers, spaces or hyphens.')
+  }
+  const slug = value.trim().toLowerCase().replace(/[ -]+/g, '-')
+  const id = `custom:${slug}` as const
+  parseResources([id])
+  return id
 }
 
 export function resourcesForEquipment(equipment: readonly Equipment[]): ResourceId[] {
@@ -84,7 +116,8 @@ export function equipmentForResources(resources: readonly ResourceId[]): Equipme
 }
 
 export function resourceLabels(resources: readonly ResourceId[]): string[] {
-  return resourceIds.filter(id => resources.includes(id)).map(id => labels.get(id)!)
+  return parseResources([...new Set(resources)]).map(id => labels.get(id)
+    ?? id.slice(7).split('-').map(word => word[0]!.toUpperCase() + word.slice(1)).join(' '))
 }
 
 /** Convert app capabilities to the exact resources understood by the opt-in program engine. */
@@ -92,7 +125,7 @@ export function programResourcesForResources(resources: readonly ResourceId[]): 
   const parsed = parseResources(resources)
   const projected = new Set<Resource>(['bodyweight'])
   for (const id of parsed) {
-    if (PROGRAM_RESOURCE_IDS.has(id as Resource)) projected.add(id as Resource)
+    if (id.startsWith('custom:') || PROGRAM_RESOURCE_IDS.has(id as Resource)) projected.add(id as Resource)
     else if (id === 'dodgeballs') projected.add('dodgeball')
     else if (id === 'court') projected.add('court_space')
   }
@@ -122,7 +155,8 @@ export function exerciseAvailable(
     return legacy.equipment.every(piece => piece === 'none' || equipment.includes(piece))
       && (specificRequirements.get(exerciseId) ?? []).every(id => resources.includes(id))
   }
-  const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === exerciseId)
+  const library = typeof program === 'object' ? resolveProgramLibrary(program) : DEFAULT_LIBRARY
+  const exercise = library.exercises.find(item => item.id === exerciseId)
   const requirements = exercise?.highSkill === false
     ? exercise.requirements
     : SUPPORTED_SPORT_DRILLS.find(drill => drill.id === exerciseId)?.requirements
@@ -133,7 +167,10 @@ export function exerciseAvailable(
 export function availableProgramExercises(
   resources: readonly ResourceId[], program?: ProgramConfigV1,
 ): readonly ExerciseMetadata[] {
-  return availableExerciseMetadata(program ? program.resources : programResourcesForResources(resources))
+  return availableExerciseMetadata(
+    program ? program.resources : programResourcesForResources(resources),
+    resolveProgramLibrary(program),
+  )
 }
 
 export function maxExerciseSelection(program?: ProgramConfigV1): number {
@@ -147,7 +184,8 @@ export function recommendForResources(
     const goal = typeof program === 'string' ? program : program.goal
     const exactResources = typeof program === 'string' ? programResourcesForResources(resources) : program.resources
     return [...recommendProgram(
-      exactResources, goal, DEFAULT_LIBRARY, undefined,
+      exactResources, goal, typeof program === 'object' ? resolveProgramLibrary(program) : DEFAULT_LIBRARY,
+      typeof program === 'object' ? program.selectedExerciseIds : undefined,
       typeof program === 'object' && program.includeMobility === true,
     ).exerciseIds]
   }

@@ -13,8 +13,9 @@ import {
   PROGRAM_POLICY,
 } from './constants.ts'
 import { dayNumber, sessionStartMinutes, timeMinutes } from './dates.ts'
+import { CUSTOM_EXERCISE_PROFILES } from './custom-exercise-profiles.ts'
 import type {
-  AthleteState, Calibration, ExerciseLibrary, Load, PlanWeekInput, RecentSession, Session,
+  AthleteState, Calibration, Exercise, ExerciseLibrary, Load, PlanWeekInput, RecentSession, Session,
 } from './types.ts'
 
 function nonnegative(value: number, name: string): number {
@@ -49,6 +50,15 @@ function multiplier(calibration: Calibration): number {
     throw new RangeError('Cost multiplier is outside the policy range')
   }
   return value
+}
+
+function exerciseEstimate(exercise: Exercise, athlete: AthleteState): Load {
+  const custom = athlete.program?.customExercises?.find(spec => spec.id === exercise.id)
+  if (custom) return CUSTOM_EXERCISE_PROFILES[custom.profileId].profile.schedulingEstimate
+  if (exercise.custom || (athlete.program && exercise.id.startsWith('custom-'))) {
+    throw new RangeError(`Custom exercise ${exercise.id} has no approved program spec`)
+  }
+  return exercise.coefficients
 }
 
 /** Estimated scheduling AU only; weight is never a denominator or a cross-exercise estimate. */
@@ -99,7 +109,7 @@ export function predictSessionLoad(session: Session, athlete: AthleteState, libr
     const conservative = !latest || nonnegative(latest.experienceMonths, 'experience months') < NOVICE_MONTHS_THRESHOLD
     const factor = nonnegative(doseFactor * common
       * (conservative ? FIRST_EXPOSURE_COST_MULTIPLIER : 1), 'strength load factor')
-    total = add(total, multiply(validLoad(exercise.coefficients), factor))
+    total = add(total, multiply(validLoad(exerciseEstimate(exercise, athlete)), factor))
   }
   return total
 }
@@ -146,7 +156,7 @@ function workoutOverrunLoad(
       || nonnegative(latest.experienceMonths, 'experience months') < NOVICE_MONTHS_THRESHOLD
     const factor = excess * multiplier(input.athlete.calibration)
       * (conservative ? FIRST_EXPOSURE_COST_MULTIPLIER : 1)
-    total = add(total, multiply(validLoad(exercise.coefficients), factor))
+    total = add(total, multiply(validLoad(exerciseEstimate(exercise, input.athlete)), factor))
   }
   return total
 }

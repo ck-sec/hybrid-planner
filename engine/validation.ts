@@ -4,9 +4,11 @@ import {
   PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY, PROGRAM_POLICY_VERSION, RECOMMENDATION_POLICY,
 } from './constants.ts'
 import canonicalProgramLibrary from './exercises-v1.json' with { type: 'json' }
+import { CUSTOM_EXERCISE_PROFILES, materializeCustomExercise } from './custom-exercise-profiles.ts'
 import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from './dates.ts'
 import type {
-  AnchorAssignment, AthleteState, Block, BlockLog, CompletedWeek, ConditioningBaseline, Day, Discipline, Equipment,
+  AnchorAssignment, AthleteState, Block, BlockLog, CompletedWeek, ConditioningBaseline,
+  CustomExerciseProfileId, CustomExerciseSpec, Day, Discipline, Equipment,
   Exercise, ExerciseLibrary, ExerciseObservation, FixedCommitment, Goal, Load,
   Modality, MovementPattern, Phase, PlanWeekInput, PlanningContext, ProgramConfigV1, Quality, Resource,
   RecentSession, Session, SessionLog, SetLog, StrengthPrescription, TargetRPE, WorkoutBlock,
@@ -212,17 +214,63 @@ class Validator {
     return result.sort(compareText)
   }
 
+  resource(value: unknown, path: string): Resource {
+    if (typeof value === 'string' && value.length <= 'custom:'.length + LIMITS.maxCustomResourceSlugLength
+      && /^custom:[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+      return value as Resource
+    }
+    return this.enum(value, path, RESOURCES)
+  }
+
   resources(value: unknown, path: string): Resource[] {
-    const result = this.array(value, path, 1, RESOURCES.length)
-      .map((item, index) => this.enum(item, `${path}[${index}]`, RESOURCES))
+    const result = this.array(value, path, 1, RESOURCES.length + LIMITS.maxCustomResources)
+      .map((item, index) => this.resource(item, `${path}[${index}]`))
     this.unique(result, item => item, path)
+    if (result.filter(item => item.startsWith('custom:')).length > LIMITS.maxCustomResources) {
+      this.issue(path, `may contain at most ${LIMITS.maxCustomResources} custom resources`)
+    }
     return result.sort(compareText)
+  }
+
+  plainText(value: unknown, path: string, max: number): string {
+    const result = this.text(value, path, 1, max, true)
+    const hasControl = [...result].some(character => {
+      const code = character.charCodeAt(0)
+      return code < 32 || (code >= 127 && code <= 159)
+    })
+    if (hasControl || /[<>`\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(result)) {
+      this.issue(path, 'must be plain single-line text without markup or control characters')
+    }
+    return result
+  }
+
+  customExercise(value: unknown, path: string, confirmedResources?: readonly Resource[]): CustomExerciseSpec {
+    const data = this.object(value, path, ['version', 'id', 'name', 'profileId', 'requirements', 'description', 'focus', 'why'])
+    if (data.version !== 1) this.issue(`${path}.version`, 'must be 1')
+    const id = this.id(data.id, `${path}.id`)
+    if (!/^custom-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+      this.issue(`${path}.id`, 'must be custom- followed by a lowercase kebab-case slug')
+    }
+    const requirements = this.resources(data.requirements, `${path}.requirements`)
+    if (confirmedResources && requirements.some(resource => !confirmedResources.includes(resource))) {
+      this.issue(`${path}.requirements`, 'must be a subset of confirmed program resources; no equipment is inferred')
+    }
+    return {
+      version: 1, id,
+      name: this.plainText(data.name, `${path}.name`, 80),
+      profileId: this.enum(data.profileId, `${path}.profileId`,
+        Object.keys(CUSTOM_EXERCISE_PROFILES) as CustomExerciseProfileId[]),
+      requirements,
+      description: this.plainText(data.description, `${path}.description`, 600),
+      focus: this.plainText(data.focus, `${path}.focus`, 600),
+      why: this.plainText(data.why, `${path}.why`, 600),
+    }
   }
 
   program(value: unknown, path: string): ProgramConfigV1 {
     const data = this.object(value, path, [
       'version', 'libraryVersion', 'goal', 'resources', 'conditioningBaselines',
-      'selectedExerciseIds', 'comfortableThrowsPerPractice', 'includeMobility',
+      'selectedExerciseIds', 'customExercises', 'comfortableThrowsPerPractice', 'includeMobility',
     ])
     if (data.version !== 1) this.issue(`${path}.version`, 'must be 1')
     const baselines = this.array(data.conditioningBaselines, `${path}.conditioningBaselines`, 0, LIMITS.maxConditioningBaselines)
@@ -250,12 +298,29 @@ class Validator {
       resources: this.resources(data.resources, `${path}.resources`),
       conditioningBaselines: baselines.sort((a, b) => compareText(a.modality, b.modality)),
     }
+    if (Object.hasOwn(data, 'customExercises')) {
+      // Archived definitions remain costable after gear changes. Creation callers
+      // use parseCustomExercise(spec, confirmedResources); selection is checked below.
+      const customExercises = this.array(data.customExercises, `${path}.customExercises`, 0, LIMITS.maxCustomExercises)
+        .map((item, index) => this.customExercise(item, `${path}.customExercises[${index}]`))
+      this.unique(customExercises, item => item.id, `${path}.customExercises`)
+      result.customExercises = customExercises.sort((a, b) => compareText(a.id, b.id))
+    }
     if (Object.hasOwn(data, 'selectedExerciseIds')) {
       const ids = this.array(data.selectedExerciseIds, `${path}.selectedExerciseIds`,
         PROGRAM_POLICY.minSelectedExercises, PROGRAM_POLICY.maxSelectedExercises)
         .map((id, index) => this.id(id, `${path}.selectedExerciseIds[${index}]`))
       this.unique(ids, id => id, `${path}.selectedExerciseIds`)
       result.selectedExerciseIds = ids.sort(compareText)
+      for (const id of ids) {
+        const exercise = canonicalProgramLibrary.exercises.find(item => item.id === id)
+          ?? result.customExercises?.find(item => item.id === id)
+        if (!exercise || ('highSkill' in exercise && exercise.highSkill)) {
+          this.issue(`${path}.selectedExerciseIds`, `unknown or high-skill exercise ${id}; use a built-in or approved custom spec`)
+        } else if (exercise.requirements.some(resource => !result.resources.includes(resource as Resource))) {
+          this.issue(`${path}.selectedExerciseIds`, `exercise ${id} requires unavailable resources`)
+        }
+      }
     }
     if (Object.hasOwn(data, 'comfortableThrowsPerPractice')) {
       result.comfortableThrowsPerPractice = this.number(data.comfortableThrowsPerPractice,
@@ -287,7 +352,7 @@ class Validator {
     }
   }
 
-  library(value: unknown, path: string): ExerciseLibrary {
+  library(value: unknown, path: string, program?: ProgramConfigV1): ExerciseLibrary {
     const data = this.object(value, path, ['version', 'exercises'])
     const version = this.enum(data.version, `${path}.version`, [LIBRARY_VERSION, PROGRAM_LIBRARY_VERSION])
     const extensible = version === PROGRAM_LIBRARY_VERSION
@@ -295,7 +360,7 @@ class Validator {
       .map((value, index): Exercise => {
         const p = `${path}.exercises[${index}]`
         const fields = ['id', 'name', 'pattern', 'equipment', 'coefficients', 'competesWithRunning', 'highSkill',
-          ...(extensible ? ['requirements', 'label', 'template', 'profile'] : [])]
+          ...(extensible ? ['requirements', 'label', 'template', 'profile', 'custom'] : [])]
         const item = this.object(value, p, fields)
         const exercise: Exercise = {
           id: this.id(item.id, `${p}.id`),
@@ -307,9 +372,7 @@ class Validator {
           highSkill: this.boolean(item.highSkill, `${p}.highSkill`),
         }
         if (extensible) {
-          const requirements = this.array(item.requirements, `${p}.requirements`, 1, RESOURCES.length)
-            .map((resource, resourceIndex) => this.enum(resource, `${p}.requirements[${resourceIndex}]`, RESOURCES))
-          this.unique(requirements, resource => resource, `${p}.requirements`)
+          const requirements = this.resources(item.requirements, `${p}.requirements`)
           const profilePath = `${p}.profile`
           const profile = this.object(item.profile, profilePath, ['version', 'schedulingEstimate', 'prescription'])
           const prescriptionPath = `${profilePath}.prescription`
@@ -341,6 +404,9 @@ class Validator {
             schedulingEstimate,
             prescription,
           }
+          if (Object.hasOwn(item, 'custom')) {
+            exercise.custom = this.customExercise(item.custom, `${p}.custom`)
+          }
           for (const equipment of exercise.equipment) {
             if (equipment !== 'none' && !requirements.includes(equipment)) {
               this.issue(`${p}.requirements`, `must include equipment requirement ${equipment}`)
@@ -351,8 +417,15 @@ class Validator {
       })
     this.unique(exercises, exercise => exercise.id, `${path}.exercises`)
     const result = { version, exercises: exercises.sort((a, b) => compareText(a.id, b.id)) }
-    if (extensible && canonical(result) !== canonical(canonicalProgramLibrary)) {
-      this.issue(path, 'exercise-profiles-1 must exactly match the reviewed built-in catalog')
+    const expected = {
+      version: PROGRAM_LIBRARY_VERSION,
+      exercises: [...canonicalProgramLibrary.exercises, ...(program?.customExercises ?? []).map(materializeCustomExercise)],
+    }
+    if (extensible && canonical(result) !== canonical(expected)) {
+      this.issue(path, 'exercise-profiles-1 must exactly match the reviewed built-in catalog plus the approved program custom specs')
+    }
+    if (program && !extensible) {
+      this.issue(path, 'an opt-in program requires exercise-profiles-1')
     }
     return result
   }
@@ -570,10 +643,13 @@ class Validator {
       .map((item, index) => this.prescription(item, `${path}.anchors[${index}]`, true))
     this.unique(anchors, item => item.exerciseId, `${path}.anchors`)
     for (const id of goal.protectedExerciseIds) {
-      if (!anchors.some(anchor => anchor.exerciseId === id)) this.issue(`${path}.anchors`, `must include protected exercise ${id}`)
+      if (!(program ? program.selectedExerciseIds?.includes(id) : anchors.some(anchor => anchor.exerciseId === id))) {
+        this.issue(`${path}.anchors`, `must include protected exercise ${id}`)
+      }
     }
     let workoutTemplates: Block['workoutTemplates']
     if (program) {
+      if (anchors.length) this.issue(`${path}.anchors`, 'opt-in programs use frozen workout templates, not legacy anchors')
       if (!program.selectedExerciseIds) {
         this.issue(`${path}.program.selectedExerciseIds`, 'must freeze the resolved exercise pool')
       }
@@ -930,7 +1006,7 @@ class Validator {
     const athlete = this.athlete(data.athlete, `${path}.athlete`)
     const block = this.block(data.block, `${path}.block`)
     const weekIndex = this.number(data.weekIndex, `${path}.weekIndex`, 0, block.totalWeeks - 1, true)
-    const library = this.library(data.library, `${path}.library`)
+    const library = this.library(data.library, `${path}.library`, block.program)
     const context = this.context(data.context, `${path}.context`)
     // Structural failures are reported before cross-field date arithmetic or library lookups.
     this.finish(undefined)
@@ -945,6 +1021,7 @@ class Validator {
         && athlete.program.includeMobility === block.program.includeMobility
         && athlete.program.resources.join('|') === block.program.resources.join('|')
         && JSON.stringify(athlete.program.conditioningBaselines) === JSON.stringify(block.program.conditioningBaselines)
+        && canonical(athlete.program.customExercises ?? []) === canonical(block.program.customExercises ?? [])
       if (!sameProgram) {
         this.issue('input.block.program', 'must exactly match the program frozen from athlete.program')
       }
@@ -975,7 +1052,7 @@ class Validator {
       if (!athlete.program) return
       const missing = (exercise.requirements ?? []).filter(item => !athlete.program!.resources.includes(item))
       if (missing.length) this.issue(p, `exercise ${exercise.id} requires unavailable resources: ${missing.join(', ')}`)
-      if (!exercise.profile || !exercise.template || !exercise.label) this.issue(p, `exercise ${exercise.id} lacks a reviewed built-in program profile`)
+      if (!exercise.profile || !exercise.template || !exercise.label) this.issue(p, `exercise ${exercise.id} lacks an engine-owned program profile`)
     }
     for (const [index, observation] of athlete.baseline.exercises.entries()) {
       known(observation.exerciseId, `input.athlete.baseline.exercises[${index}].exerciseId`)
@@ -1005,34 +1082,34 @@ class Validator {
         if (!athlete.recommendedExerciseIds?.includes(anchor.exerciseId) || observed) {
           this.issue(p, 'recommended provenance requires an explicitly selected, unobserved exercise')
         }
-        if (block.program && block.workoutTemplates) {
-          const selected = block.program.selectedExerciseIds
-          if (!selected) this.issue('input.block.program.selectedExerciseIds', 'must freeze the resolved exercise pool')
-          const ids = new Set<string>()
-          for (const [templateIndex, template] of block.workoutTemplates.entries()) {
-            for (const [exerciseIndex, id] of template.exerciseIds.entries()) {
-              const p = `input.block.workoutTemplates[${templateIndex}].exerciseIds[${exerciseIndex}]`
-              const exercise = known(id, p)
-              if (exercise) { equipped(exercise, p); resourced(exercise, p) }
-              ids.add(id)
-              if (selected && !selected.includes(id)) this.issue(p, 'must come from program.selectedExerciseIds')
-            }
-          }
-          if (selected) {
-            for (const id of selected) {
-              const exercise = known(id, 'input.block.program.selectedExerciseIds')
-              if (exercise) { equipped(exercise, 'input.block.program.selectedExerciseIds'); resourced(exercise, 'input.block.program.selectedExerciseIds') }
-            }
-          }
-          if (block.workoutTemplates[0]?.exerciseIds.join('|') === block.workoutTemplates[1]?.exerciseIds.join('|')) {
-            this.issue('input.block.workoutTemplates', 'Strength A and Strength B must be differentiated')
-          }
-          if (ids.size < 3) this.issue('input.block.workoutTemplates', 'must freeze at least three exercises')
-        }
       }
       if (athlete.recommendedExerciseIds) {
         if (!athlete.recommendedExerciseIds.includes(anchor.exerciseId)) this.issue(p, 'anchors must come from the selected recommended routine')
         if (!observed && !anchor.provenance) this.issue(p, 'an unobserved selected exercise requires versioned recommended provenance')
+      }
+    }
+    if (block.program && block.workoutTemplates) {
+      const selected = block.program.selectedExerciseIds ?? []
+      for (const [templateIndex, template] of block.workoutTemplates.entries()) {
+        for (const [exerciseIndex, id] of template.exerciseIds.entries()) {
+          const p = `input.block.workoutTemplates[${templateIndex}].exerciseIds[${exerciseIndex}]`
+          const exercise = known(id, p)
+          if (exercise) {
+            equipped(exercise, p)
+            resourced(exercise, p)
+            if (exercise.highSkill) this.issue(p, 'high-skill exercises cannot be prescribed')
+          }
+          if (!selected.includes(id)) this.issue(p, 'must come from program.selectedExerciseIds')
+        }
+      }
+      if (block.workoutTemplates[0]?.exerciseIds.join('|') === block.workoutTemplates[1]?.exerciseIds.join('|')) {
+        this.issue('input.block.workoutTemplates', 'Strength A and Strength B must be differentiated')
+      }
+      const requested = athlete.program?.selectedExerciseIds
+      if (requested && (requested.some(id => !selected.includes(id))
+        || selected.some(id => !requested.includes(id)
+          && !(athlete.program?.includeMobility && byId.get(id)?.template === 'mobility')))) {
+        this.issue('input.block.program.selectedExerciseIds', 'must retain the explicitly selected exercise pool')
       }
     }
     for (const [index, id] of block.goal.protectedExerciseIds.entries()) {
@@ -1086,9 +1163,10 @@ class Validator {
   }
 }
 
-export function parseLibrary(value: unknown): ExerciseLibrary {
+export function parseLibrary(value: unknown, program?: ProgramConfigV1): ExerciseLibrary {
   const v = new Validator()
-  return v.finish(v.library(value, 'library'))
+  const parsedProgram = program === undefined ? undefined : v.finish(v.program(program, 'program'))
+  return v.finish(v.library(value, 'library', parsedProgram))
 }
 
 export function parseAthlete(value: unknown): AthleteState {
@@ -1099,6 +1177,18 @@ export function parseAthlete(value: unknown): AthleteState {
 export function parseProgramConfig(value: unknown): ProgramConfigV1 {
   const v = new Validator()
   return v.finish(v.program(value, 'program'))
+}
+
+/** Review parsing only; membership in a confirmed program is checked again at planning boundaries. */
+export function parseCustomExercise(value: unknown, confirmedResources?: readonly Resource[]): CustomExerciseSpec {
+  const v = new Validator()
+  const resources = confirmedResources === undefined ? undefined : v.resources(confirmedResources, 'confirmedResources')
+  return v.finish(v.customExercise(value, 'customExercise', resources))
+}
+
+export function parseResource(value: unknown): Resource {
+  const v = new Validator()
+  return v.finish(v.resource(value, 'resource'))
 }
 
 export function parseGoal(value: unknown): Goal {

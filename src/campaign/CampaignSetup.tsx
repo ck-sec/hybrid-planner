@@ -1,38 +1,28 @@
 import { useId, useState } from 'react'
 import type { FormEvent } from 'react'
-import { addDays } from '../../engine/dates.ts'
-import { DEFAULT_LIBRARY } from '../../engine/library.ts'
-import { recommendationForExercise } from '../../engine/recommendations.ts'
+import { DEFAULT_LIBRARY, resolveProgramLibrary } from '../../engine/library.ts'
 import { LIMITS, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { recommendProgram } from '../../engine/program.ts'
-import type { MovementPattern } from '../../engine/types.ts'
-import { buildCampaign, confirmSetupEquipment, exampleCampaign, normalizeRecommendedDraft, prepareRecommendedSetup } from './model.ts'
-import { GOAL_KIND_LABELS, MAX_GOAL_TEXT_LENGTH, SETUP_QUALITY_LABELS } from './setup-assistant.ts'
-import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
+import { confirmSetupEquipment, prepareRecommendedSetup } from './model.ts'
+import { MAX_GOAL_TEXT_LENGTH } from './setup-assistant.ts'
 import { eventDateBounds, validateSetupDate } from './setup-dates.ts'
 import type { CampaignDraft, CampaignState, RecommendedSetup } from './types.ts'
-import { CourtArt, DayPicker, NumberField } from './components.tsx'
+import { DayPicker, NumberField } from './components.tsx'
 import Icon from './Icons.tsx'
 import EquipmentPicker from './EquipmentPicker.tsx'
 import { equipmentForResources, exerciseAvailable, programResources, recommendForResources, resourcesForEquipment, resourceLabels } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 import WorkoutCards from './WorkoutCards.tsx'
 import { parseWorkoutCards } from './workout-cards.ts'
-import ExerciseGuide from './ExerciseGuide.tsx'
-import { exerciseGuidance } from './exercise-guidance.ts'
 import ExercisePoolEditor from './ExercisePoolEditor.tsx'
-import { programGoalForKind, programmingChoices, selectProgramExercises } from './programming.ts'
+import { programmingChoices, selectProgramExercises } from './programming.ts'
 import { ConditioningOptions, PracticeBlockOptions, ProgrammingChoice } from './ProgrammingOptions.tsx'
-
-const stepOrder = [6, 1, 2, 3, 4, 5]
-const steps = ['Welcome', 'Your direction', 'Your rhythm', 'Your base', 'Your week', 'Ready to start', 'Your equipment']
-const patterns: Record<MovementPattern, string> = {
-  knee_dominant: 'Squat', hip_dominant: 'Hinge', horizontal_push: 'Push', vertical_push: 'Overhead push',
-  horizontal_pull: 'Pull', vertical_pull: 'Vertical pull', unilateral_lower: 'Single leg', carry: 'Carry', core: 'Core', rotational: 'Rotation',
-}
+import { addOnboardingCustomExercise, advanceOnboarding, ONBOARDING_STEPS, onboardingGoalText, onboardingReviewDate, onboardingStep, patchOnboardingDraft, validateOnboardingRoutine } from './onboarding.ts'
+import './onboarding.css'
 
 function QuickChoice({ label, value, options, onChange, unit = '' }: { label: string; value: number; options: number[]; onChange: (value: number) => void; unit?: string }) {
-  return <fieldset className="cf-quick-choice"><legend>{label}</legend><div>{options.map(option => <button type="button" key={option} aria-pressed={value === option} onClick={() => onChange(option)}><strong>{option}</strong><span>{option === 1 ? unit.replace(/s$/, '') : unit}</span></button>)}</div></fieldset>
+  const choices = value > 0 && !options.includes(value) ? [...options, value].sort((a, b) => a - b) : options
+  return <fieldset className="cf-quick-choice"><legend>{label}</legend><div>{choices.map(option => <button type="button" key={option} aria-pressed={value === option} onClick={() => onChange(option)}><strong>{option}</strong><span>{option === 1 ? unit.replace(/s$/, '') : unit}</span></button>)}</div></fieldset>
 }
 
 export default function CampaignSetup({ state, update, onAI, connected, onDisconnect }: {
@@ -44,185 +34,155 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
 }) {
   const [issue, setIssue] = useState('')
   const dateHelpId = useId()
-  const [swapping, setSwapping] = useState<string | null>(null)
-  const [editingExercise, setEditingExercise] = useState<string | null>(null)
   const prepared = prepareRecommendedSetup(state)
   const draft = prepared.draft
   const setup = draft.recommendedSetup
   if (!setup) throw new Error('Recommended setup is unavailable for this draft.')
-  const dateBounds = eventDateBounds(draft.startDate)
+  const step = onboardingStep(state.step)
+  const visibleStep = ONBOARDING_STEPS.findIndex(item => item.value === step) + 1
   const resources = draft.resources ?? resourcesForEquipment(draft.equipment)
-  const visibleStep = stepOrder.indexOf(state.step) + 1
+  const library = draft.program ? resolveProgramLibrary(draft.program) : DEFAULT_LIBRARY
+  const defaultReview = onboardingReviewDate(draft.startDate)
+  const dateBounds = eventDateBounds(draft.startDate)
+  const dateIssue = dateBounds.issue ? 'Choose a complete Monday start date in Routine → Availability & fixed sessions.' : ''
+  const saveDraft = (next: CampaignDraft) => {
+    try {
+      const normalized = patchOnboardingDraft(next)
+      update(previous => ({ ...previous, draft: normalized }))
+      setIssue('')
+      return true
+    } catch (error) { setIssue(error instanceof Error ? error.message : 'Check your answers before continuing.'); return false }
+  }
   const patch = (change: Partial<CampaignDraft>, preference: Partial<RecommendedSetup> = {}) => {
-    setIssue('')
-    update(previous => {
-      const current = prepareRecommendedSetup(previous)
-      const currentSetup = current.draft.recommendedSetup
-      if (!currentSetup) throw new Error('Recommended setup is unavailable for this draft.')
-      return { ...current, draft: normalizeRecommendedDraft({
-        ...current.draft, ...change,
-        ...(current.draft.program && change.goalKind && change.goalKind !== current.draft.goalKind
-          ? { program: { ...current.draft.program, goal: programGoalForKind(change.goalKind) } } : {}),
-        recommendedSetup: { ...currentSetup, ...preference }, confirmed: false,
-      }) }
-    })
+    try {
+      const next = patchOnboardingDraft(draft, change, preference)
+      update(previous => ({ ...previous, draft: next }))
+      setIssue('')
+      return true
+    } catch (error) { setIssue(error instanceof Error ? error.message : 'Check your answers before continuing.'); return false }
   }
   const changeResources = (selected: ResourceId[]) => {
-    if (draft.program) {
-      try {
-        const candidate = { ...draft, resources: selected, equipment: equipmentForResources(selected) }
+    try {
+      const candidate = { ...draft, resources: selected, equipment: equipmentForResources(selected) }
+      if (draft.program) {
         const allowed = new Set(programmingChoices(candidate).map(item => item.exercise.id))
         const equipped = setup.exerciseIds.filter(id => allowed.has(id))
-        const exerciseIds = equipped.length >= PROGRAM_POLICY.minSelectedExercises ? equipped : [...recommendProgram(programResources(selected), draft.program.goal).exerciseIds]
-        patch({ resources: selected, equipment: equipmentForResources(selected) }, { exerciseIds })
-        if (equipped.length !== setup.exerciseIds.length) setIssue('The pool was updated for your equipment. Review each movement in Your base; personal notes were kept.')
-      } catch (error) {
-        setIssue(error instanceof Error ? error.message : 'Equipment changes could not be applied.')
+        const exerciseIds = equipped.length >= PROGRAM_POLICY.minSelectedExercises ? equipped : [...recommendProgram(programResources(selected), draft.program.goal, library).exerciseIds]
+        const changed = patch({ resources: selected, equipment: candidate.equipment }, { exerciseIds })
+        if (changed && equipped.length !== setup.exerciseIds.length) setIssue('The lineup was updated for your equipment. Review it before building; your personal notes were kept.')
+      } else {
+        const next = patchOnboardingDraft(candidate, {}, { exerciseIds: recommendForResources(selected) })
+        try {
+          const confirmed = confirmSetupEquipment({ ...prepared, draft: next }, selected)
+          update(previous => ({ ...previous, draft: confirmed.draft }))
+          setIssue('')
+        } catch {
+          update(previous => ({ ...previous, draft: next }))
+          setIssue('Your equipment was saved. Confirm usable floor space or choose a preset before continuing.')
+        }
       }
-      return
+    } catch (error) {
+      setIssue(`${error instanceof Error ? error.message : 'Equipment changes could not be applied.'} Check floor space and any required supports.`)
     }
-    const equipped = setup.exerciseIds.filter(id => exerciseAvailable(id, selected))
-    const removed = setup.exerciseIds.length - equipped.length
-    const wasRecommended = JSON.stringify(setup.exerciseIds) === JSON.stringify(recommendForResources(resources))
-    patch({ resources: selected, equipment: equipmentForResources(selected) }, {
-      exerciseIds: wasRecommended || !equipped.length ? recommendForResources(selected) : equipped,
-    })
-    if (removed) setIssue(`${removed} unavailable exercise card${removed === 1 ? ' was' : 's were'} removed. Review Your base before building the week. Personal notes were kept.`)
-    setSwapping(null)
-  }
-  const changeMode = (mode: RecommendedSetup['mode']) => {
-    if (mode === setup.mode) return
-    if (mode === 'classic') {
-      onDisconnect()
-      patch({ goalKind: 'hybrid', goalLabel: 'Run + lift', location: '', eventDate: addDays(draft.startDate, 83), priorities: ['aerobic_base', 'max_strength'] }, { mode, goalText: '' })
-    } else patch({ goalLabel: '', location: '', eventDate: '' }, { mode })
   }
   function forward(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (state.step === 1 && setup?.mode === 'assisted' && !draft.goalLabel.trim()) {
-      setIssue('Review your goal with AI, set its details yourself below, or choose the classic run + lift plan.')
-      return
-    }
-    if (state.step === 1 && setup?.mode === 'assisted') {
-      try { validateSetupDate(draft.startDate, draft.eventDate) } catch (error) {
-        setIssue(error instanceof Error ? error.message : 'Review your event or review date before continuing.')
-        return
-      }
-    }
-    if (state.step === 2 && (!setup?.typicalRunMinutes || !draft.runsPerWeek || !draft.liftsPerWeek || !draft.liftDurationMin)) {
-      setIssue('Choose your usual run length, run frequency, lift frequency and session length.')
-      return
-    }
-    setIssue('')
-    update(previous => {
-      const current = prepareRecommendedSetup(previous)
-      if (current.step === 6) return { ...confirmSetupEquipment(current, resources), step: 1 }
-      return current.step === 5 ? buildCampaign(current) : { ...current, step: current.step + 1 }
-    })
+    try {
+      const next = advanceOnboarding(state)
+      update(() => next)
+      setIssue('')
+    } catch (error) { setIssue(error instanceof Error ? error.message : 'Review your answers before continuing.') }
   }
-  if (state.step === 0) return <section className="cf-welcome">
-    <div className="cf-welcome-copy">
-      <p className="cf-kicker"><span className="cf-short-line" />RUN. LIFT. YOUR THING.</p>
-      <h1>A big goal.<br />A real life.<br /><em>Room for both.</em></h1>
-      <p className="cf-lead">Start with your equipment and a run + lift base.<br />Make it yours offline, through an API or with your usual AI chat.</p>
-      <button className="cf-button cf-primary cf-hero-cta" onClick={() => update(previous => ({ ...prepareRecommendedSetup(previous), step: 6 }))}>Find my starting point <Icon name="arrow" /></button>
-      <button className="cf-text-button" onClick={() => update(previous => confirmSetupEquipment(exampleCampaign(previous.draft.startDate), ['dumbbell', 'floor_space']))}>Explore the Bangkok example <Icon name="chevron" size={17} /></button>
-      <div className="cf-welcome-trust"><Icon name="lock" size={16} /><span>No account. No subscription. Just your device.</span></div>
-    </div>
-    <div className="cf-welcome-visual"><CourtArt /><div className="cf-visual-caption"><span>01 / THE CAMPAIGN</span><strong>A plan, not a blank page.</strong><p>Recommended exercises. A flexible calendar. Your own weights.</p></div></div>
-  </section>
-  return <div className="cf-setup-layout">
-    <aside className="cf-setup-aside"><div><p className="cf-kicker">MAKE IT YOURS</p><h2>A strong base.<br />Your own direction.</h2></div><ol>{stepOrder.map((step, index) => <li key={step} aria-current={state.step === step ? 'step' : undefined}><span>{visibleStep > index + 1 ? <Icon name="check" size={16} /> : `0${index + 1}`}</span>{steps[step]}</li>)}</ol><p className="cf-small">No training spreadsheet needed.<br />Your answers stay on this device.</p></aside>
+  const moveTo = (next: 1 | 2 | 5) => {
+    setIssue('')
+    update(previous => ({ ...prepareRecommendedSetup(previous), step: next }))
+  }
+
+  return <div className="cf-setup-layout cf-lean-onboarding">
+    <aside className="cf-setup-aside"><div><p className="cf-kicker">MAKE IT YOURS</p><h2>Your goal.<br />Your real routine.</h2></div>
+      <ol>{ONBOARDING_STEPS.map((item, index) => <li key={item.value} aria-current={step === item.value ? 'step' : undefined}><span>{visibleStep > index + 1 ? <Icon name="check" size={16} /> : `0${index + 1}`}</span>{item.label}</li>)}</ol>
+      <p className="cf-small">Three steps. No account or AI needed.<br />Your answers stay on this device.</p>
+    </aside>
     <form className="cf-setup-form" onSubmit={forward}>
-      <div className="cf-step-header"><button type="button" className="cf-icon-button" aria-label="Previous step" onClick={() => { setIssue(''); update(previous => ({ ...prepareRecommendedSetup(previous), step: previous.step === 6 ? 0 : previous.step === 1 ? 6 : previous.step - 1 })) }}><Icon name="back" /></button><span>0{visibleStep} <span className="cf-muted">/ 06</span></span><span>{steps[state.step]}</span></div>
-      <div className="cf-step-progress" aria-hidden="true">{stepOrder.map((step, index) => <i key={step} className={visibleStep > index ? 'cf-filled' : ''} />)}</div>
-      {state.step === 6 && <section className="cf-stack">
-        <div><p className="cf-kicker">START WITH WHAT YOU HAVE</p><h1>Your space.<br /><em>Your equipment.</em></h1><p className="cf-lead">Choose a starting point, then adjust the details. Every recommendation and AI brief uses this selection.</p></div>
-        <EquipmentPicker value={resources} onChange={changeResources} />
-        <p className="cf-small">The expanded exercise library is included. Continue to use these resources for your offline plan and AI brief. Confirm floor space and any supports you use; owning equipment never adds training by itself.</p>
+      <div className="cf-step-header"><button type="button" className="cf-icon-button" disabled={step === 1} aria-label="Previous step" onClick={() => moveTo(step === 5 ? 2 : 1)}><Icon name="back" /></button><span>0{visibleStep} <span className="cf-muted">/ 03</span></span><span>{ONBOARDING_STEPS[visibleStep - 1]!.label}</span></div>
+      <div className="cf-step-progress" aria-hidden="true">{ONBOARDING_STEPS.map((item, index) => <i key={item.value} className={visibleStep > index ? 'cf-filled' : ''} />)}</div>
+
+      {step === 1 && <section className="cf-stack" aria-label="Goal">
+        <div><p className="cf-kicker">START WITH YOUR OWN WORDS</p><h1>What are you<br /><em>working toward?</em></h1><p className="cf-lead">A race, a stronger season, or feeling fitter. A sentence is enough.</p></div>
+        <label className="cf-field cf-goal-prompt"><span>Your goal</span><textarea rows={3} required maxLength={MAX_GOAL_TEXT_LENGTH} placeholder="I want to feel stronger and run comfortably while keeping time for the activities I enjoy." value={onboardingGoalText(draft)} onChange={event => patch({}, { goalText: event.target.value })} /></label>
+        <label className="cf-field"><span>Event date (optional)</span><input type="date" value={draft.eventDate === defaultReview ? '' : draft.eventDate} min={draft.startDate} max={dateBounds.max} aria-describedby={dateHelpId} onChange={event => patch({ eventDate: event.target.value })} /></label>
+        <p id={dateHelpId} className="cf-small">No event date? Your default is a 12-week progress review{defaultReview ? ` on ${defaultReview}` : ', once your start date is set'}. Enter a full date, including the year, only if you have one. We never infer dates from your goal.</p>
+        {dateIssue && <p role="status" className="cf-small">{dateIssue}<button type="button" className="cf-text-button" onClick={() => moveTo(2)}>Set start date</button></p>}
+        <p className="cf-small">No sport menu, account or API key. The built-in planner works with your answers; optional AI comes after your routine is complete.</p>
       </section>}
-      {state.step === 1 && <section className="cf-stack">
-        <div><p className="cf-kicker">CHOOSE YOUR STARTING POINT</p><h1>A ready-made base.<br /><em>Or your own brief.</em></h1></div>
-        <div className="cf-path-options">
-          <button type="button" className={`cf-choice cf-horizontal ${setup.mode === 'classic' ? 'cf-selected' : ''}`} aria-pressed={setup.mode === 'classic'} onClick={() => changeMode('classic')}><Icon name="dumbbell" /><div><strong>Classic run + lift</strong><span>A complete hybrid scheme. No AI or API key needed.</span></div><Icon name={setup.mode === 'classic' ? 'check' : 'chevron'} size={18} /></button>
-          <button type="button" className={`cf-choice cf-horizontal ${setup.mode === 'assisted' ? 'cf-selected' : ''}`} aria-pressed={setup.mode === 'assisted'} onClick={() => changeMode('assisted')}><Icon name="spark" /><div><strong>Build around my goal</strong><span>Use your AI chat or API. Review the reply here.</span></div><Icon name={setup.mode === 'assisted' ? 'check' : 'chevron'} size={18} /></button>
+
+      {step === 2 && <section className="cf-stack" aria-label="Routine">
+        <div><p className="cf-kicker">USE YOUR RECENT, COMFORTABLE ROUTINE</p><h1>A normal session.<br /><em>Not a target.</em></h1></div>
+        <div className="cf-onboarding-routine">
+          <div className="cf-input-group cf-rhythm-group"><h3><Icon name="run" />Running</h3>
+            <QuickChoice label="A usual easy run lasts about…" value={setup.typicalRunMinutes} options={[15, 20, 30, 45, 60]} unit="min" onChange={typicalRunMinutes => patch({}, { typicalRunMinutes })} />
+            <QuickChoice label="Runs in a normal week" value={draft.runsPerWeek} options={[1, 2, 3, 4]} unit="runs" onChange={runsPerWeek => patch({ runsPerWeek })} />
+          </div>
+          <div className="cf-input-group cf-rhythm-group"><h3><Icon name="dumbbell" />Lifting</h3>
+            <QuickChoice label="A usual lifting session lasts about…" value={draft.liftDurationMin} options={[20, 30, 45, 60]} unit="min" onChange={liftDurationMin => patch({ liftDurationMin })} />
+            <QuickChoice label="Lifts in a normal week" value={draft.liftsPerWeek} options={[1, 2, 3]} unit="lifts" onChange={liftsPerWeek => patch({ liftsPerWeek })} />
+          </div>
         </div>
-        {setup.mode === 'classic' ? <div className="cf-classic-base"><div className="cf-classic-symbols"><Icon name="run" size={28} /><span>+</span><Icon name="dumbbell" size={28} /></div><h2>Run comfortably.<br />Lift consistently.</h2><p>Easy running, a recommended strength routine and room to recover. Just tell us what a normal training session looks like.</p><span className="cf-small">We choose the exercises. You find your starting weights when you train.</span></div> : <>
-          <label className="cf-field cf-goal-prompt"><span>What are you building toward?</span><textarea rows={5} maxLength={MAX_GOAL_TEXT_LENGTH} placeholder="I'm preparing for the Dodgeball World Championships in Bangkok. I want to keep running and lifting around team practice..." value={setup.goalText} onChange={event => patch({ goalLabel: '', location: '', eventDate: '' }, { goalText: event.target.value })} /></label>
-          <label className="cf-field"><span>Event / review date (required before continuing)</span><input type="date" value={draft.eventDate} min={draft.startDate} max={dateBounds.max} required aria-describedby={dateHelpId} onChange={event => patch({ eventDate: event.target.value })} /></label>
-          <p id={dateHelpId} className="cf-small">Choose the full date, including the year. No event yet? Choose a progress review date. You can ask AI first, but a date is required to continue. Editing the brief clears this choice.{dateBounds.max && ` Available: ${draft.startDate} to ${dateBounds.max}. For a later event, choose an earlier review date.`}</p>
-          {dateBounds.issue && <p role="status">{dateBounds.issue}</p>}
-          <button className="cf-button cf-primary" type="button" disabled={!setup.goalText.trim()} onClick={onAI}><Icon name="spark" />{draft.goalLabel ? 'Refine my goal' : 'Shape my goal'}<Icon name="arrow" size={18} /></button>
-          <p className="cf-small">{connected ? 'AI connection is held in this tab only. Nothing is sent without confirmation.' : 'Use a local model or your own API. You review its interpretation before anything is applied.'}</p>
-          <details className="cf-details"><summary>Set this goal without AI</summary><div className="cf-stack">
-            <p className="cf-small">The same planning engine works without a chat or API key. Choose your own goal and priorities; exercise quantities still come from the engine.</p>
-            <label className="cf-field">Goal name<input value={draft.goalLabel} maxLength={CAMPAIGN_TEXT_LIMITS.goalLabel} onChange={event => patch({ goalLabel: event.target.value })} /></label>
-            <label className="cf-field">Location (optional)<input value={draft.location} maxLength={CAMPAIGN_TEXT_LIMITS.location} onChange={event => patch({ location: event.target.value })} /></label>
-            <fieldset className="cf-quick-choice"><legend>Goal focus</legend><div>{Object.entries(GOAL_KIND_LABELS).map(([kind, label]) => <button type="button" key={kind} aria-pressed={draft.goalKind === kind} onClick={() => patch({ goalKind: kind as CampaignDraft['goalKind'] })}>{label}</button>)}</div></fieldset>
-            <fieldset className="cf-quick-choice"><legend>Training priorities</legend><div>{Object.entries(SETUP_QUALITY_LABELS).map(([quality, label]) => {
-              const id = quality as CampaignDraft['priorities'][number]
-              return <button type="button" key={id} aria-pressed={draft.priorities.includes(id)} disabled={draft.priorities.length === 1 && draft.priorities.includes(id)} onClick={() => patch({ priorities: draft.priorities.includes(id) ? draft.priorities.filter(item => item !== id) : [...draft.priorities, id] })}>{label}</button>
-            })}</div></fieldset>
-          </div></details>
-          {connected && <button className="cf-text-button" type="button" onClick={onDisconnect}>Disconnect AI</button>}
-          {draft.goalLabel && <div className="cf-goal-review"><p className="cf-kicker">{state.sample ? 'SAMPLE GOAL BRIEF' : 'YOUR REVIEWED GOAL'}</p><h2>{draft.goalLabel}</h2>{draft.location && <p>{draft.location}</p>}<p className="cf-small">Review your goal and the date selected above before continuing.</p></div>}
-        </>}
+        <details className="cf-details"><summary>My sessions are a different length</summary><div className="cf-two">
+          <NumberField label="Typical easy run" value={setup.typicalRunMinutes} min={1} max={LIMITS.maxRunMinutes} suffix="min" required={false} onChange={typicalRunMinutes => patch({}, { typicalRunMinutes })} />
+          <NumberField label="Typical lifting session" value={draft.liftDurationMin} min={1} max={180} suffix="min" required={false} onChange={liftDurationMin => patch({ liftDurationMin })} />
+        </div></details>
+        <EquipmentPicker value={resources} onChange={changeResources} />
+        <ConditioningOptions draft={draft} onChange={saveDraft} />
+        <details className="cf-details"><summary>Availability &amp; fixed sessions (optional)</summary><div className="cf-stack cf-practice-fields">
+          <p className="cf-small">Start: {draft.startDate || 'not set'}. By default, the planner can use any day and leaves room for rest.</p>
+          <label className="cf-field">Block starts (Monday)<input type="date" value={draft.startDate} onChange={event => patch({ startDate: event.target.value })} /></label>
+          <DayPicker label="Days you can train" value={draft.availableDays} onChange={availableDays => patch({ availableDays })} />
+          <DayPicker label="Fixed practice or activity days" value={draft.practiceDays} onChange={practiceDays => patch({ practiceDays })} />
+          {draft.practiceDays.length > 0 && <div className="cf-two"><label className="cf-field">Starts at<input type="time" value={draft.practiceTime} onChange={event => patch({ practiceTime: event.target.value })} /></label><NumberField label="Usual session length" value={draft.practiceDuration} min={1} max={240} suffix="min" required={false} onChange={practiceDuration => patch({ practiceDuration })} /></div>}
+          <PracticeBlockOptions draft={draft} onChange={saveDraft} />
+        </div></details>
       </section>}
-      {state.step === 2 && <section className="cf-stack">
-        <div><p className="cf-kicker">NO WEEKLY MATHS</p><h1>What's a normal<br /><em>session for you?</em></h1><p className="cf-lead">Think about recent, comfortable training. Approximate is fine—we'll do the adding up.</p></div>
-        <div className="cf-input-group cf-rhythm-group"><h3><Icon name="run" />Your runs</h3><QuickChoice label="A usual easy run lasts about..." value={setup.typicalRunMinutes} options={[15, 20, 30, 45, 60]} unit="min" onChange={typicalRunMinutes => patch({}, { typicalRunMinutes })} /><QuickChoice label="How many runs in a normal week?" value={draft.runsPerWeek} options={[1, 2, 3, 4]} unit="runs" onChange={runsPerWeek => patch({ runsPerWeek })} /><details className="cf-details"><summary>My usual run is a different length</summary><NumberField label="Typical easy run" value={setup.typicalRunMinutes} min={1} max={150} suffix="min" required={false} onChange={typicalRunMinutes => patch({}, { typicalRunMinutes })} /></details></div>
-        <div className="cf-input-group cf-rhythm-group"><h3><Icon name="dumbbell" />Your lifting</h3><QuickChoice label="How many lifting sessions is normal for you?" value={draft.liftsPerWeek} options={[1, 2, 3]} unit="lifts" onChange={liftsPerWeek => patch({ liftsPerWeek })} /><QuickChoice label="About how long are you usually in the gym?" value={draft.liftDurationMin} options={[20, 30, 45, 60]} unit="min" onChange={liftDurationMin => patch({ liftDurationMin })} /></div>
-        <ConditioningOptions draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
-        <details className="cf-details"><summary>Have Garmin / FIT / Apple training history?</summary><p>On-device activity import is next. You won't need to calculate a weekly total when that arrives either. This build uses the simple answers above.</p></details>
-      </section>}
-      {state.step === 3 && <section className="cf-stack">
-        <div><p className="cf-kicker">A BASE, NOT A BLANK PAGE</p><h1>Your starting<br /><em>lineup.</em></h1><p className="cf-lead">A recommended strength routine for the equipment you have. Keep it, swap a movement, or ask AI to tailor the cards.</p></div>
-        <details className="cf-details"><summary>Equipment: {resourceLabels(resources).join(', ') || 'No kit'}</summary><EquipmentPicker value={resources} onChange={changeResources} /></details>
-        <ProgrammingChoice draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
-        {draft.program ? <ExercisePoolEditor choices={programmingChoices(draft)} selected={setup.exerciseIds} maxExercises={LIMITS.maxProgramExercises}
-          goal={draft.goalLabel} resources={resources} cards={state.cards ?? []} program={draft.program}
-          onChange={ids => { try { const next = selectProgramExercises(draft, ids); update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) })); setIssue('') } catch (error) { setIssue(error instanceof Error ? error.message : 'The pool could not be updated.') } }}
-          onCards={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} /> : <>
-        <div className="cf-recommendation-list">{setup.exerciseIds.map((id, index) => {
-          const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === id)
-          if (!exercise) throw new Error('A recommended exercise is missing from the checked library. Review the saved setup.')
-          const prescription = recommendationForExercise(id)
-          const alternatives = DEFAULT_LIBRARY.exercises.filter(item => (RECOMMENDATION_POLICY.supportedExerciseIds as readonly string[]).includes(item.id) && item.pattern === exercise.pattern && !setup.exerciseIds.includes(item.id) && exerciseAvailable(item.id, resources))
-          return <article key={id} className={`cf-recommendation-card cf-pattern-${exercise.pattern}`}>
-            <div className="cf-movement-tile"><span>{String(index + 1).padStart(2, '0')}</span><Icon name={exercise.pattern === 'core' || exercise.pattern === 'rotational' ? 'court' : 'dumbbell'} size={32} /></div>
-            <div className="cf-recommendation-copy"><p className="cf-kicker">{patterns[exercise.pattern]}</p><h2>{exercise.name}</h2><p>Up to {prescription.sets} sets × {prescription.reps} reps<span className="cf-mid-dot">·</span>Easy starting effort</p><span className="cf-small">No starting weight assumed</span><ExerciseGuide name={exercise.name} guide={exerciseGuidance(exercise, { goal: draft.goalLabel })} /></div>
-            {alternatives.length > 0 && <button className="cf-swap-button" type="button" aria-label={`Swap ${exercise.name}`} onClick={() => setSwapping(swapping === id ? null : id)}><Icon name="move" size={16} /><span>Swap</span></button>}
-            <div className="cf-inline"><button type="button" className="cf-text-button" onClick={() => setEditingExercise(editingExercise === id ? null : id)}>Customise {exercise.name}</button><button type="button" className="cf-text-button" disabled={setup.exerciseIds.length <= 1} onClick={() => patch({}, { exerciseIds: setup.exerciseIds.filter(item => item !== id) })}>Remove {exercise.name}</button></div>
-            {swapping === id && <div className="cf-swap-options"><p className="cf-small">Same movement pattern. Fresh weight calibration.</p>{alternatives.map(alternative => <button type="button" key={alternative.id} onClick={() => { patch({}, { exerciseIds: setup.exerciseIds.map(current => current === id ? alternative.id : current) }); setSwapping(null) }}>{alternative.name}<Icon name="chevron" size={15} /></button>)}</div>}
-          </article>
-        })}</div>
-        {editingExercise && <WorkoutCards cards={state.cards ?? []} resources={resources} exerciseId={editingExercise} onChange={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} />}
-        <details className="cf-details"><summary>Add an equipped exercise</summary><div className="cf-inline">{DEFAULT_LIBRARY.exercises.filter(item => !setup.exerciseIds.includes(item.id) && (RECOMMENDATION_POLICY.supportedExerciseIds as readonly string[]).includes(item.id) && exerciseAvailable(item.id, resources)).map(item => <button type="button" className="cf-button cf-secondary" key={item.id} disabled={setup.exerciseIds.length >= RECOMMENDATION_POLICY.maxExercises} onClick={() => patch({}, { exerciseIds: [...setup.exerciseIds, item.id] })}>{item.name}</button>)}</div><p className="cf-small">Up to {RECOMMENDATION_POLICY.maxExercises} supported cards. Quantities come from the engine, not custom text.</p></details>
-        </>}
-        <details className="cf-details"><summary>Personal notes &amp; unscheduled drill ideas ({state.cards?.length ?? 0})</summary><WorkoutCards cards={state.cards ?? []} resources={resources} program={draft.program} onChange={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards) }))} /></details>
-        <div className="cf-inline-note"><Icon name="leaf" /><p>You'll find comfortable starting weights in your first session. No old weight, rep or effort records needed.</p></div>
-        <button type="button" className="cf-ai-teaser" onClick={onAI}><Icon name="spark" /><div><strong>Shape sessions with my AI</strong><span>Copy a chat brief or use your connected API. Review once, then apply.</span></div><Icon name="chevron" size={18} /></button>
-        <p className="cf-small">AI can choose compatible exercises from the checked library. The engine sets the dose and checks scheduling costs. It can't invent an exercise with unknown fatigue data.</p>
-        {connected && <button className="cf-text-button" type="button" onClick={onDisconnect}>Disconnect AI</button>}
-      </section>}
-      {state.step === 4 && <section className="cf-stack">
-        <div><p className="cf-kicker">FIT THE WEEK YOU ACTUALLY HAVE</p><h1>Training meets<br /><em>real life.</em></h1><p className="cf-lead">Pick your days. Fixed practices go in first.</p></div>
-        <label className="cf-field">Block starts (Monday)<input type="date" value={draft.startDate} required onChange={event => patch({ startDate: event.target.value })} /></label>
-        <DayPicker label="Days you can train" value={draft.availableDays} onChange={availableDays => patch({ availableDays })} />
-        <details className="cf-details" open={draft.practiceDays.length > 0}><summary>{draft.goalKind === 'dodgeball' ? 'Your dodgeball practice' : 'Add fixed sport practices'}</summary><div className="cf-stack cf-practice-fields"><DayPicker label="Practice days" value={draft.practiceDays} onChange={practiceDays => patch({ practiceDays })} />{draft.practiceDays.length > 0 && <div className="cf-two"><label className="cf-field">Starts at<input type="time" value={draft.practiceTime} required onChange={event => patch({ practiceTime: event.target.value })} /></label><NumberField label="Usual practice length" value={draft.practiceDuration} min={1} max={240} suffix="min" onChange={practiceDuration => patch({ practiceDuration })} /></div>}</div></details>
-        <PracticeBlockOptions draft={draft} onChange={next => update(previous => ({ ...previous, draft: normalizeRecommendedDraft(next) }))} />
-        <div className="cf-time-summary"><Icon name="calendar" /><div><strong>Roughly {Math.floor(draft.weeklyTimeBudgetMin / 60)}h {draft.weeklyTimeBudgetMin % 60 || ''}{draft.weeklyTimeBudgetMin % 60 ? 'm' : ''} in a normal week</strong><p>Calculated from your session choices, including practice. We'll stay within that time and leave room for rest.</p><button type="button" className="cf-text-button" onClick={() => update(previous => ({ ...previous, step: 2 }))}>Change my usual sessions <Icon name="back" size={15} /></button></div></div>
-      </section>}
-      {state.step === 5 && <section className="cf-stack">
-        <div><p className="cf-kicker">READY, WITHOUT THE GUESSWORK</p><h1>Your base is set.<br /><em>Let's find your rhythm.</em></h1></div>
-        <div className="cf-goal-summary"><Icon name={setup.mode === 'classic' ? 'dumbbell' : 'spark'} /><div><span>{setup.mode === 'classic' ? 'CLASSIC HYBRID' : draft.location || 'YOUR GOAL'}</span><h2>{draft.goalLabel}</h2><p>{setup.mode === 'classic' ? 'Running + lifting. No AI required.' : 'Your reviewed brief. Engine-checked training.'}</p></div></div>
-        <div className="cf-principles"><div><span>01</span><h3>A routine to start from</h3><p>{setup.exerciseIds.length} recommended exercises. Easy runs based on your usual session length. Your first week starts lighter.</p></div><div><span>02</span><h3>Your weights, found in the gym</h3><p>No guessed kilograms. Choose a comfortable weight, log the set, and build your own reference point.</p></div><div><span>03</span><h3>Adapt without playing catch-up</h3><p>Move a session when life changes. Fatigue reduces upcoming work; a time skip leaves that slot free.</p></div></div>
-        {setup.mode === 'classic' && <details className="cf-details"><summary>A 12-week direction, not a rigid schedule</summary><p>Only the next week is written from your current training. Revisit the overall direction on {draft.eventDate}.</p></details>}
+
+      {step === 5 && <section className="cf-stack" aria-label="Review & build">
+        <div><p className="cf-kicker">A COMPLETE PLAN, WITHOUT AI</p><h1>Your starting point.<br /><em>Ready to build.</em></h1></div>
+        <div className="cf-onboarding-review">
+          <div><h2>{draft.goalLabel}</h2><p>{draft.eventDate === defaultReview || !draft.eventDate ? '12-week progress review' : 'Event'}: {draft.eventDate || defaultReview}</p><button type="button" className="cf-text-button" onClick={() => moveTo(1)}>Edit goal</button></div>
+          <div><p>{draft.runsPerWeek} runs of about {setup.typicalRunMinutes} min · {draft.liftsPerWeek} lifts of about {draft.liftDurationMin} min</p><p>{resourceLabels(resources).join(' · ') || 'Bodyweight only'}{draft.practiceDays.length ? ` · ${draft.practiceDays.length} fixed sessions` : ''}</p><button type="button" className="cf-text-button" onClick={() => moveTo(2)}>Edit routine &amp; equipment</button></div>
+        </div>
+        <div><h3>Your starting lineup</h3><p className="cf-small">Easy runs and {setup.exerciseIds.length} recommended strength movements. Your first exposures stay conservative; starting weights are never guessed.</p>
+          <ul className="cf-onboarding-lineup">{setup.exerciseIds.map(id => <li key={id}>{library.exercises.find(item => item.id === id)?.name ?? id}</li>)}</ul>
+        </div>
+        <details className="cf-details"><summary>Edit the lineup or add notes (optional)</summary><div className="cf-stack">
+          <ProgrammingChoice draft={draft} onChange={saveDraft} />
+          {draft.program ? <ExercisePoolEditor choices={programmingChoices(draft)} selected={setup.exerciseIds} maxExercises={LIMITS.maxProgramExercises}
+            goal={draft.goalLabel} resources={resources} cards={state.cards ?? []} program={draft.program}
+            onChange={ids => { try { saveDraft(selectProgramExercises(draft, ids)) } catch (error) { setIssue(error instanceof Error ? error.message : 'The lineup could not be updated.') } }}
+            onCreateCustom={exercise => {
+              try {
+                const result = addOnboardingCustomExercise(draft, exercise)
+                if (!saveDraft(result.draft)) return false
+                if (!result.selected) setIssue('Exercise saved to your library. Your lineup is full; swap an existing movement to use it.')
+                return true
+              } catch (error) { setIssue(error instanceof Error ? error.message : 'The custom exercise could not be saved.'); return false }
+            }}
+            onCards={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards, previous.draft.program) }))} />
+            : <div className="cf-stack">{setup.exerciseIds.map(id => {
+              const exercise = DEFAULT_LIBRARY.exercises.find(item => item.id === id)
+              const alternatives = DEFAULT_LIBRARY.exercises.filter(item => item.pattern === exercise?.pattern && !setup.exerciseIds.includes(item.id) && (RECOMMENDATION_POLICY.supportedExerciseIds as readonly string[]).includes(item.id) && exerciseAvailable(item.id, resources))
+              return <label className="cf-field" key={id}>Swap {exercise?.name ?? id}<select value={id} onChange={event => patch({}, { exerciseIds: setup.exerciseIds.map(current => current === id ? event.target.value : current) })}><option value={id}>{exercise?.name ?? id}</option>{alternatives.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            })}</div>}
+          <details className="cf-details"><summary>Personal notes &amp; unscheduled ideas</summary><WorkoutCards cards={state.cards ?? []} resources={resources} program={draft.program} onChange={cards => update(previous => ({ ...previous, cards: parseWorkoutCards(cards, previous.draft.program) }))} /></details>
+        </div></details>
+        <button type="button" className="cf-ai-teaser" onClick={() => {
+          try { validateOnboardingRoutine(draft); validateSetupDate(draft.startDate, draft.eventDate); if (!draft.goalLabel.trim()) throw new Error('Finish your goal before using optional AI.'); onAI(); setIssue('') } catch (error) { setIssue(error instanceof Error ? error.message : 'Finish your answers before using AI.') }
+        }}><Icon name="spark" /><div><strong>Optional: refine with AI or chat</strong><span>Use all your answers in one brief. Review suggestions before applying them.</span></div><Icon name="chevron" size={18} /></button>
+        {connected && <button type="button" className="cf-text-button" onClick={onDisconnect}>Disconnect AI</button>}
         <label className="cf-check"><input type="checkbox" required checked={draft.confirmed} onChange={event => update(previous => ({ ...previous, draft: { ...previous.draft, confirmed: event.target.checked } }))} /><span>These session amounts reflect my recent, comfortable routine. I'm not currently in pain, ill or returning from a break.</span></label>
-        <p className="cf-small">Exercise cards are recommendations, not claimed past performances. First exposures stay conservative. This isn't rehabilitation or a complete sport-coaching programme.</p>
+        <p className="cf-small">Recommendations are not claimed past performances. This isn't rehabilitation or a complete sport-coaching programme.</p>
       </section>}
       {issue && <p className="cf-error" role="alert">{issue}</p>}
-      <div className="cf-step-footer"><span><Icon name="lock" size={14} />Private by default</span><button className="cf-button cf-primary" type="submit">{state.step === 5 ? 'Build my week' : 'Continue'}<Icon name="arrow" size={19} /></button></div>
+      <div className="cf-step-footer"><span><Icon name="lock" size={14} />Private by default</span><button className="cf-button cf-primary" type="submit">{step === 5 ? 'Build my week' : 'Continue'}<Icon name="arrow" size={19} /></button></div>
     </form>
   </div>
 }

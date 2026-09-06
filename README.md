@@ -2,38 +2,47 @@
 
 An open, local-first training planner for people who run and lift.
 MIT licensed, no subscription, no accounts, no backend, no telemetry, no error
-reporting, or environment configuration. All training data is stored in the
-browser's IndexedDB. No LLM or API key is required. An optional, explicitly
-connected local model, HTTPS API, or external AI chat can interpret a goal,
-propose compatible exercises during setup or an explicit future-week revision, and
-draft reference cards.
+reporting, or environment configuration. Training data is saved in the browser's
+IndexedDB. No LLM or API key is required, including for manual custom exercises.
+Optional AI at the final setup review or an explicit end-of-week review can
+interpret a goal, propose real custom exercises and explain a next-week selection.
+Sharing a weekly review is an explicit choice and includes that week's recorded
+training details; nothing is sent automatically.
+
+This README describes the source in this checkout, not a deployment announcement.
 
 ## Mobile campaign workspace
 
-Setup starts with **equipment and space**: No kit, Home or Gym shortcuts, followed
-by editable strength, cardio and sport resources. Racks, benches and pull-up bars
-are explicit capabilities; owning a barbell does not imply a complete gym.
-Rower, SkiErg, court, dodgeballs and training partners are included in all coaching
-briefs. Selecting cardio equipment does not introduce unsupported running substitutions.
-Then choose a complete **classic run + lift** scheme without AI,
-or a **free-text goal** interpreted through an API or imported chat reply. Goal details
-can also be entered manually without AI. These paths lead
-through typical session length and frequency, recommended exercise cards,
-weekly commitments, and a calendar home. Weekly running minutes are calculated
-from a usual easy run and runs per week; users do not need to calculate totals.
+Setup has three steps, with no AI detour before the routine is complete:
+
+1. **Goal:** write what you want to work toward. An event date is optional;
+   without one, the app uses a clearly shown 12-week progress review. It does not
+   infer a date from the wording of your goal.
+2. **Routine:** enter recent comfortable running/lifting session lengths and
+   frequency, confirm equipment and space, and optionally adjust availability
+   or fixed sessions. Weekly running minutes come from a usual run and runs per
+   week; you do not need to calculate totals.
+3. **Review & build:** inspect the goal, routine and exercise lineup. Keep the
+   built-in recommendations, create a custom exercise manually, or optionally
+   use the AI workspace here. Review any changes before building the first week.
+
+Equipment shortcuts remain editable. Racks, benches and pull-up bars are
+explicit capabilities; owning a barbell does not imply a complete gym. Confirmed
+resources accompany any shared brief. Cardio equipment does not imply a new
+conditioning baseline or an unsupported substitution for running.
 
 Exercise cards are recommended for the selected equipment, with compatible
 same-pattern swaps. They are explicitly recommendations, **not invented historical
 observations**. No previous weights, sets, RPE ratings or exercise dates are
 required for this path. The engine prescribes a conservative first exposure;
 kilograms remain unset until the athlete finds and logs their own weight.
-Supported exercises can be added or removed before committing the block. Personal
-reference cards can be edited, reordered and linked to an exercise without renaming
-its canonical identity or changing its prescription.
+Built-in or approved custom exercises can be selected before committing the block.
+Custom definitions have their own identities and logs; they are not merely renamed
+library exercises. Personal reference cards remain separate notes and do not
+change an exercise's identity or prescription.
 
-The Bangkok dodgeball example is explicitly sample data, including its dates
-and training rhythm. Confirm a real event/review date and recent training
-before building a personal campaign. Other goals use the same planning path.
+Any example is sample data, not a personal prescription. Confirm your own
+event/review date and recent running and lifting before building a campaign.
 
 - Drag a session's move handle to another day, or use **Move** inside the
   session with a keyboard or touch controls. Moves are safety-checked.
@@ -45,28 +54,33 @@ before building a personal campaign. Other goals use the same planning path.
   locally; finishing the session requires a separate confirmation.
 - Read exercise-specific records and changes in History. No streaks, readiness
   gauges, or automatic load increases are introduced.
-- Moving to a newly generated week requires confirmation. In this first
-  release, previous campaign weeks become read-only; finish an in-progress
-  session before advancing. Unlogged sessions stay unknown, not completed.
-- Campaign data has a separate IndexedDB database, `hybrid-planner-campaign`.
-  The original planner and its data are accessible under **Data & settings**
-  or `/app/?view=legacy`. Nothing migrates or overwrites that archive automatically.
-- Export and restore campaign JSON backups through settings. These are separate
-  from original-planner backups. A revision check prevents cross-tab overwrites.
+- Review the week before confirming the next one. Recorded actuals, partial work,
+  time/fatigue skips, removed sessions and unlogged sessions remain distinct.
+  Optional AI can discuss this review and propose the next selection; the engine
+  owns adaptation and scheduling. Previous weeks become read-only; finish an
+  in-progress session before advancing. Unknown actuals are not completed work.
+- Campaign data uses the IndexedDB database `hybrid-planner-campaign`.
+  The retired planner and archive screens have been removed, not their stored data:
+  the old on-device database and any backup files are left untouched. There is no
+  old-planner UI, migration or import of its backups into a campaign. Bookmarks
+  using `/app/?view=legacy` now open the current campaign and ignore `view`.
+- Export and restore campaign JSON backups through settings. A revision check
+  prevents cross-tab overwrites. Previous weeks within a campaign remain available
+  read-only in History; they are not the removed planner archive.
 
 **Current boundaries:** this remains an established-baseline supporting plan,
-not a complete championship progression system. Goal priorities influence
+not a complete event progression system. Goal priorities influence
 scheduling and curated content; they do not justify invented sport-specific
-workloads. Garmin FIT and Apple Health activity import are not implemented yet,
-and are labelled accordingly in setup. There is no Garmin account connection.
+workloads. Garmin FIT and Apple Health activity import are not implemented.
+There is no Garmin account connection.
 
-### Equipment-aware exercise templates
+### Built-in and real custom exercises
 
 Confirm equipment during setup to use the expanded library automatically.
 An unfinished draft from an older release asks for equipment confirmation inside
 the AI workspace before sharing a new brief. Existing campaigns retain their old
-prescriptions: choose **Change next week's exercises** in the coaching workspace
-or **Revise next week's exercises** in settings to review an upgrade. The library includes
+prescriptions: use the explicit weekly review to propose a future selection.
+The library includes
 kettlebell movements, carries, mobility and supported execution variants.
 Choose four to seven equipped exercises; complementary A/B sessions cover the
 selected pool rather than repeating the same bundle. Unavailable movements are
@@ -87,18 +101,26 @@ or successful calibration. Established rower, bike and SkiErg routines require e
 modality-specific baselines and matching equipment; they do not erase or duplicate
 the existing running baseline. No conditioning is inferred from owning equipment.
 
-For dodgeball, an optional controlled-target throwing block can sit **inside**
-an established court practice when the athlete confirms the required resources
-and their existing total practice throw count. This includes warm-up, drills and
-games: the block is not permission to add throws. Unknown counts retain the
-ordinary practice entry. The count is an administrative exposure ceiling, not a
-validated injury-safe dose or an estimate of isolated shoulder fatigue.
+**Create an exercise** works without AI. Supply its name, description, focus,
+purpose and actual equipment requirements, then choose a supported movement
+profile and acknowledge the technique/profile fit. An AI reply can propose the
+same kind of real definition, but cannot approve it on your behalf. A supported,
+approved definition can enter the selected routine and receive engine-generated
+prescriptions and its own actual logs.
 
-Revisions preview and apply to **next week only**. Previous prescriptions, logs,
-library versions, recovery and fatigue reductions remain intact. Health holds and
-unfinished logs cannot be bypassed with a revision. Existing campaigns are not
-silently upgraded. Arbitrary new exercises and unsupported drills remain notes
-until a reviewed engine profile exists.
+The engine profile owns execution style, units, conservative scheduling costs
+and dose limits. Neither manual prose nor AI can override sets, repetitions,
+seconds, weights, effort targets, costs, baseline volume or calendar placement.
+An unknown or incompatible profile is rejected, not treated as zero-cost work.
+Human acknowledgement and software validation are not technique assessment,
+medical clearance or proof that a new movement is safe.
+
+Revisions preview and apply to **next week only**. Changing a custom technique
+creates a new exercise identity; old IDs, prescriptions, logs and weight records
+stay attached to the original definition. Library versions, recovery and fatigue
+reductions remain intact. Health holds and unfinished logs cannot be bypassed.
+Existing campaigns are not silently upgraded. Work outside the supported profile
+contract cannot become a scheduled exercise by hiding instructions in a note.
 
 Prescription ceilings and scheduling costs are explicit engineering policies,
 not validated physiological measurements. The
@@ -110,9 +132,11 @@ units do not use artificial repetitions or RIR.
 
 ### One coaching workspace: built-in, API or external chat
 
-**Shape your sessions** offers three methods using the same equipment profile:
+The final **Review & build** step and explicit **weekly review** offer the same
+workspace. AI is optional in both, not a prerequisite for Goal or Routine:
 
-- **Built-in:** select compatible exercises in setup and edit local reference cards.
+- **Built-in:** select compatible exercises, create custom exercises manually,
+  review the week and edit local reference cards without a model or API key.
 - **Use my AI chat:** copy a coaching brief or download `hybrid-coach-brief.txt`,
   give it to a chat such as Claude or ChatGPT, discuss the choices in ordinary
   language, then ask for the **final app reply**. Paste that JSON reply or upload its
@@ -123,9 +147,12 @@ units do not use artificial repetitions or RIR.
   Explicit requests use the same instructions, versioned reply and validator as
   the manual round trip. Nothing sends automatically.
 
-The `hybrid-coach-reply` version-1 envelope contains a context ID, bounded goal/
-exercise proposal, and optional reference cards. It is not a campaign backup.
-Context changes (equipment, goal, baseline, calendar or cards) invalidate
+The `hybrid-coach-reply` **version-2** envelope contains a context ID, a bounded
+goal/exercise proposal, `customExercises` and reference cards. `customExercises`
+is an array of real profile-bound definitions; use an empty array when none are
+proposed. Compatible version-1 replies remain accepted without that field.
+Neither format is a campaign backup.
+Context changes (equipment, goal, baseline, calendar, recorded work or cards) invalidate
 old replies; copy a refreshed brief into the same conversation when this happens.
 An external chat cannot see an app update: paste the fresh brief and ask it to
 replace the earlier one if it still describes the old catalog.
@@ -134,28 +161,36 @@ Unknown fields, duplicate JSON keys, invalid exercise/resource IDs and oversized
 replies are rejected. Imports revalidate at Apply and never replace saved logs.
 Matching card IDs explicitly update those cards; unrelated cards are preserved.
 
-During setup, write a goal such as preparing for a dodgeball championship in
-Bangkok. AI may propose the goal classification, name, location, explicitly
-specified event date, priorities, and equipped exercise-library IDs. Review the
-interpretation and added/removed cards before applying. Write the brief naturally;
-no special date format is needed. A missing, guessed, invalid or out-of-range AI
-date stays unset while valid goal and exercise suggestions remain reviewable.
-Use the **Event / review date** picker beside the brief, including the year.
-This date is required before continuing setup: choose the event date or a progress
-review date within the displayed 52-week range. You may ask AI first and select the
-date after applying its suggestions. A separately selected date takes precedence
-when you explicitly confirm it in the AI review; it need not appear in your goal
-wording. The selected date is included in the new, previewable coaching context.
-Editing the goal wording clears the previous date.
-Exercise-only requests preserve the already reviewed goal and date.
+Write a goal such as keeping regular easy runs and strength sessions around a
+busy week. At the final review, AI may help interpret the goal, suggest equipped
+library exercises or author new profile-bound custom definitions. Review the
+interpretation, definitions and added/removed selection before applying.
+An explicitly chosen event date or the app's progress-review date remains in
+the brief; AI does not replace it with a guessed date. Exercise-only requests
+preserve the reviewed goal and date.
 
-AI cannot invent exercise metadata or prescribe sets, repetitions, RPE, weights,
-durations, weekly volume or placement. Unknown fields, unknown/high-skill
-exercises and unavailable equipment are rejected. The deterministic engine
-costs the approved selection, sets its prescription and applies the independent
-safety floor. These suggestions cannot edit a committed block. An explicit
-future-week revision creates a temporary selection for review, not permission
-to rewrite existing sessions.
+AI can author a custom movement's descriptive fields and propose a supplied
+profile, but cannot supply or override quantities, costs, loads or a schedule.
+The deterministic engine costs the approved selection, determines its dose
+and applies the independent safety floor. Locked weeks cannot be rewritten.
+A future-week review stages suggestions for explicit approval, not an automatic
+change to the campaign.
+
+### End-of-week review and explicit sharing
+
+The weekly review compares prescribed work with **this week's recorded actuals**:
+sets, repetitions, seconds, weights, duration and effort, plus notes and recorded
+health flags. Partial work, overruns, time skips, fatigue skips, removals,
+omissions and unlogged sessions remain distinct. Missing actuals stay unknown,
+even when a session is marked completed; the prescription never fills them in.
+
+Built-in review and next-week planning work without AI. If you choose external
+chat or an API, both use **one previewable brief** containing this scoped review.
+Preview it before copying, downloading or sending: notes, health flags and
+recorded performance may be sensitive. AI can explain patterns and propose a
+next-week exercise selection or custom definitions. The user approves the
+selection; the engine handles adaptation, dose and scheduling. AI cannot
+rewrite observations, diagnose symptoms or bypass health holds.
 
 Use a local OpenAI-compatible endpoint or a remote HTTPS `/chat/completions`
 endpoint. Configure it yourself and confirm the exact payload before sending.
@@ -163,21 +198,22 @@ No request occurs merely by opening a panel. Endpoint, model and API key stay in
 memory throughout the open tab, including after setup: disconnect or reload to
 clear them. They are never included in training data, chat briefs or backups.
 The previewable brief includes the goal/date, resources, baseline session amounts,
-availability/practices, selected exercise IDs, eligible catalog, reference cards
-and relevant planned sessions, including locked typed blocks and revision
-history. It excludes logs, imported activity files and keys.
+availability/fixed sessions, selected exercise IDs, eligible catalog and profiles,
+custom definitions, reference cards and relevant planned sessions. A **weekly
+review** additionally includes that week's actual logs, notes and health flags
+as described above. Setup sharing does not include training logs. Neither brief
+exports the entire training history, raw activity files or API keys.
 Copying/downloading is local; sharing with another service is your explicit action.
 
-**Custom cards are not a new planning authority.** Title, description, focus,
-why and equipment needs are editable local content, separate from prescriptions.
-Novel sport drills (for example a throwing idea) remain **unscheduled** because their
-technique and workload are not validated by this engine. AI prose always remains
-an **unverified draft**, including after edits; it cannot approve itself as safe.
-Missing equipment is shown on the card. No quantity parser or keyword filter can
-prove arbitrary prose safe, so it never becomes executable planning input.
-The committed baseline and anchors remain frozen; cards do not add training or
-rewrite history. Reference cards are campaign-wide, not historical session snapshots.
-Cards, edits and old-format backups work offline; asking a remote model does not.
+**Reference cards and custom exercises are different.** Reference cards are
+editable notes, not executable prescriptions. Their titles, instructions and
+equipment labels cannot rename an exercise, change its dose or add work. Real
+custom exercises instead use the explicit profile-bound definition and approval
+path above. Unsupported ideas may remain unscheduled, unverified reference
+drafts; no prose filter can prove their technique safe. Neither kind of content
+rewrites historical observations. Reference cards are campaign-wide, not
+historical session snapshots. Manual edits, approved custom definitions and
+supported campaign backups work offline; asking a remote model does not.
 
 The browser connects directly to the chosen endpoint, with no proxy or
 application backend. CORS, mixed-content and local-network restrictions still
@@ -237,9 +273,9 @@ or localhost is required; opening HTML via `file://` is not supported.
 
 ## Public website and learning guides
 
-The public homepage is at `/`; the existing planner is at `/app/` on the same
-origin. IndexedDB names, records and backup formats are unchanged. There is no
-data migration or upload when a user opens the new planner address.
+The public homepage is at `/`; the campaign planner is at `/app/` on the same
+origin. Existing IndexedDB records and backup files are untouched. Opening the
+planner does not migrate, upload or erase data from the removed screens.
 
 - `/`: mobile-first product introduction, illustrative week, FAQ and planner links.
 - `/learn/`: a learning hub with original guides to hybrid planning, same-day
@@ -253,7 +289,8 @@ The build renders complete HTML through [scripts/marketing.ts](scripts/marketing
 No React bundle, client-side content rendering, third-party fonts, analytics or
 backend is required to read the marketing pages. The tiny homepage script only
 forwards old `?view=legacy` and `#session/...` bookmarks to `/app/`, preserving
-their query and fragment. It does not inspect training records.
+their query and fragment. The app ignores the retired view selector and opens
+the current campaign, not the old planner. It does not inspect old training records.
 
 Add or revise articles in [scripts/marketing-content.ts](scripts/marketing-content.ts).
 The hub, related articles, canonical links, Article/Breadcrumb structured data and
@@ -347,13 +384,13 @@ history for rollback and leave the older private coaching repositories intact.
 
 The block is an arc, not twelve weeks of promises. Create a goal with a peak
 date and priorities, record an established baseline, and materialize one week
-at a time. Pattern-to-exercise assignments stay fixed within the block.
+at a time. Saved weeks keep their exercise assignments; an explicit approved
+revision can change the future selection without rewriting them.
 
 - Running stays easy and relative to conversational effort; no invented pace,
   heart-rate zones, threshold tests, or intervals.
-- The original observed-baseline path uses established exercises, sets, reps,
-  and per-exercise RPE observations. The recommended path keeps first-exposure
-  templates separate from observations and uses its own conservative caps.
+- The campaign setup keeps first-exposure templates separate from observations
+  and uses its own conservative caps.
   RPE 8 means approximately two reps remaining; RPE 9 means one.
 - Novice exercise targets are capped at RPE 7, experienced targets at 8.
   These are conservative product policies, not prescriptions implied by the
@@ -374,7 +411,8 @@ at a time. Pattern-to-exercise assignments stay fixed within the block.
 system or a substitute for a coach or clinician.** It does not prescribe new
 high-skill lifts, split routines, sport drills, event-specific intensity, or
 rehabilitation. Olympic-lift entries may be costed/logged but never generated.
-Exercise choices can change during setup, not within a committed block.
+Exercise choices can change during setup or an approved next-week revision,
+not by rewriting an already saved week.
 Automatic progression is not enabled.
 
 ## Model costs are not measurements
@@ -427,13 +465,11 @@ library versions. The same input produces the same result. Tie-breaking and
 bounded search order are deterministic; no clocks or randomness live in the
 engine. Search exhaustion is reported rather than pretending global optimality.
 
-Version 0.1 maintenance weeks retain their original engine under
-`engine/legacy/`. Schema migration preserves their inputs and logs; it never
-reinterprets weekday indices or regenerates old weeks with version 0.2 rules.
-Unknown-time archive lifts enter new planning as date-only constraints, not
-invented durations or fatigue values. The optimizer can arrange around those
-constraints before choosing a week.
-Unsupported versions and corrupt backups fail visibly.
+Compatibility engines remain under `engine/legacy/` with auditable old-contract
+tests. They do not expose a retired planner or archive screen. The current app
+does not open, migrate or delete the old planner database; its records and
+existing backup files remain on the device. Campaign restore accepts supported
+campaign backups only. Unsupported versions and corrupt backups fail visibly.
 
 All data belongs to the current browser profile and origin. There is no cloud
 recovery, sync, or app-level encryption. Private browsing, storage eviction,
@@ -454,11 +490,12 @@ The offline cache is not a backup of training data.
 - No ACWR or disguised equivalents:
   [decision 0003](docs/decisions/0003-no-acwr.md).
 - No streaks, badges, or rest-punishing gamification.
-- The app is complete without a model. A future optional LLM may explain, parse
-  text for confirmation, or suggest non-prescriptive content; it must never
-  control loads, duration, placement, or safety.
+- The app is complete without a model, including manual custom exercises and
+  weekly review. Optional AI may explain recorded work, interpret goals or
+  propose profile-bound definitions and a future selection for approval; it
+  must never control quantities, costs, loads, duration, placement or safety.
 
-Native Node tests cover the engine, safety, dates, schema migration, backups,
+Native Node tests cover the engine, safety, dates, campaign compatibility, backups,
 storage transactions, and offline caching. CI runs lint, tests, and a typed
 production build. No test framework or runtime database dependency is needed.
 

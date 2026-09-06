@@ -14,18 +14,18 @@ test('the actual lint configuration enforces the engine boundary and determinist
     copyFileSync(join(project, '.oxlintrc.json'), join(temporary, '.oxlintrc.json'))
     mkdirSync(join(temporary, 'engine'))
     const cases = [
-      { file: 'probe.ts', source: "import '../src/App.tsx'", error: 'must never depend on the application' },
-      { file: 'probe.ts', source: "import type { State } from '../src/storage.ts'", error: 'must never depend on the application' },
-      { file: 'probe.ts', source: "import '@/storage'", error: 'must never depend on the application' },
-      { file: 'probe.ts', source: "export { default } from '../src/App.tsx'", error: 'must never depend on the application' },
-      { file: 'probe.ts', source: "void import('../src/App.tsx')", error: 'must never depend on the application' },
+      { file: 'probe.ts', source: "import '../src/Root.tsx'", error: 'must never depend on the application' },
+      { file: 'probe.ts', source: "import type { CampaignSnapshot } from '../src/campaign/storage.ts'", error: 'must never depend on the application' },
+      { file: 'probe.ts', source: "import '@/campaign/storage'", error: 'must never depend on the application' },
+      { file: 'probe.ts', source: "export { default } from '../src/Root.tsx'", error: 'must never depend on the application' },
+      { file: 'probe.ts', source: "void import('../src/Root.tsx')", error: 'must never depend on the application' },
       { file: 'probe.ts', source: "import 'react'", error: 'zero dependencies' },
       { file: 'probe.ts', source: "import 'node:fs'", error: 'zero dependencies' },
       { file: 'probe.ts', source: 'export const value = Math.random()', error: 'randomness' },
       { file: 'probe.ts', source: 'export const value = Date.now()', error: 'clock' },
       { file: 'probe.ts', source: "import './types.ts'", error: null },
       { file: 'probe.test.ts', source: "import 'node:test'", error: null },
-      { file: 'probe.test.ts', source: "import '../src/App.tsx'", error: 'must never depend on the application' },
+      { file: 'probe.test.ts', source: "import '../src/Root.tsx'", error: 'must never depend on the application' },
     ]
     for (const fixture of cases) {
       const file = join('engine', fixture.file)
