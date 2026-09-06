@@ -3,6 +3,7 @@ import { parseCustomExercise, parseProgramConfig } from '../../engine/validation
 import type { CustomExerciseSpec } from '../../engine/types.ts'
 import { AssistantError } from './assistant.ts'
 import { programResourcesForResources, resourcesForEquipment } from './equipment.ts'
+import type { ResourceId } from './equipment.ts'
 import type { CampaignDraft } from './types.ts'
 
 export const MAX_PROPOSED_CUSTOM_EXERCISES = 3
@@ -50,6 +51,23 @@ export function assertNonPrescriptiveText(...parts: string[]): void {
     || /\b\d+\s*[x×]\s*\d+|\d+\s*%|\b\d+\s*-\s*\d+\s*-\s*\d+\b|\b\d+\s*(?:s|min)\b/i.test(text)) {
     throw new AssistantError('Exercise prose cannot prescribe sets, reps, loads, effort, durations or schedules. The engine owns quantities.')
   }
+}
+
+export function assertReferenceCardText(resources: readonly ResourceId[], ...parts: string[]): void {
+  const gearNames = resources.filter(resource => resource.startsWith('custom:'))
+    .map(resource => resource.slice(7).replace(/[^a-z0-9]/g, ''))
+  const text = parts.join('\n').replace(
+    /\b(?<![\d.,+-])(\d+)\s*(kg|kilograms?|lb|lbs|pounds?)\s+(ball|kettlebell|dumbbell|barbell|plate|sandbag|bag|vest)\b/gi,
+    (match: string, amount: string, units: string, equipment: string) => {
+      const mass = `${amount}${/^(kg|kilogram)/i.test(units) ? 'kg' : 'lb'}`
+      const item = equipment.toLowerCase()
+      // A confirmed weighted implement's name is not a newly prescribed load.
+      const confirmed = gearNames.some(name => name.endsWith(`${item}${mass}`)
+        || new RegExp(`(?:^|[a-z])${mass}${item}$`).test(name))
+      return confirmed ? equipment : match
+    },
+  )
+  assertNonPrescriptiveText(text)
 }
 
 /** Stage immutable definitions only; selection and human approval are separate operations. */

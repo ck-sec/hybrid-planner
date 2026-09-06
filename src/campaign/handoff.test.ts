@@ -421,7 +421,7 @@ test('summary plain-text bounds reject HTML, controls, nonstrings, repeated keys
     ...example, summary: 'A'.repeat(MAX_HANDOFF_SUMMARY_LENGTH),
   }), state, scope).reply.summary.length, 1200)
   for (const summary of [
-    null, 1, false, {}, [], 'A'.repeat(MAX_HANDOFF_SUMMARY_LENGTH + 1),
+    null, 1, false, {}, [],
     '<script>bad()</script>', 'Text <strong>claim</strong>', 'First line\nSecond line',
     'Tabs\tare controls', 'Hidden\u0000control', 'Hidden\u202econtrol',
   ]) assert.throws(() => parseHandoffReply(JSON.stringify({ ...example, summary }), state, scope), /summary/)
@@ -431,6 +431,45 @@ test('summary plain-text bounds reject HTML, controls, nonstrings, repeated keys
   assert.throws(() => parseHandoffReply(JSON.stringify(example).replace(
     '"summary":""', '"summary":"First","summary":"Second"',
   ), state, scope), /repeats/)
+})
+
+test('long non-planning summaries are shortened visibly without blocking or changing exercise proposals', async () => {
+  const state = programState()
+  state.draft.resources = parseResources([...state.draft.resources!, 'custom:weightedball-1kg'])
+  state.draft.program!.resources = programResources(state.draft.resources)
+  const example = {
+    ...buildHandoff(state, scope).example,
+    cards: [{
+      ...card, id: 'equipment-reference', title: 'Reference for the 1 kg ball',
+      instructions: 'Treat the 1 kg ball as distinct equipment, not as a new load prescription.',
+      resources: ['custom:weightedball-1kg'],
+    }],
+  }
+  const summary = 'A plain explanation of the familiar movement selection. '.repeat(30)
+  const content = JSON.stringify({ ...example, summary })
+  const review = parseHandoffReply(content, state, scope)
+  assert.equal(review.summaryShortened, true)
+  assert.ok(review.reply.summary.length <= MAX_HANDOFF_SUMMARY_LENGTH)
+  assert.ok(review.reply.summary.endsWith('...'))
+  assert.deepEqual(review.reply.proposal, example.proposal)
+  assert.deepEqual(review.reply.customExercises, example.customExercises)
+  assert.deepEqual(review.reply.cards, example.cards)
+  assert.equal(review.reply.contextId, example.contextId)
+  const shortReview = parseHandoffReply(JSON.stringify(example), state, scope)
+  assert.deepEqual(applyHandoff(state, review, scope), applyHandoff(state, shortReview, scope))
+  const api = await requestHandoff(state, scope, '', {
+    endpoint: 'https://ai-fake.invalid/v1/chat/completions', model: 'fake-model', apiKey: '',
+  }, true, undefined, async () => new Response(JSON.stringify({ choices: [{
+    finish_reason: 'stop', message: { role: 'assistant', content },
+  }] }), { headers: { 'Content-Type': 'application/json' } }))
+  assert.deepEqual(api, review)
+  assert.throws(() => parseHandoffReply(JSON.stringify({
+    ...example, summary: `${summary}<script>bad()</script>`,
+  }), state, scope), /summary/)
+  const unicode = parseHandoffReply(JSON.stringify({
+    ...example, summary: `${'A'.repeat(1196)}\u{1F3CB}${summary}`,
+  }), state, scope)
+  assert.equal(unicode.reply.summary, `${'A'.repeat(1196)}...`)
 })
 
 test('API weekly review can provide a useful assessment with no proposed exercise or note changes', async () => {

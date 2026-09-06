@@ -59,7 +59,7 @@ export interface SetDraft {
   effort: string
 }
 
-export interface CampaignState {
+export interface SavedPlan {
   version: 1
   step: number
   setupComplete: boolean
@@ -70,6 +70,10 @@ export interface CampaignState {
   setDrafts: Record<string, SetDraft>
   cards?: WorkoutCard[]
   revisions?: CampaignRevision[]
+}
+
+export interface CampaignState extends SavedPlan {
+  pastPlans?: SavedPlan[]
 }
 
 export type CalendarAction =

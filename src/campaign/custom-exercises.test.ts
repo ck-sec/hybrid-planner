@@ -5,7 +5,7 @@ import { CUSTOM_EXERCISE_PROFILES } from '../../engine/custom-exercises.ts'
 import { resolveProgramLibrary } from '../../engine/library.ts'
 import { recommendProgram } from '../../engine/program.ts'
 import type { CustomExerciseSpec } from '../../engine/types.ts'
-import { stageCustomExercises, nextCustomExerciseId, MAX_PROPOSED_CUSTOM_EXERCISES } from './custom-exercises.ts'
+import { assertReferenceCardText, stageCustomExercises, nextCustomExerciseId, MAX_PROPOSED_CUSTOM_EXERCISES } from './custom-exercises.ts'
 import { equipmentForResources, parseResources, programResources } from './equipment.ts'
 import { exampleCampaign, normalizeRecommendedDraft } from './model.ts'
 
@@ -16,6 +16,17 @@ const custom: CustomExerciseSpec = {
   focus: 'Keep the load controlled and stop before your position changes.',
   why: 'A familiar hinge variation using the athlete’s available equipment.',
 }
+
+test('reference notes can name confirmed weighted equipment without authoring a load', () => {
+  assert.doesNotThrow(() => assertReferenceCardText(['custom:weightedball-1kg'], 'Reference for the 1 kg ball.', 'Keep it separate from other equipment.'))
+  assert.doesNotThrow(() => assertReferenceCardText(['custom:12lb-dumbbell'], 'A reference for the 12 pound dumbbell.'))
+  for (const resources of [[], ['custom:weightedball-2kg'], ['custom:21kg-ball'], ['custom:1kg-barbell']] as const) {
+    assert.throws(() => assertReferenceCardText(resources, 'A reference for the 1 kg ball.'), /cannot prescribe/)
+  }
+  for (const text of ['Use the 1 kg ball for 3 sets.', 'Add 2 kg.', 'Hold the 1 kg ball for 30 seconds.', 'RPE 8 with the 1 kg ball.', 'Use a 2.1 kg ball.', 'Use a 2,1 kg ball.', 'Use a -1 kg ball.']) {
+    assert.throws(() => assertReferenceCardText(['custom:weightedball-1kg'], text), /cannot prescribe/)
+  }
+})
 
 function draft() {
   const input = exampleCampaign('2026-09-07').draft

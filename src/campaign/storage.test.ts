@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
-import { emptyCampaign } from './model.ts'
+import { buildCampaign, completeCampaignSession, emptyCampaign, exampleCampaign } from './model.ts'
+import { startNewPlan } from './plan-history.ts'
 import { loadCampaign, persistCampaign } from './storage.ts'
 
 class Transaction {
@@ -135,4 +136,43 @@ test('corrupted campaigns fail closed instead of becoming empty drafts', async t
   await loading
   assert.equal(database.latest().written, false)
   assert.deepEqual(database.data, { revision: 1, state: { version: 99 } })
+})
+
+test('restarting saves the new draft and prior logs atomically and reloads both', async t => {
+  const database = fakeDatabase(t)
+  const initial = exampleCampaign('2026-09-07')
+  const plan = buildCampaign({ ...initial, sample: false, draft: { ...initial.draft, confirmed: true } })
+  const session = plan.weeks[0].plan.sessions[0]
+  const original = completeCampaignSession(plan, session.id, session.durationMin, 4, false)
+  database.data = { revision: 2, state: original }
+  const next = startNewPlan(original, '2026-09-14')
+  const saving = persistCampaign(next, 2)
+  await tick()
+  assert.deepEqual(database.data, { revision: 2, state: original })
+  database.latest().complete()
+  assert.deepEqual(await saving, { revision: 3, state: next })
+  const loading = loadCampaign(emptyCampaign('2026-09-14'))
+  await tick()
+  database.latest().complete()
+  assert.deepEqual(await loading, { revision: 3, state: next })
+  assert.deepEqual(next.pastPlans?.[0], original)
+})
+
+test('a failed restart leaves the previous plan and logs intact', async t => {
+  const database = fakeDatabase(t)
+  const initial = exampleCampaign('2026-09-07')
+  const original = buildCampaign({ ...initial, sample: false, draft: { ...initial.draft, confirmed: true } })
+  database.data = { revision: 4, state: original }
+  const next = startNewPlan(original, '2026-09-14')
+  const conflict = assert.rejects(persistCampaign(next, 3), /another tab/i)
+  await tick()
+  await conflict
+  assert.equal(database.latest().written, false)
+  assert.deepEqual(database.data, { revision: 4, state: original })
+  const quota = assert.rejects(persistCampaign(next, 4), /Quota/)
+  await tick()
+  database.latest().error = new DOMException('Quota exceeded', 'QuotaExceededError')
+  database.latest().abort()
+  await quota
+  assert.deepEqual(database.data, { revision: 4, state: original })
 })

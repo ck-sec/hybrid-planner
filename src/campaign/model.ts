@@ -21,7 +21,10 @@ import { equipmentForResources, exerciseAvailable, parseResources, programResour
 import { parseWorkoutCards } from './workout-cards.ts'
 import { enableTemplateProgramming } from './programming.ts'
 import type { ResourceId } from './equipment.ts'
-import type { CalendarAction, CampaignDraft, CampaignRevision, CampaignState, CampaignWeek, RecommendedSetup, SetDraft, WorkoutContent } from './types.ts'
+import type { CalendarAction, CampaignDraft, CampaignRevision, CampaignState, CampaignWeek, RecommendedSetup, SavedPlan, SetDraft, WorkoutContent } from './types.ts'
+
+export const MAX_PAST_PLANS = 100
+export const CAMPAIGN_BACKUP_LIMIT = 50_000_000
 
 const EQUIPMENT: readonly Equipment[] = ['barbell', 'dumbbell', 'kettlebell', 'machine', 'cable', 'bodyweight', 'bands', 'none']
 const QUALITIES: readonly Quality[] = ['aerobic_base', 'threshold', 'vo2max', 'repeat_sprint', 'change_of_direction', 'max_strength', 'power', 'strength_endurance', 'shoulder_durability']
@@ -739,7 +742,7 @@ function parseWeek(value: unknown): CampaignWeek {
   return { input, plan, logs, removed, changes }
 }
 
-export function parseCampaign(value: unknown): CampaignState {
+function parseSavedPlan(value: unknown): SavedPlan {
   const candidate = object(value, 'Campaign')
   const raw = object(candidate, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts', ...['cards', 'revisions'].filter(key => Object.hasOwn(candidate, key))])
   if (raw.version !== 1) fail('Unsupported campaign version; saved data has not been replaced.')
@@ -793,6 +796,18 @@ export function parseCampaign(value: unknown): CampaignState {
     ...(Object.hasOwn(raw, 'cards') ? { cards: parseWorkoutCards(raw.cards, draft.program) } : {}),
     ...(revisions ? { revisions } : {}),
   }
+}
+
+export function parseCampaign(value: unknown): CampaignState {
+  const candidate = object(value, 'Campaign')
+  if (!Object.hasOwn(candidate, 'pastPlans')) return parseSavedPlan(candidate)
+  const { pastPlans: history, ...current } = candidate
+  const pastPlans = array(history, 'Previous plans', MAX_PAST_PLANS).map(value => {
+    const plan = parseSavedPlan(value)
+    if (!plan.setupComplete) fail('Previous plans must contain a saved calendar, not an unfinished setup.')
+    return plan
+  })
+  return { ...parseSavedPlan(current), pastPlans }
 }
 
 const FOCUS: Record<CampaignDraft['goalKind'], { run: string; strength: string; practice: string }> = {

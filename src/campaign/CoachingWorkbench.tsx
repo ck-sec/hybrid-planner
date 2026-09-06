@@ -197,6 +197,7 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
       <details className="cf-details"><summary>Review the exact brief &amp; guardrails</summary><p>Only the fields shown below are shared. {scope.weekReview ? "Includes the selected week's actual training, notes and health flags." : 'No actual training logs.'} No imported files, credentials or full backup. The external chat or API provider has its own privacy policy.</p><textarea className="cf-assistant-payload" aria-label="Coaching brief preview" readOnly rows={8} value={brief} /></details>
       {notice && <p role="status">{notice}</p>}
       <div ref={resultElement} aria-live="polite">{review && <div className="cf-stack">
+        {review.summaryShortened && <p role="status" className="cf-small">The AI's explanation was longer than the review limit, so it has been shortened. Exercise suggestions and reference cards are unchanged. Keep the original reply if you want the full explanation.</p>}
         {review.reply.summary && <div className="cf-card"><h3>Your AI's review</h3><p>{review.reply.summary}</p><p className="cf-small">AI-authored context, not a verified assessment or an instruction to change training quantities.</p></div>}
         {customExercises.length > 0 && <>
           <CustomExerciseCards exercises={customExercises} />

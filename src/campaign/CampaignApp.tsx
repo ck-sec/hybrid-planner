@@ -8,7 +8,9 @@ import { currentMonday, formatDay, formatWeek } from '../dates.ts'
 import BrandMark from '../BrandMark.tsx'
 import { observeOfflineWorker } from '../offline.ts'
 import type { OfflineStatus } from '../offline.ts'
-import { adaptCampaign, campaignDraftForWeek, campaignSessionOnHold, completeCampaignSession, confirmSetupEquipment, emptyCampaign, logCampaignSet, nextCampaignWeek, parseCampaign, prepareRecommendedSetup, workoutContent } from './model.ts'
+import { adaptCampaign, CAMPAIGN_BACKUP_LIMIT, campaignDraftForWeek, campaignSessionOnHold, completeCampaignSession, confirmSetupEquipment, emptyCampaign, logCampaignSet, nextCampaignWeek, parseCampaign, prepareRecommendedSetup, workoutContent } from './model.ts'
+import { startNewPlan, trainingRecords } from './plan-history.ts'
+import NewPlanConfirmation from './NewPlanConfirmation.tsx'
 import { loadCampaign, persistCampaign } from './storage.ts'
 import type { CalendarAction, CampaignState, GoalKind, SetDraft } from './types.ts'
 import Icon from './Icons.tsx'
@@ -59,7 +61,7 @@ export default function CampaignApp() {
   const [error, setError] = useState('')
   const [tab, setTab] = useState<Tab>('today')
   const [sessionId, setSessionId] = useState<string | null>(decodeSessionHash())
-  const [panel, setPanel] = useState<'ai' | 'setup-ai' | 'settings' | 'next-week' | 'leave-example' | 'revision' | null>(null)
+  const [panel, setPanel] = useState<'ai' | 'setup-ai' | 'settings' | 'next-week' | 'leave-example' | 'revision' | 'new-plan' | null>(null)
   const [setupConnection, setSetupConnection] = useState<AssistantConfig | undefined>()
   const dialog = useRef<HTMLDialogElement>(null)
   const main = useRef<HTMLElement>(null)
@@ -168,15 +170,16 @@ export default function CampaignApp() {
   return <div className="cf-app">
     <a className="cf-skip" href="#campaign-main">Skip to content</a>
     <header className="cf-header">
-      <button className="cf-brand" onClick={() => showHome ? navigate('today') : update(previous => ({ ...previous, step: 0 }))} aria-label="Hybrid Coach home"><BrandMark className="cf-brand-mark" /><span className="cf-brand-name">Hybrid<span>Coach</span></span></button>
+      <button className="cf-brand" onClick={() => { navigate('today'); if (!showHome) update(previous => ({ ...previous, step: 0 })) }} aria-label="Hybrid Coach home"><BrandMark className="cf-brand-mark" /><span className="cf-brand-name">Hybrid<span>Coach</span></span></button>
       {showHome && <nav className="cf-desktop-nav" aria-label="Primary">{(['today', 'plan', 'history'] as Tab[]).map(item => <button key={item} aria-current={tab === item && !sessionId ? 'page' : undefined} onClick={() => navigate(item)}>{item === 'today' ? 'Your week' : item === 'plan' ? 'The bigger picture' : 'Training history'}</button>)}</nav>}
       <div className="cf-header-end"><span className="cf-save-indicator" role="status"><i className={saveStatus === 'failed' ? 'cf-dot-error' : ''} />{saveStatus === 'saving' ? 'Saving locally' : saveStatus === 'loading' ? 'Opening' : saveStatus === 'failed' ? 'Not saved' : 'Saved on device'}</span><button className="cf-icon-button" aria-label="Data and settings" onClick={() => setPanel('settings')}><Icon name="settings" /></button></div>
     </header>
     {state?.sample && <div className="cf-sample-banner"><span>EXAMPLE CAMPAIGN</span> Sample dates and training. Not your recorded baseline.</div>}
     {error && <div className="cf-error cf-global-error" role="alert"><strong>{error}</strong>{saveStatus === 'failed' && <div><p>Keep this page open. Export a copy before reloading if another tab changed the data.</p><button className="cf-button cf-secondary" onClick={exportData}>Export current copy</button><button className="cf-button cf-secondary" onClick={retrySave}>Retry save</button></div>}</div>}
-    <main id="campaign-main" ref={main} tabIndex={-1} className={`cf-main${!showHome ? ' cf-onboarding' : ''}`}>
+    <main id="campaign-main" ref={main} tabIndex={-1} className={`cf-main${!showHome && tab !== 'history' ? ' cf-onboarding' : ''}`}>
       {!state ? <div className="cf-loading"><Icon name="lock" /><h1>{saveStatus === 'failed' ? 'Your data comes first.' : 'Making room for your training.'}</h1><p>{saveStatus === 'failed' ? 'Resolve the storage error to continue. Nothing has been reset.' : 'Opening your local notebook...'}</p></div>
-        : !showHome ? <CampaignSetup state={state} update={update} onAI={() => setPanel('setup-ai')} connected={setupConnection !== undefined} onDisconnect={() => setSetupConnection(undefined)} />
+        : !showHome && tab === 'history' ? <><button type="button" className="cf-button cf-secondary" onClick={() => navigate('today')}>Continue new plan setup</button><History state={state} /></>
+          : !showHome ? <>{Boolean(state.pastPlans?.length) && <button type="button" className="cf-text-button" onClick={() => navigate('history')}>View training history</button>}<CampaignSetup state={state} update={update} onAI={() => setPanel('setup-ai')} connected={setupConnection !== undefined} onDisconnect={() => setSetupConnection(undefined)} /></>
           : session && week ? <Workout key={session.id} state={state} session={session} update={update} onBack={() => navigate('today')} onAction={action} onAI={() => setPanel('ai')} />
             : tab === 'today' ? <CalendarHome state={state} update={update} onSession={selectSession} onAction={action} onAI={() => setPanel('ai')} onNext={reviewNextWeek} />
               : tab === 'plan' ? <PlanOverview state={state} onAI={() => setPanel('ai')} onNext={reviewNextWeek} />
@@ -198,7 +201,17 @@ export default function CampaignApp() {
       {panel === 'next-week' && <section className="cf-stack"><div><p className="cf-kicker">ONE WEEK AT A TIME</p><h2>Ready for the next week?</h2></div><p>The engine uses your recorded training and fatigue skips. No catch-up work is added.</p><p className="cf-muted">The current week becomes read-only in this first release. Finish recording it before moving on; unlogged sessions will stay unknown, not completed.</p><div className="cf-inline"><button className="cf-button cf-primary" onClick={() => { update(nextCampaignWeek); setPanel(null); navigate('today') }}>Build next week <Icon name="arrow" /></button><button className="cf-button cf-secondary" onClick={() => setPanel(null)}>Stay here</button></div></section>}
       {panel === 'revision' && state && <ProgrammingRevision state={state} config={setupConnection} onConnect={setSetupConnection}
         onApply={next => update(() => parseCampaign(next))} onClose={() => { setPanel(null); navigate('today') }} />}
-      {panel === 'leave-example' && <section className="cf-stack"><h2>Make it your own.</h2><p>This clears the example campaign and any entries you made in it. Export a backup first if you'd like to keep them.</p><div className="cf-inline"><button className="cf-button cf-secondary" onClick={exportData}>Export example</button><button className="cf-button cf-primary" onClick={() => { update(() => ({ ...emptyCampaign(addDays(currentMonday(), 7)), step: 1 })); setPanel(null); navigate('today') }}>Start my own campaign</button><button className="cf-text-button" onClick={() => setPanel('settings')}>Cancel</button></div></section>}
+      {panel === 'new-plan' && state?.setupComplete && <NewPlanConfirmation
+        state={state} ready={saveStatus === 'saved'}
+        onBackup={exportData} onCancel={() => setPanel('settings')}
+        onConfirm={() => {
+          if (saveStatus !== 'saved') return
+          if (update(previous => startNewPlan(previous, addDays(currentMonday(), 7)))) {
+            setPendingRestore(null); setNotice(''); setPanel(null); navigate('today')
+          }
+        }}
+      />}
+      {panel === 'leave-example' && <section className="cf-stack"><h2>Make it your own.</h2><p>This clears the example campaign and any entries you made in it. Export a backup first if you'd like to keep them. Any previous plans in training history stay saved.</p><div className="cf-inline"><button className="cf-button cf-secondary" onClick={exportData}>Export example</button><button className="cf-button cf-primary" onClick={() => { update(previous => ({ ...emptyCampaign(addDays(currentMonday(), 7)), step: 1, ...(previous.pastPlans ? { pastPlans: previous.pastPlans } : {}) })); setPanel(null); navigate('today') }}>Start my own campaign</button><button className="cf-text-button" onClick={() => setPanel('settings')}>Cancel</button></div></section>}
       {panel === 'settings' && <section className="cf-stack">
         <div className="cf-dialog-header"><div><p className="cf-kicker">YOURS. ALWAYS.</p><h2>Your data &amp; settings</h2></div><button className="cf-icon-button" aria-label="Close settings" onClick={() => setPanel(null)}><Icon name="close" /></button></div>
         <div className="cf-card"><Icon name="lock" /><h3>On this device. Not our servers.</h3><p className="cf-muted">Training is stored in this browser. Clearing browser data removes it, so keep a backup. AI only connects when you explicitly ask it to.</p><p className="cf-small">{offline.message}</p></div>
@@ -208,17 +221,19 @@ export default function CampaignApp() {
           update(previous => ({ ...previous, selectedWeek: previous.weeks.length - 1 }))
           setPanel('revision')
         }}>Review week &amp; shape the next</button>}
+        {state?.setupComplete && <button type="button" className="cf-button cf-secondary" disabled={saveStatus !== 'saved'} onClick={() => setPanel('new-plan')}>Start a new plan</button>}
+        {Boolean(state?.pastPlans?.length) && <button type="button" className="cf-text-button" onClick={() => { setPanel(null); navigate('history') }}>View training history</button>}
         {setupConnection && <button type="button" className="cf-text-button" onClick={() => setSetupConnection(undefined)}>Disconnect AI</button>}
         {state?.sample && <button className="cf-button cf-secondary" onClick={() => setPanel('leave-example')}>Leave the example &amp; start my own</button>}
         <label className="cf-field">Restore a campaign backup<input type="file" accept=".json,application/json" onChange={event => {
           const file = event.target.files?.[0]
           event.target.value = ''
           if (!file) return
-          if (file.size > 5_000_000) { setNotice('Choose a campaign backup smaller than 5 MB.'); return }
+          if (file.size > CAMPAIGN_BACKUP_LIMIT) { setNotice('Choose a campaign backup smaller than 50 MB.'); return }
           void file.text().then(text => { setPendingRestore(parseCampaign(JSON.parse(text))); setNotice('') }).catch(error => { setPendingRestore(null); setNotice(errorMessage(error)) })
         }} /></label>
         {notice && <p role="alert" className="cf-error">{notice}</p>}
-        {pendingRestore && <div className="cf-card"><h3>Replace this campaign?</h3><p>This replaces your campaign and logs. Export a copy first.</p><div className="cf-inline"><button className="cf-button cf-danger" onClick={() => { update(() => pendingRestore); setPendingRestore(null); setPanel(null); navigate('today') }}>Replace campaign</button><button className="cf-button cf-secondary" onClick={() => setPendingRestore(null)}>Cancel</button></div></div>}
+        {pendingRestore && <div className="cf-card"><h3>Replace this campaign?</h3><p>This replaces your current plan and all retained training history with the backup. Export a copy first.</p><div className="cf-inline"><button className="cf-button cf-danger" onClick={() => { update(() => pendingRestore); setPendingRestore(null); setPanel(null); navigate('today') }}>Replace campaign</button><button className="cf-button cf-secondary" onClick={() => setPendingRestore(null)}>Cancel</button></div></div>}
         <p className="cf-small">Open source. MIT. No accounts, telemetry, streaks, or automatic load increases.</p>
       </section>}
     </dialog>
@@ -362,17 +377,15 @@ function PlanOverview({ state, onAI, onNext }: { state: CampaignState; onAI: () 
   return <section className="cf-plan-overview cf-stack"><div className="cf-page-heading"><div><p className="cf-kicker">THE BIGGER PICTURE</p><h1>A direction.<br /><em>Not a rigid script.</em></h1></div></div><div className="cf-goal-summary"><Icon name="court" /><div><span>{state.draft.location || 'YOUR CAMPAIGN'}</span><h2>{block.goal.label}</h2><p>{block.startDate} → {block.goal.peakDate}</p></div></div><div className="cf-chip-list">{state.draft.priorities.map(quality => <span key={quality}>{qualityLabels[quality]}</span>)}</div><p className="cf-lead">Keep the arc in view. Write the next week from where you actually are.</p><div className="cf-phase-timeline">{block.phases.map(phase => <div className={week.plan.weekIndex >= phase.startWeekIndex && week.plan.weekIndex <= phase.endWeekIndex ? 'cf-phase-current' : ''} key={phase.startWeekIndex}><span className="cf-phase-node" /><div><p className="cf-kicker">WEEK {phase.startWeekIndex + 1}{phase.endWeekIndex !== phase.startWeekIndex ? ` — ${phase.endWeekIndex + 1}` : ''}</p><h3>{phase.kind.charAt(0).toUpperCase() + phase.kind.slice(1)}</h3><p>{phase.volumeFraction < 1 ? 'Less optional work. More room to recover.' : 'Stay within your established training. No automatic increases.'}</p></div></div>)}</div><button className="cf-button cf-primary" onClick={onNext}>Build the next week <Icon name="arrow" /></button><button className="cf-ai-teaser" onClick={onAI}><Icon name="spark" /><div><strong>A more personal layer</strong><span>Optional AI connects your goal to approved workout ideas.</span></div><Icon name="chevron" /></button><details className="cf-details"><summary>What's supported, and what's not?</summary><p>This is a baseline-bounded supporting programme. Phase names are an outline, not a guaranteed competition peak. Existing practice, easy running and familiar lifts are supported. Goal priorities influence scheduling and content, not automatic sport-specific progression.</p><p>Fatigue skips reduce optional work; time skips do not imply fatigue. Changing future prescriptions never changes logged sets. Pain blocks further planning.</p></details></section>
 }
 
-function History({ state }: { state: CampaignState }) {
-  const records = state.weeks.flatMap(week => Object.entries(week.logs).flatMap(([id, log]) => {
-    const session = [...week.plan.sessions, ...week.removed].find(item => item.id === id)
-    return session ? [{ session, log, library: week.input.library }] : []
-  })).sort((a, b) => b.session.date.localeCompare(a.session.date))
+export function History({ state }: { state: CampaignState }) {
+  const records = trainingRecords(state)
   return <section className="cf-history cf-stack">
     <div className="cf-page-heading"><div><p className="cf-kicker">YOUR OWN REFERENCE POINT</p><h1>What you did.<br /><em>What you learned.</em></h1></div></div>
     <p className="cf-lead">Real weights. Real sessions. No streak to keep alive.</p>
-    {records.length === 0 ? <div className="cf-empty-state"><Icon name="history" size={36} /><h2>Your first entry starts with a session.</h2><p>Log sets or record a skip from your calendar. Your observations will appear here.</p></div> : records.map(({ session, log, library }) => {
+    {records.length === 0 ? <div className="cf-empty-state"><Icon name="history" size={36} /><h2>Your first entry starts with a session.</h2><p>Log sets or record a skip from your calendar. Your observations will appear here.</p></div> : records.map(({ key, session, log, library, goalLabel, sample, previousPlan }) => {
       const sets = [...(log.sets ?? []), ...(log.blockLogs ?? []).flatMap(item => item.unit === 'reps' ? item.sets : [])]
-      return <article className="cf-history-entry" key={session.id}>
+      return <article className="cf-history-entry" key={key}>
+        {previousPlan && <p className="cf-small">{sample ? 'Example plan' : 'Previous plan'}: {goalLabel} · Read-only record</p>}
         <div className="cf-history-heading"><span className={`cf-sport-icon cf-session-${session.kind}`}><Icon name={sessionIcon(session)} /></span><div><span className="cf-kicker">{session.date}</span><h2>{sessionTitle(session)}</h2></div><span className="cf-tag">{log.status === 'skipped' ? log.skipReason === 'too_tired' ? 'Fatigue skip' : 'Time skip' : log.status}</span></div>
         {sets.map((set, index) => <div className="cf-history-set" key={index}><span>{exerciseName(set.exerciseId, library)}</span><strong>{set.weightKg} <small>kg</small> × {set.reps}</strong><span>RPE {set.actualRPE}</span></div>)}
         {log.blockLogs?.map(item => item.unit === 'reps' ? null : <div className="cf-history-set" key={`block-${item.blockIndex}`}>
@@ -381,7 +394,8 @@ function History({ state }: { state: CampaignState }) {
           {item.unit === 'seconds' && item.weightKg !== undefined && <span>{item.weightKg} kg carried</span>}
         </div>)}
         {log.actualDurationMin !== undefined && <p className="cf-small">{log.actualDurationMin} min recorded {log.actualEffort !== undefined ? ` · Session effort ${log.actualEffort}/10` : ''}</p>}
-        {log.painFlag && <p className="cf-error">Pain reported. Planning hold applies.</p>}
+        {log.notes && <p className="cf-small">{log.notes}</p>}
+        {log.painFlag && <p className="cf-error">{previousPlan ? 'Pain was reported in this session. A new plan is not medical clearance.' : 'Pain reported. Planning hold applies.'}</p>}
       </article>
     })}
     <details className="cf-details"><summary>Calendar changes</summary>{state.weeks.flatMap(week => week.changes).length === 0 ? <p>No changes yet.</p> : state.weeks.flatMap(week => week.changes).map(change => <p key={change.id}>{change.message}</p>)}</details>

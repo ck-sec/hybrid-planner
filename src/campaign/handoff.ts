@@ -9,7 +9,7 @@ import type { GoalDateIssue, GoalProposal, GoalProposalPurpose } from './setup-a
 import type { CampaignDraft, CampaignState } from './types.ts'
 import { parseWorkoutCards } from './workout-cards.ts'
 import type { WorkoutCard } from './workout-cards.ts'
-import { assertNonPrescriptiveText, MAX_PROPOSED_CUSTOM_EXERCISES, stageCustomExercises } from './custom-exercises.ts'
+import { assertReferenceCardText, MAX_PROPOSED_CUSTOM_EXERCISES, stageCustomExercises } from './custom-exercises.ts'
 import type { WeekReview } from './week-review.ts'
 
 export const HANDOFF_LIMIT = 32_768
@@ -28,6 +28,7 @@ export interface HandoffReply {
 export interface HandoffReview {
   reply: HandoffReply
   dateIssue: GoalDateIssue | null
+  summaryShortened?: boolean
 }
 export interface HandoffScope {
   purpose: GoalProposalPurpose
@@ -168,11 +169,16 @@ export function exportHandoff(state: CampaignState, scope: HandoffScope, request
 }
 
 function parseSummary(value: unknown): string {
-  if (typeof value !== 'string' || value.length > MAX_HANDOFF_SUMMARY_LENGTH
-    || /[\p{Cc}\p{Cf}]|<[^>]*>/u.test(value)) {
-    throw new AssistantError(`The AI review summary must be plain text, 0–${MAX_HANDOFF_SUMMARY_LENGTH} characters, without HTML or control characters.`)
+  if (typeof value !== 'string' || /[\p{Cc}\p{Cf}]|<[^>]*>/u.test(value)) {
+    throw new AssistantError('The AI review summary must be plain text without HTML or control characters.')
   }
   return value.trim()
+}
+
+function shortenSummary(summary: string): string {
+  if (summary.length <= MAX_HANDOFF_SUMMARY_LENGTH) return summary
+  const prefix = summary.slice(0, MAX_HANDOFF_SUMMARY_LENGTH - 3).replace(/[\uD800-\uDBFF]$/, '').trimEnd()
+  return `${prefix}...`
 }
 
 function rejectRepeatedKeys(content: string): void {
@@ -234,7 +240,9 @@ export function parseHandoffReply(content: string, state: CampaignState, scope: 
   if (cards.some(card => card.source !== 'ai' || card.status !== 'draft')) {
     throw new AssistantError('AI replies may contain only unverified draft cards. Imported text cannot approve itself.')
   }
-  for (const card of cards) assertNonPrescriptiveText(card.title, card.purpose, card.instructions, card.cues)
+  for (const card of cards) {
+    assertReferenceCardText(brief.context.resources, card.title, card.purpose, card.instructions, card.cues)
+  }
   const stagedCatalog = buildSetupAssistantContext(staged).allowedCatalog
   if (cards.some(card => card.exerciseId && !stagedCatalog.some(item => item.id === card.exerciseId))) {
     throw new AssistantError('A card references an exercise unavailable with your equipment. Choose an equipped exercise or keep it as an unscheduled drill idea.')
@@ -242,9 +250,12 @@ export function parseHandoffReply(content: string, state: CampaignState, scope: 
   return {
     reply: {
       format: 'hybrid-coach-reply', version: 2, contextId: brief.contextId,
-      proposal: goal?.proposal ?? null, summary, customExercises, cards,
+      proposal: goal?.proposal ?? null,
+      summary: shortenSummary(summary),
+      customExercises, cards,
     },
     dateIssue: goal?.dateIssue ?? null,
+    ...(summary.length > MAX_HANDOFF_SUMMARY_LENGTH ? { summaryShortened: true } : {}),
   }
 }
 

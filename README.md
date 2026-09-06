@@ -67,6 +67,17 @@ event/review date and recent running and lifting before building a campaign.
 - Export and restore campaign JSON backups through settings. A revision check
   prevents cross-tab overwrites. Previous weeks within a campaign remain available
   read-only in History; they are not the removed planner archive.
+- **Settings → Start a new plan** ends the active plan after confirmation and
+  opens Goal → Routine → Review again. Logged workouts, partial work and skips
+  remain read-only in Training history, accessible even during the new setup.
+  Unlogged workouts are not marked complete. Goal, equipment and routine are
+  prefilled, but the new baseline must be confirmed; observed weights are not
+  copied into a new baseline. Starting over is not medical clearance.
+- Backups include retained plans and their original exercise definitions, logs,
+  notes and unsubmitted input. Up to 100 previous plans can be retained locally;
+  the app never silently removes the oldest plan. Restore accepts backups up to
+  50 MB. Prior-plan records are not automatically shared with AI or used as
+  observations in a newly confirmed baseline.
 
 **Current boundaries:** this remains an established-baseline supporting plan,
 not a complete event progression system. Goal priorities influence
@@ -152,6 +163,12 @@ goal/exercise proposal, `customExercises` and reference cards. `customExercises`
 is an array of real profile-bound definitions; use an empty array when none are
 proposed. Compatible version-1 replies remain accepted without that field.
 Neither format is a campaign backup.
+
+Overlong AI review summaries are shortened to 1,200 characters with a visible
+notice instead of blocking an otherwise valid reply. Exercise proposals and
+reference cards are not shortened. Equipment names such as a confirmed weighted
+implement may appear in reference notes; new load, set, repetition, duration and
+scheduling instructions remain rejected.
 Context changes (equipment, goal, baseline, calendar, recorded work or cards) invalidate
 old replies; copy a refreshed brief into the same conversation when this happens.
 An external chat cannot see an app update: paste the fresh brief and ask it to
