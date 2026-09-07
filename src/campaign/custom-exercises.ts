@@ -1,12 +1,15 @@
-import { LIMITS } from '../../engine/constants.ts'
-import { parseCustomExercise, parseProgramConfig } from '../../engine/validation.ts'
+import { CONTROLLED_TARGET_THROW_PROFILE, LIMITS } from '../../engine/constants.ts'
+import { parseCustomExercise, parseCustomSportDrill, parseProgramConfigWithOptions } from '../../engine/validation.ts'
+import { availableSportDrills } from '../../engine/program.ts'
 import type { CustomExerciseSpec } from '../../engine/types.ts'
 import { AssistantError } from './assistant.ts'
 import { programResourcesForResources, resourcesForEquipment } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
 import type { CampaignDraft } from './types.ts'
+import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
 
-export const MAX_PROPOSED_CUSTOM_EXERCISES = 3
+export const MAX_PROPOSED_CUSTOM_EXERCISES = LIMITS.maxCustomExercises
+export const MAX_PROPOSED_CUSTOM_SPORT_DRILLS = CONTROLLED_TARGET_THROW_PROFILE.maxDefinitions
 
 export function nextCustomExerciseId(name: string, existing: readonly CustomExerciseSpec[]): string {
   if (typeof name !== 'string' || !name.trim() || name.length > 80 || /[\p{Cc}\p{Cf}]|<[^>]*>/u.test(name)) {
@@ -26,11 +29,11 @@ export function nextCustomExerciseId(name: string, existing: readonly CustomExer
   throw new AssistantError('Choose a different name for this exercise revision.')
 }
 
-function entries(value: unknown): unknown[] {
-  if (!Array.isArray(value) || value.length > MAX_PROPOSED_CUSTOM_EXERCISES
+function entries(value: unknown, maximum = MAX_PROPOSED_CUSTOM_EXERCISES, label = 'custom exercise definitions'): unknown[] {
+  if (!Array.isArray(value) || value.length > maximum
     || Object.getPrototypeOf(value) !== Array.prototype
     || Reflect.ownKeys(value).length !== value.length + 1) {
-    throw new AssistantError(`Propose an array of at most ${MAX_PROPOSED_CUSTOM_EXERCISES} custom exercise definitions per reply, without extra fields.`)
+    throw new AssistantError(`Propose an array of at most ${maximum} ${label} per reply, without extra fields.`)
   }
   return Array.from({ length: value.length }, (_, index) => {
     const descriptor = Object.getOwnPropertyDescriptor(value, index)
@@ -49,7 +52,7 @@ export function assertNonPrescriptiveText(...parts: string[]): void {
   if (new RegExp(String.raw`\b${quantity}\s*(?:[-–]\s*${quantity}\s*)?${units}\b`, 'i').test(text)
     || new RegExp(String.raw`\b(?:RPE|RIR|sets?|reps?|weight|duration)\s*(?::|of|=)?\s*${quantity}\b`, 'i').test(text)
     || /\b\d+\s*[x×]\s*\d+|\d+\s*%|\b\d+\s*-\s*\d+\s*-\s*\d+\b|\b\d+\s*(?:s|min)\b/i.test(text)) {
-    throw new AssistantError('Exercise prose cannot prescribe sets, reps, loads, effort, durations or schedules. The engine owns quantities.')
+    throw new AssistantError('Exercise prose cannot prescribe sets, reps, loads, effort, durations or schedules. Use supported structured week fields for a full-week proposal; the engine still owns guardrails.')
   }
 }
 
@@ -76,7 +79,7 @@ export function stageCustomExercises(draft: CampaignDraft, incoming: unknown): C
   if (!proposed.length) return draft
   if (!draft.program) throw new AssistantError('Custom exercises require a new template program or a reviewed programming revision; legacy plans are unchanged.')
   const resources = programResourcesForResources(draft.resources ?? resourcesForEquipment(draft.equipment))
-  const current = parseProgramConfig(draft.program)
+  const current = parseProgramConfigWithOptions(draft.program, AI_PLANNING_OPTIONS)
   const definitions = [...(current.customExercises ?? [])]
   const seen = new Set<string>()
   for (const entry of proposed) {
@@ -94,6 +97,48 @@ export function stageCustomExercises(draft: CampaignDraft, incoming: unknown): C
   if (definitions.length > LIMITS.maxCustomExercises) {
     throw new AssistantError(`A program can retain at most ${LIMITS.maxCustomExercises} custom exercise definitions.`)
   }
-  const validated = parseProgramConfig({ ...current, customExercises: definitions })
+  const validated = parseProgramConfigWithOptions({ ...current, customExercises: definitions }, AI_PLANNING_OPTIONS)
   return { ...draft, program: { ...draft.program, customExercises: validated.customExercises } }
+}
+
+export function stageCustomSportDrills(draft: CampaignDraft, incoming: unknown): CampaignDraft {
+  const proposed = entries(incoming, MAX_PROPOSED_CUSTOM_SPORT_DRILLS, 'custom throwing drill definitions')
+  if (!proposed.length) return draft
+  if (!draft.program) throw new AssistantError('Custom throwing drills require the expanded library and a reviewed program; legacy plans are unchanged.')
+  const resources = programResourcesForResources(draft.resources ?? resourcesForEquipment(draft.equipment))
+  const current = parseProgramConfigWithOptions(draft.program, AI_PLANNING_OPTIONS)
+  const definitions = [...(current.customSportDrills ?? [])]
+  const seen = new Set<string>()
+  for (const entry of proposed) {
+    const spec = parseCustomSportDrill(entry, resources)
+    assertNonPrescriptiveText(spec.name, spec.description, spec.focus, spec.why)
+    if (seen.has(spec.id)) throw new AssistantError('Custom throwing drill IDs must be unique within the reply.')
+    seen.add(spec.id)
+    const existing = definitions.find(item => item.id === spec.id)
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(spec)) {
+        throw new AssistantError('An existing custom throwing drill definition is immutable. Use a new ID for a changed technique or profile.')
+      }
+    } else definitions.push(spec)
+  }
+  if (definitions.length > MAX_PROPOSED_CUSTOM_SPORT_DRILLS) {
+    throw new AssistantError(`A program can retain at most ${MAX_PROPOSED_CUSTOM_SPORT_DRILLS} custom throwing drill definitions.`)
+  }
+  const validated = parseProgramConfigWithOptions({ ...current, customSportDrills: definitions }, AI_PLANNING_OPTIONS)
+  return { ...draft, program: { ...draft.program, customSportDrills: validated.customSportDrills } }
+}
+
+export function customSportDrillCatalog(draft: CampaignDraft) {
+  const program = draft.program
+  if (!program) return []
+  return availableSportDrills(program.resources, program.customSportDrills)
+    .flatMap(drill => {
+      const spec = program.customSportDrills?.find(item => item.id === drill.id)
+      return spec ? [{
+        kind: 'sport_drill' as const, id: drill.id, name: drill.label,
+        requirements: [...drill.requirements], unit: drill.unit,
+        execution: { intent: drill.intent, embeddedOnly: true as const },
+        description: spec.description, focus: [spec.focus], purpose: spec.why,
+      }] : []
+    })
 }

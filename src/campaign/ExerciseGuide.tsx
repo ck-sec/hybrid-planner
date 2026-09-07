@@ -9,7 +9,7 @@ export interface ExerciseGuideContent {
 
 export default function ExerciseGuide({ name, guide }: { name: string; guide: ExerciseGuideContent }) {
   return <details className="cf-exercise-guide">
-    <summary>How, focus &amp; why<span>{guide.execution}</span></summary>
+    <summary aria-label={`${name}: exercise guide`}>Exercise guide</summary>
     <dl aria-label={`${name} movement guide`}>
       <dt>Description</dt><dd>{guide.description}</dd>
       <dt>What to focus on</dt><dd><ul>{guide.focus.map(cue => <li key={cue}>{cue}</li>)}</ul></dd>

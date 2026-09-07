@@ -13,7 +13,8 @@ export type MovementPattern =
   | 'horizontal_pull' | 'vertical_pull' | 'unilateral_lower' | 'carry' | 'core' | 'rotational'
 export type Equipment = 'barbell' | 'dumbbell' | 'kettlebell' | 'machine' | 'cable' | 'bodyweight' | 'bands' | 'none'
 export type Resource = Equipment | 'bench' | 'rack' | 'pull_up_bar' | 'stable_step' | 'floor_space'
-  | 'anchor_point' | 'carry_space' | 'dodgeball' | 'court_space' | 'safe_target' | `custom:${string}`
+  | 'anchor_point' | 'carry_space' | 'dodgeball' | 'court_space' | 'safe_target'
+  | 'bike' | 'rower' | 'ski_erg' | `custom:${string}`
 export type CustomExerciseProfileId =
   | 'controlled_squat' | 'controlled_hinge' | 'controlled_push' | 'controlled_pull'
   | 'controlled_unilateral' | 'controlled_core' | 'controlled_rotation' | 'timed_carry' | 'timed_mobility'
@@ -23,6 +24,17 @@ export interface CustomExerciseSpec {
   id: string
   name: string
   profileId: CustomExerciseProfileId
+  requirements: readonly Resource[]
+  description: string
+  focus: string
+  why: string
+}
+/** A confirmed identity for the existing controlled-target-throw practice profile. */
+export interface CustomSportDrillSpec {
+  version: 1
+  id: string
+  name: string
+  profileId: 'controlled_target_throw'
   requirements: readonly Resource[]
   description: string
   focus: string
@@ -96,12 +108,13 @@ export interface ProgramConfigV1 {
   selectedExerciseIds?: readonly string[]
   /** Confirmed definitions, including inactive history. Current resources gate selection, not retention. */
   customExercises?: readonly CustomExerciseSpec[]
+  customSportDrills?: readonly CustomSportDrillSpec[]
   /** User-established administrative exposure cap; not a validated injury-safe threshold. */
   comfortableThrowsPerPractice?: number
   includeMobility?: boolean
 }
 export interface SportDrillMetadata {
-  id: 'dodgeball-controlled-target-throw'
+  id: string
   label: string
   sport: 'dodgeball'
   unit: 'throws'
@@ -270,7 +283,7 @@ export interface SecondsWorkoutBlock {
 }
 export interface ThrowsWorkoutBlock {
   unit: 'throws'
-  drillId: 'dodgeball-controlled-target-throw'
+  drillId: string
   throws: number
   intent: 'controlled_technique'
   /** The throws are allocated within this established commitment, never appended. */
@@ -306,7 +319,7 @@ export interface SecondsBlockLog {
 export interface ThrowsBlockLog {
   unit: 'throws'
   blockIndex: number
-  drillId: 'dodgeball-controlled-target-throw'
+  drillId: string
   throws: number
 }
 export type BlockLog = RepsBlockLog | SecondsBlockLog | ThrowsBlockLog

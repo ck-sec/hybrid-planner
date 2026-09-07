@@ -1,8 +1,8 @@
-import { PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY } from './constants.ts'
+import { CONTROLLED_TARGET_THROW_PROFILE, PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY } from './constants.ts'
 import { DEFAULT_LIBRARY } from './library.ts'
 import { CUSTOM_EXERCISE_PROFILES } from './custom-exercise-profiles.ts'
 import type {
-  AthleteState, ConditioningBaseline, CustomExerciseSpec, ExecutionProfile, Exercise, ExerciseLibrary, ExerciseProfile,
+  AthleteState, ConditioningBaseline, CustomExerciseSpec, CustomSportDrillSpec, ExecutionProfile, Exercise, ExerciseLibrary, ExerciseProfile,
   FrozenWorkoutTemplate, ProgramGoal, Resource, SportDrillMetadata,
 } from './types.ts'
 
@@ -157,12 +157,20 @@ export const SUPPORTED_SPORT_DRILLS: readonly SportDrillMetadata[] = Object.free
   label: 'Controlled target throws',
   sport: 'dodgeball',
   unit: 'throws',
-  requirements: Object.freeze(['dodgeball', 'court_space', 'safe_target'] as Resource[]),
+  requirements: CONTROLLED_TARGET_THROW_PROFILE.requirements,
   intent: 'controlled_technique',
 })])
 
-export function availableSportDrills(resources: readonly Resource[]): readonly SportDrillMetadata[] {
-  return SUPPORTED_SPORT_DRILLS.filter(drill => drill.requirements.every(resource => resources.includes(resource)))
+export function availableSportDrills(
+  resources: readonly Resource[], customDrills: readonly CustomSportDrillSpec[] = [],
+): readonly SportDrillMetadata[] {
+  const custom = customDrills.filter(drill => drill.profileId === CONTROLLED_TARGET_THROW_PROFILE.id)
+    .map((drill): SportDrillMetadata => ({
+      id: drill.id, label: drill.name, sport: 'dodgeball', unit: 'throws',
+      requirements: drill.requirements, intent: 'controlled_technique',
+    }))
+  return [...SUPPORTED_SPORT_DRILLS, ...custom]
+    .filter(drill => drill.requirements.every(resource => resources.includes(resource)))
 }
 
 export interface ExerciseMetadata {

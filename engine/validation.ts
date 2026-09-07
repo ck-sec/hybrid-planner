@@ -1,5 +1,5 @@
 import {
-  COST_MULTIPLIER_RANGE, ENGINE_VERSION, LEGACY_EXERCISE_IDS, LIBRARY_VERSION, LIMITS,
+  AI_ADVISORY_LIMITS, CONTROLLED_TARGET_THROW_PROFILE, COST_MULTIPLIER_RANGE, ENGINE_VERSION, LEGACY_EXERCISE_IDS, LIBRARY_VERSION, LIMITS,
   MAX_LOGGED_SETS_PER_BLOCK, POLICY_VERSION,
   PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY, PROGRAM_POLICY_VERSION, RECOMMENDATION_POLICY,
 } from './constants.ts'
@@ -8,7 +8,7 @@ import { CUSTOM_EXERCISE_PROFILES, materializeCustomExercise } from './custom-ex
 import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from './dates.ts'
 import type {
   AnchorAssignment, AthleteState, Block, BlockLog, CompletedWeek, ConditioningBaseline,
-  CustomExerciseProfileId, CustomExerciseSpec, Day, Discipline, Equipment,
+  CustomExerciseProfileId, CustomExerciseSpec, CustomSportDrillSpec, Day, Discipline, Equipment,
   Exercise, ExerciseLibrary, ExerciseObservation, FixedCommitment, Goal, Load,
   Modality, MovementPattern, Phase, PlanWeekInput, PlanningContext, ProgramConfigV1, Quality, Resource,
   RecentSession, Session, SessionLog, SetLog, StrengthPrescription, TargetRPE, WorkoutBlock,
@@ -31,7 +31,7 @@ const PATTERNS: readonly MovementPattern[] = [
 const EQUIPMENT: readonly Equipment[] = ['barbell', 'dumbbell', 'kettlebell', 'machine', 'cable', 'bodyweight', 'bands', 'none']
 const RESOURCES: readonly Resource[] = [
   ...EQUIPMENT, 'bench', 'rack', 'pull_up_bar', 'stable_step', 'floor_space', 'anchor_point',
-  'carry_space', 'dodgeball', 'court_space', 'safe_target',
+  'carry_space', 'dodgeball', 'court_space', 'safe_target', 'bike', 'rower', 'ski_erg',
 ]
 const DISCIPLINES: readonly Discipline[] = ['run', 'bike', 'swim', 'strength', 'sport', 'mobility']
 const MODALITIES: readonly Modality[] = ['run_road', 'run_trail', 'bike_road', 'bike_gravel', 'swim', 'row', 'ski_erg', 'lifting', 'court_sport', 'other']
@@ -55,8 +55,21 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? 'undefined'
 }
 
-class Validator {
+/** Explicit storage/input interpretation; omitted policy retains every legacy bound. */
+export interface ValidationOptions {
+  policy?: 'baseline-bounded' | 'ai-advisory'
+}
+
+export class Validator {
   readonly issues: string[] = []
+  readonly aiAdvisory: boolean
+
+  constructor(options: ValidationOptions = {}) {
+    const data = this.object(options, 'options', ['policy'])
+    this.aiAdvisory = Object.hasOwn(data, 'policy')
+      && this.enum(data.policy, 'options.policy', ['baseline-bounded', 'ai-advisory']) === 'ai-advisory'
+    this.finish(undefined)
+  }
 
   issue(path: string, message: string): void {
     this.issues.push(`${path}: ${message}.`)
@@ -251,6 +264,7 @@ class Validator {
     if (!/^custom-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
       this.issue(`${path}.id`, 'must be custom- followed by a lowercase kebab-case slug')
     }
+
     const requirements = this.resources(data.requirements, `${path}.requirements`)
     if (confirmedResources && requirements.some(resource => !confirmedResources.includes(resource))) {
       this.issue(`${path}.requirements`, 'must be a subset of confirmed program resources; no equipment is inferred')
@@ -267,10 +281,40 @@ class Validator {
     }
   }
 
+  sportDrillId(value: unknown, path: string): string {
+    const id = this.id(value, path)
+    if (id !== 'dodgeball-controlled-target-throw' && !/^custom-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+      this.issue(path, 'must identify the built-in controlled target throw or a confirmed custom- drill')
+    }
+    return id
+  }
+
+  customSportDrill(value: unknown, path: string, confirmedResources?: readonly Resource[]): CustomSportDrillSpec {
+    const data = this.object(value, path, ['version', 'id', 'name', 'profileId', 'requirements', 'description', 'focus', 'why'])
+    if (data.version !== 1) this.issue(`${path}.version`, 'must be 1')
+    const id = this.sportDrillId(data.id, `${path}.id`)
+    if (!id.startsWith('custom-')) this.issue(`${path}.id`, 'must use a custom- identity')
+    const requirements = this.resources(data.requirements, `${path}.requirements`)
+    for (const resource of CONTROLLED_TARGET_THROW_PROFILE.requirements) {
+      if (!requirements.includes(resource)) this.issue(`${path}.requirements`, `must include ${resource}`)
+    }
+    if (confirmedResources && requirements.some(resource => !confirmedResources.includes(resource))) {
+      this.issue(`${path}.requirements`, 'must be a subset of confirmed resources')
+    }
+    return {
+      version: 1, id, name: this.plainText(data.name, `${path}.name`, 80),
+      profileId: this.enum(data.profileId, `${path}.profileId`, [CONTROLLED_TARGET_THROW_PROFILE.id]),
+      requirements,
+      description: this.plainText(data.description, `${path}.description`, 600),
+      focus: this.plainText(data.focus, `${path}.focus`, 600),
+      why: this.plainText(data.why, `${path}.why`, 600),
+    }
+  }
+
   program(value: unknown, path: string): ProgramConfigV1 {
     const data = this.object(value, path, [
       'version', 'libraryVersion', 'goal', 'resources', 'conditioningBaselines',
-      'selectedExerciseIds', 'customExercises', 'comfortableThrowsPerPractice', 'includeMobility',
+      'selectedExerciseIds', 'customExercises', 'customSportDrills', 'comfortableThrowsPerPractice', 'includeMobility',
     ])
     if (data.version !== 1) this.issue(`${path}.version`, 'must be 1')
     const baselines = this.array(data.conditioningBaselines, `${path}.conditioningBaselines`, 0, LIMITS.maxConditioningBaselines)
@@ -280,9 +324,12 @@ class Validator {
         return {
           modality: this.enum(baseline.modality, `${p}.modality`,
             ['run_road', 'run_trail', 'bike_road', 'bike_gravel', 'row', 'ski_erg'] as const),
-          weeklyMinutes: this.number(baseline.weeklyMinutes, `${p}.weeklyMinutes`, 1, LIMITS.maxWeeklyRunMinutes),
-          longestSessionMinutes: this.number(baseline.longestSessionMinutes, `${p}.longestSessionMinutes`, 1, LIMITS.maxRunMinutes),
-          sessionsPerWeek: this.number(baseline.sessionsPerWeek, `${p}.sessionsPerWeek`, 1, LIMITS.maxRuns, true),
+          weeklyMinutes: this.number(baseline.weeklyMinutes, `${p}.weeklyMinutes`, this.aiAdvisory ? 0 : 1,
+            this.aiAdvisory ? AI_ADVISORY_LIMITS.maxWeeklyRunMinutes : LIMITS.maxWeeklyRunMinutes),
+          longestSessionMinutes: this.number(baseline.longestSessionMinutes, `${p}.longestSessionMinutes`, this.aiAdvisory ? 0 : 1,
+            this.aiAdvisory ? AI_ADVISORY_LIMITS.maxRunMinutes : LIMITS.maxRunMinutes),
+          sessionsPerWeek: this.number(baseline.sessionsPerWeek, `${p}.sessionsPerWeek`, this.aiAdvisory ? 0 : 1,
+            this.aiAdvisory ? AI_ADVISORY_LIMITS.maxRuns : LIMITS.maxRuns, true),
         }
       })
     this.unique(baselines, baseline => baseline.modality, `${path}.conditioningBaselines`)
@@ -290,6 +337,8 @@ class Validator {
       if (baseline.longestSessionMinutes > baseline.weeklyMinutes) {
         this.issue(`${path}.conditioningBaselines[${index}].longestSessionMinutes`, 'cannot exceed weeklyMinutes')
       }
+      if (this.aiAdvisory) this.baselineConsistency(baseline.weeklyMinutes, baseline.longestSessionMinutes,
+        baseline.sessionsPerWeek, `${path}.conditioningBaselines[${index}]`)
     }
     const result: ProgramConfigV1 = {
       version: 1,
@@ -305,6 +354,15 @@ class Validator {
         .map((item, index) => this.customExercise(item, `${path}.customExercises[${index}]`))
       this.unique(customExercises, item => item.id, `${path}.customExercises`)
       result.customExercises = customExercises.sort((a, b) => compareText(a.id, b.id))
+    }
+    if (Object.hasOwn(data, 'customSportDrills')) {
+      const drills = this.array(data.customSportDrills, `${path}.customSportDrills`, 0, CONTROLLED_TARGET_THROW_PROFILE.maxDefinitions)
+        .map((item, index) => this.customSportDrill(item, `${path}.customSportDrills[${index}]`))
+      this.unique(drills, item => item.id, `${path}.customSportDrills`)
+      if (drills.some(drill => result.customExercises?.some(exercise => exercise.id === drill.id))) {
+        this.issue(`${path}.customSportDrills`, 'drill and exercise identities must not collide')
+      }
+      result.customSportDrills = drills.sort((a, b) => compareText(a.id, b.id))
     }
     if (Object.hasOwn(data, 'selectedExerciseIds')) {
       const ids = this.array(data.selectedExerciseIds, `${path}.selectedExerciseIds`,
@@ -324,13 +382,14 @@ class Validator {
     }
     if (Object.hasOwn(data, 'comfortableThrowsPerPractice')) {
       result.comfortableThrowsPerPractice = this.number(data.comfortableThrowsPerPractice,
-        `${path}.comfortableThrowsPerPractice`, 1, 500, true)
+        `${path}.comfortableThrowsPerPractice`, this.aiAdvisory ? 0 : CONTROLLED_TARGET_THROW_PROFILE.minThrowsPerPractice,
+        this.aiAdvisory ? AI_ADVISORY_LIMITS.maxThrowsPerBlock : CONTROLLED_TARGET_THROW_PROFILE.maxThrowsPerPractice, true)
     }
     if (Object.hasOwn(data, 'includeMobility')) {
       result.includeMobility = this.boolean(data.includeMobility, `${path}.includeMobility`)
     }
     if (result.goal === 'dodgeball' && result.comfortableThrowsPerPractice !== undefined) {
-      for (const requirement of ['dodgeball', 'court_space', 'safe_target'] as const) {
+      for (const requirement of CONTROLLED_TARGET_THROW_PROFILE.requirements) {
         if (!result.resources.includes(requirement)) {
           this.issue(`${path}.resources`, `dodgeball requires explicit ${requirement}`)
         }
@@ -457,11 +516,17 @@ class Validator {
     const b = `${path}.baseline`
     const baseline = this.object(data.baseline, b, ['asOf', 'weeklyRunMinutes', 'longestRunMinutes', 'runsPerWeek', 'liftsPerWeek', 'liftDurationMin', 'exercises'])
     const asOf = this.date(baseline.asOf, `${b}.asOf`)
-    const weeklyRunMinutes = this.number(baseline.weeklyRunMinutes, `${b}.weeklyRunMinutes`, 1, LIMITS.maxWeeklyRunMinutes)
-    const longestRunMinutes = this.number(baseline.longestRunMinutes, `${b}.longestRunMinutes`, 1, LIMITS.maxRunMinutes)
-    const runsPerWeek = this.number(baseline.runsPerWeek, `${b}.runsPerWeek`, 1, LIMITS.maxRuns, true)
-    const liftsPerWeek = this.number(baseline.liftsPerWeek, `${b}.liftsPerWeek`, 1, LIMITS.maxLifts, true)
-    const liftDurationMin = this.number(baseline.liftDurationMin, `${b}.liftDurationMin`, 15, 180)
+    const bounds = this.aiAdvisory ? AI_ADVISORY_LIMITS : LIMITS
+    const weeklyRunMinutes = this.number(baseline.weeklyRunMinutes, `${b}.weeklyRunMinutes`, this.aiAdvisory ? 0 : 1, bounds.maxWeeklyRunMinutes)
+    const longestRunMinutes = this.number(baseline.longestRunMinutes, `${b}.longestRunMinutes`, this.aiAdvisory ? 0 : 1, bounds.maxRunMinutes)
+    const runsPerWeek = this.number(baseline.runsPerWeek, `${b}.runsPerWeek`, this.aiAdvisory ? 0 : 1, bounds.maxRuns, true)
+    const liftsPerWeek = this.number(baseline.liftsPerWeek, `${b}.liftsPerWeek`, this.aiAdvisory ? 0 : 1, bounds.maxLifts, true)
+    const liftDurationMin = this.number(baseline.liftDurationMin, `${b}.liftDurationMin`, this.aiAdvisory ? 0 : 15,
+      this.aiAdvisory ? AI_ADVISORY_LIMITS.maxLiftMinutes : 180)
+    if (this.aiAdvisory) {
+      this.baselineConsistency(weeklyRunMinutes, longestRunMinutes, runsPerWeek, b)
+      if (liftsPerWeek > 0 && liftDurationMin === 0) this.issue(b, 'positive lifting frequency requires a positive observed duration')
+    }
     const exercises = this.array(baseline.exercises, `${b}.exercises`, recommendedExerciseIds || program ? 0 : 1, LIMITS.maxExercises)
       .map((item, index) => this.observation(item, `${b}.exercises[${index}]`))
     this.unique(exercises, item => item.exerciseId, `${b}.exercises`)
@@ -522,7 +587,9 @@ class Validator {
       },
       availableDays: availableDays.sort((a, b) => a - b),
       equipment,
-      weeklyTimeBudgetMin: this.positive(data.weeklyTimeBudgetMin, `${path}.weeklyTimeBudgetMin`, 7 * MAX_DURATION),
+      weeklyTimeBudgetMin: this.aiAdvisory
+        ? this.number(data.weeklyTimeBudgetMin, `${path}.weeklyTimeBudgetMin`, 0, 7 * MAX_DURATION)
+        : this.positive(data.weeklyTimeBudgetMin, `${path}.weeklyTimeBudgetMin`, 7 * MAX_DURATION),
       defaultStartTime: this.time(data.defaultStartTime, `${path}.defaultStartTime`),
       aggressiveness: this.enum(data.aggressiveness, `${path}.aggressiveness`, ['conservative', 'standard', 'aggressive']),
       residual: {
@@ -790,8 +857,8 @@ class Validator {
       const data = this.object(tag, path, ['unit', 'exerciseId', 'sets', 'reps', 'targetRPE', 'role', 'suggestedWeightKg', 'executionStyle'])
       const result: Extract<WorkoutBlock, { unit: 'reps' }> = {
         unit, exerciseId: this.id(data.exerciseId, `${path}.exerciseId`),
-        sets: this.number(data.sets, `${path}.sets`, 1, 4, true),
-        reps: this.number(data.reps, `${path}.reps`, 1, 20, true),
+        sets: this.number(data.sets, `${path}.sets`, 1, this.aiAdvisory ? AI_ADVISORY_LIMITS.maxSetsPerBlock : 4, true),
+        reps: this.number(data.reps, `${path}.reps`, 1, this.aiAdvisory ? AI_ADVISORY_LIMITS.maxRepsPerSet : 20, true),
         targetRPE: this.rpe(data.targetRPE, `${path}.targetRPE`),
         role: this.enum(data.role, `${path}.role`, ['anchor', 'accessory'] as const),
         executionStyle: this.enum(data.executionStyle, `${path}.executionStyle`,
@@ -806,8 +873,9 @@ class Validator {
       const data = this.object(tag, path, ['unit', 'exerciseId', 'sets', 'seconds', 'role', 'executionStyle'])
       return {
         unit, exerciseId: this.id(data.exerciseId, `${path}.exerciseId`),
-        sets: this.number(data.sets, `${path}.sets`, 1, 4, true),
-        seconds: this.number(data.seconds, `${path}.seconds`, 5, 300, true),
+        sets: this.number(data.sets, `${path}.sets`, 1, this.aiAdvisory ? AI_ADVISORY_LIMITS.maxSetsPerBlock : 4, true),
+        seconds: this.number(data.seconds, `${path}.seconds`, this.aiAdvisory ? 1 : 5,
+          this.aiAdvisory ? AI_ADVISORY_LIMITS.maxTimedSecondsPerBlock : 300, true),
         role: this.enum(data.role, `${path}.role`, ['carry', 'mobility'] as const),
         executionStyle: this.enum(data.executionStyle, `${path}.executionStyle`, ['controlled']),
       }
@@ -817,8 +885,9 @@ class Validator {
     if (!embedded) this.issue(`${path}.embedded`, 'must be true because technique is inside an established practice')
     return {
       unit,
-      drillId: this.enum(data.drillId, `${path}.drillId`, ['dodgeball-controlled-target-throw'] as const),
-      throws: this.number(data.throws, `${path}.throws`, 1, 500, true),
+      drillId: this.sportDrillId(data.drillId, `${path}.drillId`),
+      throws: this.number(data.throws, `${path}.throws`, CONTROLLED_TARGET_THROW_PROFILE.minThrowsPerPractice,
+        this.aiAdvisory ? AI_ADVISORY_LIMITS.maxThrowsPerBlock : CONTROLLED_TARGET_THROW_PROFILE.maxThrowsPerPractice, true),
       intent: this.enum(data.intent, `${path}.intent`, ['controlled_technique'] as const),
       embedded: true,
     }
@@ -862,8 +931,9 @@ class Validator {
     const data = this.object(tag, path, ['unit', 'blockIndex', 'drillId', 'throws'])
     return {
       unit, blockIndex,
-      drillId: this.enum(data.drillId, `${path}.drillId`, ['dodgeball-controlled-target-throw'] as const),
-      throws: this.number(data.throws, `${path}.throws`, 0, 500, true),
+      drillId: this.sportDrillId(data.drillId, `${path}.drillId`),
+      throws: this.number(data.throws, `${path}.throws`, 0,
+        this.aiAdvisory ? AI_ADVISORY_LIMITS.maxThrowsPerBlock : CONTROLLED_TARGET_THROW_PROFILE.maxThrowsPerPractice, true),
     }
   }
 
@@ -966,7 +1036,8 @@ class Validator {
         if (dayOfWeek(weekStart) !== 0) this.issue(`${p}.weekStart`, 'must be a Monday')
         return {
           weekStart,
-          runMinutes: this.number(item.runMinutes, `${p}.runMinutes`, 0, 7 * MAX_DURATION),
+          runMinutes: this.number(item.runMinutes, `${p}.runMinutes`, 0,
+            this.aiAdvisory ? AI_ADVISORY_LIMITS.maxWeeklyRunMinutes : 7 * MAX_DURATION),
           plannedDeload: this.boolean(item.plannedDeload, `${p}.plannedDeload`),
           disrupted: this.boolean(item.disrupted, `${p}.disrupted`),
         }
@@ -1000,6 +1071,13 @@ class Validator {
     return result
   }
 
+  private baselineConsistency(weekly: number, longest: number, frequency: number, path: string): void {
+    if ((weekly === 0) !== (longest === 0) || (weekly === 0) !== (frequency === 0)) {
+      this.issue(path, 'zero observed conditioning requires zero frequency, weekly minutes and longest duration together')
+    }
+    if (weekly > longest * frequency) this.issue(path, 'weekly minutes cannot exceed observed frequency times longest duration')
+  }
+
   input(value: unknown): PlanWeekInput {
     const path = 'input'
     const data = this.object(value, path, ['athlete', 'block', 'weekIndex', 'library', 'context'])
@@ -1022,6 +1100,7 @@ class Validator {
         && athlete.program.resources.join('|') === block.program.resources.join('|')
         && JSON.stringify(athlete.program.conditioningBaselines) === JSON.stringify(block.program.conditioningBaselines)
         && canonical(athlete.program.customExercises ?? []) === canonical(block.program.customExercises ?? [])
+        && canonical(athlete.program.customSportDrills ?? []) === canonical(block.program.customSportDrills ?? [])
       if (!sameProgram) {
         this.issue('input.block.program', 'must exactly match the program frozen from athlete.program')
       }
@@ -1120,6 +1199,16 @@ class Validator {
       equipped(exercise, p)
     }
     const checkPrescriptions = (session: Session, p: string, requireEquipment: boolean): void => {
+      if (session.kind === 'workout') {
+        for (const blockItem of session.blocks) {
+          if (blockItem.unit !== 'throws' || blockItem.drillId === 'dodgeball-controlled-target-throw') continue
+          const spec = block.program?.customSportDrills?.find(drill => drill.id === blockItem.drillId)
+          if (!spec) this.issue(p, `unknown custom sport drill ${blockItem.drillId}`)
+          else if (requireEquipment && spec.requirements.some(resource => !athlete.program?.resources.includes(resource))) {
+            this.issue(p, `drill ${blockItem.drillId} requires unavailable resources`)
+          }
+        }
+      }
       const exerciseIds = session.kind === 'strength' ? session.strengthPrescription.map(item => item.exerciseId)
         : session.kind === 'workout' ? session.blocks.filter((block): block is Extract<WorkoutBlock, { unit: 'reps' | 'seconds' }> =>
           block.unit !== 'throws').map(block => block.exerciseId) : []
@@ -1163,19 +1252,27 @@ class Validator {
   }
 }
 
-export function parseLibrary(value: unknown, program?: ProgramConfigV1): ExerciseLibrary {
-  const v = new Validator()
+export function parseLibrary(value: unknown, program?: ProgramConfigV1, options: ValidationOptions = {}): ExerciseLibrary {
+  const v = new Validator(options)
   const parsedProgram = program === undefined ? undefined : v.finish(v.program(program, 'program'))
   return v.finish(v.library(value, 'library', parsedProgram))
 }
 
 export function parseAthlete(value: unknown): AthleteState {
-  const v = new Validator()
+  return parseAthleteWithOptions(value, {})
+}
+
+export function parseAthleteWithOptions(value: unknown, options: ValidationOptions): AthleteState {
+  const v = new Validator(options)
   return v.finish(v.athlete(value, 'athlete'))
 }
 
 export function parseProgramConfig(value: unknown): ProgramConfigV1 {
-  const v = new Validator()
+  return parseProgramConfigWithOptions(value, {})
+}
+
+export function parseProgramConfigWithOptions(value: unknown, options: ValidationOptions): ProgramConfigV1 {
+  const v = new Validator(options)
   return v.finish(v.program(value, 'program'))
 }
 
@@ -1184,6 +1281,12 @@ export function parseCustomExercise(value: unknown, confirmedResources?: readonl
   const v = new Validator()
   const resources = confirmedResources === undefined ? undefined : v.resources(confirmedResources, 'confirmedResources')
   return v.finish(v.customExercise(value, 'customExercise', resources))
+}
+
+export function parseCustomSportDrill(value: unknown, confirmedResources?: readonly Resource[]): CustomSportDrillSpec {
+  const v = new Validator()
+  const resources = confirmedResources === undefined ? undefined : v.resources(confirmedResources, 'confirmedResources')
+  return v.finish(v.customSportDrill(value, 'customSportDrill', resources))
 }
 
 export function parseResource(value: unknown): Resource {
@@ -1197,33 +1300,53 @@ export function parseGoal(value: unknown): Goal {
 }
 
 export function parseBlock(value: unknown): Block {
-  const v = new Validator()
+  return parseBlockWithOptions(value, {})
+}
+
+export function parseBlockWithOptions(value: unknown, options: ValidationOptions): Block {
+  const v = new Validator(options)
   return v.finish(v.block(value, 'block'))
 }
 
 export function parseSession(value: unknown): Session {
-  const v = new Validator()
+  return parseSessionWithOptions(value, {})
+}
+
+export function parseSessionWithOptions(value: unknown, options: ValidationOptions): Session {
+  const v = new Validator(options)
   return v.finish(v.session(value, 'session'))
 }
 
 export function parseSessionLog(value: unknown): SessionLog {
-  const v = new Validator()
+  return parseSessionLogWithOptions(value, {})
+}
+
+export function parseSessionLogWithOptions(value: unknown, options: ValidationOptions): SessionLog {
+  const v = new Validator(options)
   return v.finish(v.log(value, 'log'))
 }
 
 export function parseWorkoutBlock(value: unknown): WorkoutBlock {
-  const v = new Validator()
+  return parseWorkoutBlockWithOptions(value, {})
+}
+
+export function parseWorkoutBlockWithOptions(value: unknown, options: ValidationOptions): WorkoutBlock {
+  const v = new Validator(options)
   return v.finish(v.workoutBlock(value, 'block'))
 }
 
 export function parseBlockLog(value: unknown): BlockLog {
-  const v = new Validator()
+  return parseBlockLogWithOptions(value, {})
+}
+
+export function parseBlockLogWithOptions(value: unknown, options: ValidationOptions): BlockLog {
+  const v = new Validator(options)
   return v.finish(v.blockLog(value, 'blockLog'))
 }
 
 /** Parse both values and verify every block log against its prescribed block. */
-export function validateBlockLogs(sessionValue: unknown, logValue: unknown): SessionLog {
-  const v = new Validator()
+export function validateBlockLogs(sessionValue: unknown, logValue: unknown, options: ValidationOptions = {}): SessionLog {
+  const v = new Validator(options)
   const session = v.session(sessionValue, 'session')
   const log = v.log(logValue, 'log')
   v.associate(session, log, 'record')
@@ -1231,11 +1354,19 @@ export function validateBlockLogs(sessionValue: unknown, logValue: unknown): Ses
 }
 
 export function parsePlanningContext(value: unknown): PlanningContext {
-  const v = new Validator()
+  return parsePlanningContextWithOptions(value, {})
+}
+
+export function parsePlanningContextWithOptions(value: unknown, options: ValidationOptions): PlanningContext {
+  const v = new Validator(options)
   return v.finish(v.context(value, 'context'))
 }
 
 export function parsePlanWeekInput(value: unknown): PlanWeekInput {
-  const v = new Validator()
+  return parsePlanWeekInputWithOptions(value, {})
+}
+
+export function parsePlanWeekInputWithOptions(value: unknown, options: ValidationOptions): PlanWeekInput {
+  const v = new Validator(options)
   return v.finish(v.input(value))
 }

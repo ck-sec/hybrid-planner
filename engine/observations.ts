@@ -66,12 +66,14 @@ export function hasCleanBlockObservation(
   })
 }
 
-export function hasCleanThrowObservation(input: PlanWeekInput, commitmentId: string): boolean {
+export function hasCleanThrowObservation(
+  input: PlanWeekInput, commitmentId: string, drillId = 'dodgeball-controlled-target-throw',
+): boolean {
   return input.context.recentSessions.some(record => {
     if (record.session.kind !== 'workout' || record.session.sourceCommitmentId !== commitmentId
       || record.log?.status !== 'completed' || record.log.painFlag) return false
     const session = record.session
-    return record.log.blockLogs?.some(log => log.unit === 'throws' && log.throws > 0
+    return record.log.blockLogs?.some(log => log.unit === 'throws' && log.drillId === drillId && log.throws > 0
       && blockLogWithinPrescription(session, log)) ?? false
   })
 }

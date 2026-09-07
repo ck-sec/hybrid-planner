@@ -1,9 +1,11 @@
-import { PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { AI_ADVISORY_CONDITIONING_RESOURCES, PROGRAM_POLICY, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { DEFAULT_LIBRARY, LEGACY_LIBRARY, resolveProgramLibrary } from '../../engine/library.ts'
 import { availableExerciseMetadata, recommendProgram, SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
 import type { ExerciseMetadata } from '../../engine/program.ts'
 import { recommendedExercises } from '../../engine/recommendations.ts'
 import type { Equipment, ProgramConfigV1, ProgramGoal, Resource } from '../../engine/types.ts'
+import type { ValidationOptions } from '../../engine/validation.ts'
+import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
 
 type ResourceGroup = 'strength' | 'cardio'
 
@@ -121,11 +123,13 @@ export function resourceLabels(resources: readonly ResourceId[]): string[] {
 }
 
 /** Convert app capabilities to the exact resources understood by the opt-in program engine. */
-export function programResourcesForResources(resources: readonly ResourceId[]): Resource[] {
+export function programResourcesForResources(resources: readonly ResourceId[], options: ValidationOptions = {}): Resource[] {
   const parsed = parseResources(resources)
   const projected = new Set<Resource>(['bodyweight'])
+  const devices: ReadonlySet<Resource> = new Set(Object.values(AI_ADVISORY_CONDITIONING_RESOURCES).flat())
   for (const id of parsed) {
-    if (id.startsWith('custom:') || PROGRAM_RESOURCE_IDS.has(id as Resource)) projected.add(id as Resource)
+    if (id.startsWith('custom:') || PROGRAM_RESOURCE_IDS.has(id as Resource)
+      || (options.policy === 'ai-advisory' && devices.has(id as Resource))) projected.add(id as Resource)
     else if (id === 'dodgeballs') projected.add('dodgeball')
     else if (id === 'court') projected.add('court_space')
   }
@@ -155,7 +159,7 @@ export function exerciseAvailable(
     return legacy.equipment.every(piece => piece === 'none' || equipment.includes(piece))
       && (specificRequirements.get(exerciseId) ?? []).every(id => resources.includes(id))
   }
-  const library = typeof program === 'object' ? resolveProgramLibrary(program) : DEFAULT_LIBRARY
+  const library = typeof program === 'object' ? resolveProgramLibrary(program, AI_PLANNING_OPTIONS) : DEFAULT_LIBRARY
   const exercise = library.exercises.find(item => item.id === exerciseId)
   const requirements = exercise?.highSkill === false
     ? exercise.requirements
@@ -169,7 +173,7 @@ export function availableProgramExercises(
 ): readonly ExerciseMetadata[] {
   return availableExerciseMetadata(
     program ? program.resources : programResourcesForResources(resources),
-    resolveProgramLibrary(program),
+    resolveProgramLibrary(program, AI_PLANNING_OPTIONS),
   )
 }
 
@@ -184,7 +188,7 @@ export function recommendForResources(
     const goal = typeof program === 'string' ? program : program.goal
     const exactResources = typeof program === 'string' ? programResourcesForResources(resources) : program.resources
     return [...recommendProgram(
-      exactResources, goal, typeof program === 'object' ? resolveProgramLibrary(program) : DEFAULT_LIBRARY,
+      exactResources, goal, typeof program === 'object' ? resolveProgramLibrary(program, AI_PLANNING_OPTIONS) : DEFAULT_LIBRARY,
       typeof program === 'object' ? program.selectedExerciseIds : undefined,
       typeof program === 'object' && program.includeMobility === true,
     ).exerciseIds]

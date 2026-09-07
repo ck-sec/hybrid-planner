@@ -3,7 +3,7 @@ import {
   adaptCalendarWeek, applyCalendarPainHold, calendarSafety, calendarSessionLabel,
   followingCommitments, nextCalendarInput,
 } from '../../engine/calendar.ts'
-import { CAMPAIGN_POLICY, LIMITS, MAX_LOGGED_SETS_PER_BLOCK, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
+import { AI_ADVISORY_LIMITS, CAMPAIGN_POLICY, LIMITS, MAX_LOGGED_SETS_PER_BLOCK, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
 import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from '../../engine/dates.ts'
 import { DEFAULT_LIBRARY, LEGACY_LIBRARY, libraryForVersion, resolveProgramLibrary } from '../../engine/library.ts'
 import { predictSessionLoad } from '../../engine/load.ts'
@@ -15,11 +15,24 @@ import type {
   AthleteState, BlockLog, Day, Equipment, ExerciseObservation, Goal, PlanWeekInput, Quality,
   Session, SessionLog, SetLog, TargetRPE, WeekPlan, WorkoutSession,
 } from '../../engine/types.ts'
-import { parseAthlete, parseBlockLog, parsePlanWeekInput, parseProgramConfig, parseSession, parseSessionLog, validateBlockLogs } from '../../engine/validation.ts'
+import {
+  parseAthleteWithOptions, parseBlockLogWithOptions, parsePlanWeekInputWithOptions, parseProgramConfigWithOptions,
+  parseSession, parseSessionLog, parseSessionLogWithOptions, validateBlockLogs,
+} from '../../engine/validation.ts'
+import type { ValidationOptions } from '../../engine/validation.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
 import { equipmentForResources, exerciseAvailable, parseResources, programResources, resourcesForEquipment } from './equipment.ts'
 import { parseWorkoutCards } from './workout-cards.ts'
 import { enableTemplateProgramming } from './programming.ts'
+import { assertCurrentTrainingDate, parseCurrentTraining, parseTrainingPreferences } from './training-baseline.ts'
+import type { TrainingPreferences } from './training-baseline.ts'
+import { parseTrainingHistory } from './garmin-import.ts'
+import { parseSessionFeedback } from './training-feedback.ts'
+import { authoredCommitmentSessionId, buildAuthoredWeek, parseAuthoredWeekProposal } from '../../engine/authored-week.ts'
+import type { AuthoredWeekProposal } from '../../engine/authored-week.ts'
+import { parseAuthoredCalendar, proposalForSessions, refreshAuthoredCalendar } from './authored-calendar.ts'
+import { adaptAuthoredCampaign } from './exercise-swaps.ts'
+import { AI_PLANNING_OPTIONS, authoredPolicyOptions, policyForWeek } from './authored-policy.ts'
 import type { ResourceId } from './equipment.ts'
 import type { CalendarAction, CampaignDraft, CampaignRevision, CampaignState, CampaignWeek, RecommendedSetup, SavedPlan, SetDraft, WorkoutContent } from './types.ts'
 
@@ -146,7 +159,16 @@ export function confirmSetupEquipment(state: CampaignState, resources: readonly 
 /** Only recommended drafts derive totals; legacy observed drafts are returned unchanged. */
 export function normalizeRecommendedDraft(draft: CampaignDraft): CampaignDraft {
   if (!draft.recommendedSetup) return draft
-  const weeklyRunMinutes = draft.recommendedSetup.typicalRunMinutes * draft.runsPerWeek
+  if (draft.currentTraining) {
+    const reported = parseCurrentTraining(draft.currentTraining)
+    draft = {
+      ...draft, currentTraining: reported, weeklyRunMinutes: reported.weeklyRunMinutes,
+      runsPerWeek: reported.runsPerWeek, liftsPerWeek: reported.liftsPerWeek, liftDurationMin: reported.liftDurationMin,
+      recommendedSetup: { ...draft.recommendedSetup, typicalRunMinutes: reported.longestRunMinutes },
+    }
+  }
+  const weeklyRunMinutes = draft.currentTraining?.weeklyRunMinutes
+    ?? draft.recommendedSetup!.typicalRunMinutes * draft.runsPerWeek
   const weeklyTimeBudgetMin = weeklyRunMinutes + draft.liftsPerWeek * draft.liftDurationMin
     + draft.practiceDays.length * draft.practiceDuration
     + (draft.program?.conditioningBaselines.reduce((sum, item) => sum + (item.modality.startsWith('run_') ? 0 : item.weeklyMinutes), 0) ?? 0)
@@ -157,11 +179,11 @@ export function normalizeRecommendedDraft(draft: CampaignDraft): CampaignDraft {
     ...(draft.program ? { program: {
       ...draft.program,
       resources: programResources(draft.resources ?? resourcesForEquipment(draft.equipment)),
-      selectedExerciseIds: draft.recommendedSetup.exerciseIds.toSorted(),
+      selectedExerciseIds: draft.recommendedSetup!.exerciseIds.toSorted(),
       conditioningBaselines: draft.program.conditioningBaselines.toSorted((a, b) => a.modality.localeCompare(b.modality)),
     } } : {}),
   }
-  if (draft.recommendedSetup.mode === 'classic') {
+  if (draft.recommendedSetup!.mode === 'classic') {
     normalized.goalKind = 'hybrid'
     normalized.priorities = [...RECOMMENDATION_POLICY.classicQualityBias]
     try {
@@ -171,8 +193,8 @@ export function normalizeRecommendedDraft(draft: CampaignDraft): CampaignDraft {
     }
   }
   if (normalized.program) {
-    normalized.program = parseProgramConfig(normalized.program)
-    if (normalized.program.comfortableThrowsPerPractice !== undefined && (normalized.goalKind !== 'dodgeball' || !normalized.practiceDays.length)) {
+    normalized.program = parseProgramConfigWithOptions(normalized.program, AI_PLANNING_OPTIONS)
+    if (normalized.program.comfortableThrowsPerPractice !== undefined && ((normalized.goalKind !== 'dodgeball' && normalized.practiceProfile !== 'controlled_target_throw') || !normalized.practiceDays.length)) {
       fail('Remove the generated throwing block before removing its established dodgeball practice or changing sport.')
     }
   }
@@ -214,9 +236,9 @@ export function prepareRecommendedSetup(state: CampaignState): CampaignState {
 
 function parseDraft(value: unknown, ready = false): CampaignDraft {
   const candidate = object(value, 'Campaign draft')
-  const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...['recommendedSetup', 'resources', 'program'].filter(key => Object.hasOwn(candidate, key))])
-  const program = Object.hasOwn(raw, 'program') ? parseProgramConfig(raw.program) : undefined
-  const library = program ? resolveProgramLibrary(program) : DEFAULT_LIBRARY
+  const raw = object(candidate, 'Campaign draft', [...DRAFT_FIELDS, ...['recommendedSetup', 'resources', 'program', 'trainingPreferences', 'currentTraining', 'trainingHistory', 'practiceProfile'].filter(key => Object.hasOwn(candidate, key))])
+  const program = Object.hasOwn(raw, 'program') ? parseProgramConfigWithOptions(raw.program, AI_PLANNING_OPTIONS) : undefined
+  const library = program ? resolveProgramLibrary(program, AI_PLANNING_OPTIONS) : DEFAULT_LIBRARY
   const draftNumber = (value: unknown, label: string, min: number, max: number, integer = false): number =>
     ready ? number(value, label, min, max, integer) : number(value, label, -1_000_000, 1_000_000)
   const draftDate = (value: unknown, label: string): string =>
@@ -235,7 +257,7 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
     recommendedSetup = {
       version: 1, mode: choice(setup.mode, 'Setup mode', ['classic', 'assisted']),
       goalText: text(setup.goalText, 'Goal description', LIMITS.maxNotesLength),
-      typicalRunMinutes: draftNumber(setup.typicalRunMinutes, 'Usual run duration', 1, LIMITS.maxRunMinutes),
+      typicalRunMinutes: draftNumber(setup.typicalRunMinutes, 'Usual run duration', Object.hasOwn(raw, 'currentTraining') ? 0 : 1, AI_ADVISORY_LIMITS.maxRunMinutes),
       exerciseIds,
     }
   }
@@ -262,22 +284,31 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
     priorities: unique(array(raw.priorities, 'Priorities', QUALITIES.length).map(value => choice(value, 'Priority', QUALITIES)), 'Priorities'),
     availableDays: days(raw.availableDays, 'Available days'), practiceDays: days(raw.practiceDays, 'Practice days'),
     practiceTime, practiceDuration: draftNumber(raw.practiceDuration, 'Practice duration', 0, 1440),
-    weeklyRunMinutes: draftNumber(raw.weeklyRunMinutes, 'Weekly run minutes', 0, LIMITS.maxWeeklyRunMinutes),
-    runsPerWeek: draftNumber(raw.runsPerWeek, 'Runs per week', 0, LIMITS.maxRuns, true),
-    liftsPerWeek: draftNumber(raw.liftsPerWeek, 'Lifts per week', 0, LIMITS.maxLifts, true),
-    liftDurationMin: draftNumber(raw.liftDurationMin, 'Lift duration', 0, 180),
-    weeklyTimeBudgetMin: draftNumber(raw.weeklyTimeBudgetMin, 'Weekly time budget', 0, 10080),
+    weeklyRunMinutes: draftNumber(raw.weeklyRunMinutes, 'Weekly run minutes', 0, AI_ADVISORY_LIMITS.maxWeeklyRunMinutes),
+    runsPerWeek: draftNumber(raw.runsPerWeek, 'Runs per week', 0, AI_ADVISORY_LIMITS.maxRuns, true),
+    liftsPerWeek: draftNumber(raw.liftsPerWeek, 'Lifts per week', 0, AI_ADVISORY_LIMITS.maxLifts, true),
+    liftDurationMin: draftNumber(raw.liftDurationMin, 'Lift duration', 0, AI_ADVISORY_LIMITS.maxLiftMinutes),
+    weeklyTimeBudgetMin: draftNumber(raw.weeklyTimeBudgetMin, 'Weekly time budget', 0, AI_ADVISORY_LIMITS.maxWeeklyRunMinutes),
     equipment: unique(array(raw.equipment, 'Equipment', EQUIPMENT.length).map(value => choice(value, 'Equipment', EQUIPMENT)), 'Equipment'),
     ...(Object.hasOwn(raw, 'resources') ? { resources: parseResources(raw.resources) } : {}),
     ...(program ? { program } : {}),
     exercises, confirmed: boolean(raw.confirmed, 'Baseline confirmation'),
     ...(recommendedSetup ? { recommendedSetup } : {}),
+    ...(Object.hasOwn(raw, 'trainingPreferences') ? { trainingPreferences: parseTrainingPreferences(raw.trainingPreferences) } : {}),
+    ...(Object.hasOwn(raw, 'currentTraining') ? { currentTraining: parseCurrentTraining(raw.currentTraining) } : {}),
+    ...(Object.hasOwn(raw, 'trainingHistory') ? { trainingHistory: parseTrainingHistory(raw.trainingHistory) } : {}),
+    ...(Object.hasOwn(raw, 'practiceProfile') ? { practiceProfile: choice(raw.practiceProfile, 'Practice profile', ['controlled_target_throw'] as const) } : {}),
+  }
+  if (result.currentTraining) {
+    equal([result.weeklyRunMinutes, result.runsPerWeek, result.liftsPerWeek, result.liftDurationMin, result.recommendedSetup?.typicalRunMinutes],
+      [result.currentTraining.weeklyRunMinutes, result.currentTraining.runsPerWeek, result.currentTraining.liftsPerWeek, result.currentTraining.liftDurationMin, result.currentTraining.longestRunMinutes],
+      'Reported baseline')
   }
   if (result.resources) equal(result.equipment.toSorted(), equipmentForResources(result.resources).toSorted(), 'Equipment capabilities')
   if (program) {
     equal(program.resources.toSorted(), programResources(result.resources ?? resourcesForEquipment(result.equipment)).toSorted(), 'Program resource capabilities')
     equal(program.selectedExerciseIds?.toSorted(), recommendedSetup?.exerciseIds.toSorted(), 'Program exercise selection')
-    if (program.comfortableThrowsPerPractice !== undefined && (result.goalKind !== 'dodgeball' || !result.practiceDays.length)) {
+    if (program.comfortableThrowsPerPractice !== undefined && ((result.goalKind !== 'dodgeball' && result.practiceProfile !== 'controlled_target_throw') || !result.practiceDays.length)) {
       fail('Throwing blocks need an established dodgeball practice, not a standalone extra session.')
     }
     for (const baseline of program.conditioningBaselines) {
@@ -312,14 +343,19 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
   return result
 }
 
-function baselineForDraft(draft: CampaignDraft): AthleteState {
+function baselineForDraft(draft: CampaignDraft, options: ValidationOptions = {}): AthleteState {
   if (!draft.confirmed) fail('Confirm that these are your recent, comfortable training inputs before creating a calendar.')
+  if (draft.trainingPreferences && !draft.currentTraining) {
+    fail('Your desired routine is not a baseline. Discuss current training in chat or enter it in the local assessment before building.')
+  }
+  if (draft.currentTraining) assertCurrentTrainingDate(draft.currentTraining, draft.startDate)
   if (!draft.goalLabel.trim() || !draft.priorities.length) fail('Name your goal and choose at least one priority.')
-  if (!draft.weeklyRunMinutes || !draft.runsPerWeek || !draft.liftsPerWeek || !draft.liftDurationMin) {
+  if (options.policy !== 'ai-advisory' && (!draft.weeklyRunMinutes || !draft.runsPerWeek || !draft.liftsPerWeek || !draft.liftDurationMin)) {
+    if (draft.currentTraining) fail('The built-in planner requires nonzero running and lifting baselines. Keep your truthful report and review an AI-authored week instead; no capacity is invented.')
     if (draft.recommendedSetup) fail('Confirm your usual run duration, runs and lifts per week, and lifting session length. Unknown zero values cannot become invented training observations.')
     fail('A confirmed recent running and lifting baseline, including a known exercise, is required by this engine. Unknown zero values cannot become invented training observations.')
   }
-  if (!draft.recommendedSetup && !draft.exercises.length) {
+  if (options.policy !== 'ai-advisory' && !draft.recommendedSetup && !draft.exercises.length) {
     fail('A confirmed recent running and lifting baseline, including a known exercise, is required by this engine. Unknown zero values cannot become invented training observations.')
   }
   for (const observation of draft.exercises) {
@@ -327,15 +363,23 @@ function baselineForDraft(draft: CampaignDraft): AthleteState {
     if (age < 0 || age > CAMPAIGN_POLICY.maximumBaselineObservationAgeDays) {
       fail(`Exercise observations must be from the ${CAMPAIGN_POLICY.maximumBaselineObservationAgeDays} days before the campaign starts.`)
     }
-    if (observation.actualRPE > CAMPAIGN_POLICY.comfortableObservationRpeMax) {
+    if (options.policy !== 'ai-advisory' && observation.actualRPE > CAMPAIGN_POLICY.comfortableObservationRpeMax) {
       fail(`Use a recent comfortable exercise observation at RPE ${CAMPAIGN_POLICY.comfortableObservationRpeMax} or lower, not a maximal test.`)
     }
   }
   if (draft.practiceDays.length > LIMITS.maxCommitments) fail(`Choose at most ${LIMITS.maxCommitments} fixed practices.`)
   if (draft.practiceDays.length && draft.practiceDuration <= 0) fail('Fixed practices need an explicit positive duration.')
-  return parseAthlete({
+  if (options.policy !== 'ai-advisory' && (draft.runsPerWeek > LIMITS.maxRuns || draft.liftsPerWeek > LIMITS.maxLifts
+    || draft.weeklyRunMinutes > LIMITS.maxWeeklyRunMinutes || (draft.recommendedSetup?.typicalRunMinutes ?? 0) > LIMITS.maxRunMinutes
+    || draft.liftDurationMin > 180)) {
+    fail('This reported baseline exceeds the built-in planner’s supported limits. Keep the facts unchanged and review an AI-authored week instead.')
+  }
+  const program = draft.program && options.policy === 'ai-advisory' ? {
+    ...draft.program, resources: programResources(draft.resources ?? resourcesForEquipment(draft.equipment), options),
+  } : draft.program
+  return parseAthleteWithOptions({
     baseline: {
-      asOf: draft.startDate, weeklyRunMinutes: draft.weeklyRunMinutes,
+      asOf: draft.currentTraining?.asOf ?? draft.startDate, weeklyRunMinutes: draft.weeklyRunMinutes,
       longestRunMinutes: draft.recommendedSetup?.typicalRunMinutes
         ?? Math.min(LIMITS.maxRunMinutes, Math.floor(draft.weeklyRunMinutes / draft.runsPerWeek)),
       runsPerWeek: draft.runsPerWeek, liftsPerWeek: draft.liftsPerWeek, liftDurationMin: draft.liftDurationMin,
@@ -346,8 +390,8 @@ function baselineForDraft(draft: CampaignDraft): AthleteState {
     defaultStartTime: '07:00', aggressiveness: 'conservative',
     residual: { asOfDate: draft.startDate, asOfTime: '00:00', load: { systemic: 0, structural: 0 } },
     safetyHold: null,
-    ...(draft.program ? { program: draft.program } : draft.recommendedSetup ? { recommendedExerciseIds: draft.recommendedSetup.exerciseIds } : {}),
-  })
+    ...(program ? { program } : draft.recommendedSetup ? { recommendedExerciseIds: draft.recommendedSetup.exerciseIds } : {}),
+  }, options)
 }
 
 function goalForDraft(draft: CampaignDraft): Goal {
@@ -356,7 +400,7 @@ function goalForDraft(draft: CampaignDraft): Goal {
     fixedCommitments: [...draft.practiceDays].sort((a, b) => a - b).map(day => ({
       id: `practice-${day}`, label: draft.goalKind === 'dodgeball' ? 'Dodgeball practice' : `${draft.goalKind === 'custom' ? 'Goal' : draft.goalKind[0]!.toUpperCase() + draft.goalKind.slice(1)} practice`,
       dayOfWeek: day, startTime: draft.practiceTime, durationMin: draft.practiceDuration,
-      discipline: 'sport', modality: draft.goalKind === 'dodgeball' ? 'court_sport' : 'other',
+      discipline: 'sport', modality: draft.goalKind === 'dodgeball' || draft.practiceProfile === 'controlled_target_throw' ? 'court_sport' : 'other',
       estimatedLoad: {
         systemic: draft.practiceDuration * CAMPAIGN_POLICY.practiceCostPerMinute.systemic,
         structural: draft.practiceDuration * CAMPAIGN_POLICY.practiceCostPerMinute.structural,
@@ -373,7 +417,9 @@ function campaignPlanCopy(plan: WeekPlan): WeekPlan {
 
 function assumptionsForDraft(draft: CampaignDraft): readonly string[] {
   return draft.recommendedSetup ? [
-    'Running totals and the normal training-time budget come from your confirmed usual session lengths and frequencies, not a separate weekly-minute estimate.',
+    draft.currentTraining
+      ? 'Reported weekly running time and longest comfortable run remain independent observations. Desired average durations are preferences, not caps on individual sessions.'
+      : 'Running totals and the normal training-time budget come from your confirmed usual session lengths and frequencies, not a separate weekly-minute estimate.',
     ...ASSUMPTIONS.slice(1),
     draft.program
       ? 'Exercise templates have separate doses, logging units and execution styles. Scheduling coefficients are hand-authored estimates, not measured fatigue or injury risk. No starting kilograms are invented.'
@@ -381,49 +427,92 @@ function assumptionsForDraft(draft: CampaignDraft): readonly string[] {
   ] : ASSUMPTIONS
 }
 
+export function budgetBuiltInSessions(planned: readonly Session[], preferences: TrainingPreferences): Session[] {
+  const desired = parseTrainingPreferences(preferences)
+  let runs = 0, lifts = 0
+  const sessions = planned.filter(session => {
+    if (session.kind === 'commitment' || (session.kind === 'workout' && session.sourceCommitmentId)) return true
+    if (session.discipline === 'run') return desired.runDurationMin > 0 && ++runs <= desired.runsPerWeek
+    if (session.discipline === 'strength') return desired.liftDurationMin > 0 && ++lifts <= desired.liftsPerWeek
+    return true
+  })
+  const total = (discipline: Session['discipline']) => sessions.reduce((sum, session) =>
+    sum + (session.discipline === discipline ? session.durationMin : 0), 0)
+  const runBudget = desired.runDurationMin * desired.runsPerWeek
+  const liftBudget = desired.liftDurationMin * desired.liftsPerWeek
+  const runScale = Math.min(1, runBudget / (total('run') || 1))
+  const liftScale = Math.min(1, liftBudget / (total('strength') || 1))
+  return sessions.map(session => {
+    if (session.kind === 'commitment' || (session.kind === 'workout' && session.sourceCommitmentId)) return session
+    const scale = session.discipline === 'run' ? runScale : session.discipline === 'strength' ? liftScale : 1
+    return scale < 1 ? { ...session, durationMin: Math.floor(session.durationMin * scale) } : session
+  }).filter(session => session.durationMin > 0)
+}
+
+function builtInWeekForDraft(input: PlanWeekInput, draft: CampaignDraft): { plan: WeekPlan; authored?: AuthoredWeekProposal } {
+  const plan = planWeek(input)
+  const desired = draft.trainingPreferences
+  if (!desired || !draft.program) return { plan }
+  const budgeted = budgetBuiltInSessions(plan.sessions, desired)
+  if (stable(budgeted) === stable(plan.sessions)) return { plan }
+  const authored = proposalForSessions(plan.weekStart, budgeted)
+  return { authored, plan: buildAuthoredWeek(input, authored) }
+}
+
 export function buildCampaign(state: CampaignState): CampaignState {
   if (state.weeks.length || state.setupComplete) fail('An existing campaign cannot be overwritten. Start a new campaign to confirm a new baseline.')
   if (!state.draft.confirmed) fail('Confirm that these are your recent, comfortable training inputs before creating a calendar.')
   const draft = parseDraft(normalizeRecommendedDraft(parseDraft(state.draft)), true)
-  const input = initialCampaignInput(draft)
-  const planned = campaignPlanCopy(planWeek(input))
-  if (!planned.safety.passed) fail(`No safe calendar can be saved: ${planned.safety.violations.map(item => item.message).join(' ')}`)
+  const options: ValidationOptions = state.pendingWeek ? AI_PLANNING_OPTIONS : {}
+  const input = initialCampaignInput(draft, options)
+  const builtIn = state.pendingWeek ? undefined : builtInWeekForDraft(input, draft)
+  const authored = state.pendingWeek ? parseAuthoredWeekProposal(state.pendingWeek, options) : builtIn?.authored
+  const planned = campaignPlanCopy(authored ? buildAuthoredWeek(input, authored, options) : builtIn!.plan)
+  if (!planned.safety.passed) fail(`${state.pendingWeek ? 'No calendar can be saved until hard app checks pass' : 'No safe calendar can be saved'}: ${planned.safety.violations.map(item => item.message).join(' ')}`)
   const plan = { ...planned, warnings: [...planned.warnings, ...assumptionsForDraft(draft),
     ...(state.sample ? ['Sample campaign: all baseline examples are fictional, not your observed history.'] : []),
     ...(!planned.feasibility.fits ? ['The safe calendar omits work. Review the visible feasibility issues before following it.'] : []),
   ] }
-  return { ...state, draft, setupComplete: true, step: 5, selectedWeek: 0,
-    weeks: [{ input, plan, logs: {}, removed: [], changes: [{ id: 'change-0-1', message: 'Created a baseline-bounded calendar. Fixed practices are pinned; no workouts are logged automatically.' }] }] }
+  const next: CampaignState = { ...state, draft, setupComplete: true, step: 5, selectedWeek: 0,
+    weeks: [{ input, plan, logs: {}, removed: [], ...(authored ? { authored } : {}),
+      changes: [{ id: 'change-0-1', message: authored
+        ? 'Approved the proposed week after deterministic app checks. This is not medical clearance; no workouts are logged automatically.'
+        : 'Created a baseline-bounded calendar. Fixed practices are pinned; no workouts are logged automatically.' }] }] }
+  delete next.pendingWeek
+  return next
 }
 
-function initialCampaignInput(draft: CampaignDraft): PlanWeekInput {
-  const athlete = baselineForDraft(draft)
-  const library = draft.program ? resolveProgramLibrary(draft.program) : LEGACY_LIBRARY
-  const block = generateBlock(athlete, goalForDraft(draft), draft.startDate, library)
+function initialCampaignInput(draft: CampaignDraft, options: ValidationOptions = {}): PlanWeekInput {
+  const athlete = baselineForDraft(draft, options)
+  const library = athlete.program ? resolveProgramLibrary(athlete.program, options) : LEGACY_LIBRARY
+  const block = generateBlock(athlete, goalForDraft(draft), draft.startDate, library, options)
   const input: PlanWeekInput = { athlete, block, weekIndex: 0, library,
     context: { recentSessions: [], completedWeeks: [], neighboringSessions: [], pinnedSessions: [] } }
-  return parsePlanWeekInput({ ...input, context: { ...input.context, neighboringSessions: followingCommitments(input) } })
+  return parsePlanWeekInputWithOptions({ ...input, context: { ...input.context, neighboringSessions: followingCommitments(input, options) } }, options)
 }
 
 export function campaignDraftForWeek(state: CampaignState, weekIndex = state.selectedWeek): CampaignDraft {
   return state.revisions?.findLast(revision => revision.weekIndex <= weekIndex)?.draft ?? state.draft
 }
 
-function revisedCampaignInput(weeks: CampaignWeek[], previousDraft: CampaignDraft, draft: CampaignDraft): PlanWeekInput {
+function revisedCampaignInput(weeks: CampaignWeek[], previousDraft: CampaignDraft, draft: CampaignDraft, options: ValidationOptions = {}): PlanWeekInput {
   const fixedFields = [
-    'goalKind', 'goalLabel', 'location', 'eventDate', 'startDate', 'priorities', 'availableDays',
+    'goalKind', 'goalLabel', 'location', 'eventDate', 'startDate', 'priorities',
     'practiceDays', 'practiceTime', 'practiceDuration', 'weeklyRunMinutes', 'runsPerWeek',
-    'liftsPerWeek', 'liftDurationMin', 'weeklyTimeBudgetMin', 'exercises',
+    'liftsPerWeek', 'liftDurationMin', 'weeklyTimeBudgetMin', 'exercises', 'currentTraining', 'practiceProfile',
   ] as const
   for (const key of fixedFields) equal(draft[key], previousDraft[key], `Revision ${key}`)
   for (const exercise of previousDraft.program?.customExercises ?? []) {
     equal(draft.program?.customExercises?.find(item => item.id === exercise.id), exercise, `Saved custom exercise ${exercise.id}`)
   }
+  for (const drill of previousDraft.program?.customSportDrills ?? []) {
+    equal(draft.program?.customSportDrills?.find(item => item.id === drill.id), drill, `Saved custom drill ${drill.id}`)
+  }
   if (!draft.recommendedSetup || !previousDraft.recommendedSetup) fail('Revisions require a recommended exercise selection.')
   equal(draft.recommendedSetup.typicalRunMinutes, previousDraft.recommendedSetup.typicalRunMinutes, 'Revision running baseline')
-  const carried = nextCalendarInput(weeks)
-  if (carried.athlete.safetyHold) fail('A health hold blocks programming revisions. It cannot be cleared by selecting different exercises.')
-  const initial = initialCampaignInput(draft)
+  const carried = nextCalendarInput(weeks, options)
+  if (carried.athlete.safetyHold && options.policy !== 'ai-advisory') fail('A health hold blocks programming revisions. It cannot be cleared by selecting different exercises.')
+  const initial = initialCampaignInput(draft, options)
   const athlete = {
     ...initial.athlete,
     baseline: carried.athlete.baseline,
@@ -431,13 +520,13 @@ function revisedCampaignInput(weeks: CampaignWeek[], previousDraft: CampaignDraf
     calibration: carried.athlete.calibration,
     safetyHold: carried.athlete.safetyHold,
   }
-  const block = { ...generateBlock(athlete, goalForDraft(draft), draft.startDate, initial.library), phases: carried.block.phases }
+  const block = { ...generateBlock(athlete, goalForDraft(draft), draft.startDate, initial.library, options), phases: carried.block.phases }
   const input: PlanWeekInput = { ...carried, athlete, block, library: initial.library }
   const weekStart = addDays(block.startDate, input.weekIndex * 7)
-  return parsePlanWeekInput({ ...input, context: { ...input.context, neighboringSessions: [
+  return parsePlanWeekInputWithOptions({ ...input, context: { ...input.context, neighboringSessions: [
     ...carried.context.neighboringSessions.filter(session => session.date < weekStart),
-    ...followingCommitments(input),
-  ] } })
+    ...followingCommitments(input, options),
+  ] } }, options)
 }
 
 function activeWeek(state: CampaignState): CampaignWeek {
@@ -456,6 +545,7 @@ function editableWeek(state: CampaignState): CampaignWeek {
 /** Pins remain visible for review, but a pain report is not permission to train. */
 export function campaignSessionOnHold(state: CampaignState, session: Session): boolean {
   const week = activeWeek(state)
+  if (policyForWeek(week).policy === 'ai-advisory') return false
   if (week.input.athlete.safetyHold) return true
   const position = (item: Session): string => `${item.date}|${item.startTime ?? '00:00'}`
   return week.plan.sessions.some(item => week.logs[item.id]?.painFlag && position(item) <= position(session))
@@ -463,6 +553,7 @@ export function campaignSessionOnHold(state: CampaignState, session: Session): b
 
 export function adaptCampaign(state: CampaignState, action: CalendarAction, notBeforeDate?: string): CampaignState {
   const week = editableWeek(state)
+  if (week.authored) return adaptAuthoredCampaign(state, action, notBeforeDate)
   return replaceWeek(state, adaptCalendarWeek(week, action, notBeforeDate))
 }
 
@@ -498,7 +589,7 @@ export function logCampaignSet(
   ownSets[index] = set
   const sets = session.strengthPrescription.flatMap(item => item.exerciseId === exerciseId
     ? ownSets : (previous?.sets ?? []).filter(set => set.exerciseId === item.exerciseId))
-  const log = parseSessionLog({ sessionId, status: 'partial', sets, painFlag: previous?.painFlag ?? false, notes: previous?.notes ?? '' })
+  const log = parseSessionLogWithOptions({ sessionId, status: 'partial', sets, painFlag: previous?.painFlag ?? false, notes: previous?.notes ?? '' }, policyForWeek(week))
   const setDrafts = { ...state.setDrafts }
   delete setDrafts[`${sessionId}:${exerciseId}:${index}`]
   return { ...replaceWeek(state, { ...week, logs: { ...week.logs, [sessionId]: log } }), setDrafts }
@@ -518,11 +609,12 @@ function saveCampaignBlock(state: CampaignState, session: WorkoutSession, week: 
   const previous = week.logs[session.id]
   const blockLogs = [...(previous?.blockLogs ?? []).filter(item => item.blockIndex !== blockLog.blockIndex), blockLog]
     .sort((a, b) => a.blockIndex - b.blockIndex)
-  const log = parseSessionLog({ ...previous, sessionId: session.id, status: 'partial', blockLogs, painFlag: previous?.painFlag ?? false, notes: previous?.notes ?? '' })
-  validateSets(session, log)
+  const log = parseSessionLogWithOptions({ ...previous, sessionId: session.id, status: 'partial', blockLogs, painFlag: previous?.painFlag ?? false, notes: previous?.notes ?? '' }, policyForWeek(week))
+  validateSets(session, log, policyForWeek(week))
   const setDrafts = { ...state.setDrafts }
   delete setDrafts[draftKey]
-  return { ...replaceWeek(state, { ...week, logs: { ...week.logs, [session.id]: log } }), setDrafts }
+  const updated = { ...week, logs: { ...week.logs, [session.id]: log } }
+  return { ...replaceWeek(state, updated.authored ? refreshAuthoredCalendar(updated) : updated), setDrafts }
 }
 
 export function logCampaignBlockSet(state: CampaignState, sessionId: string, blockIndex: number, setIndex: number, value: SetDraft): CampaignState {
@@ -538,7 +630,7 @@ export function logCampaignBlockSet(state: CampaignState, sessionId: string, blo
     exerciseId: block.exerciseId, weightKg: typedNumber(draft.weight, 'Actual weight'),
     reps: typedNumber(draft.reps, 'Actual repetitions'), actualRPE: typedNumber(draft.effort, 'Actual set RPE') as TargetRPE,
   }
-  return saveCampaignBlock(state, session, week, parseBlockLog({ unit: 'reps', blockIndex, exerciseId: block.exerciseId, sets }), `${sessionId}:block-${blockIndex}:${setIndex}`)
+  return saveCampaignBlock(state, session, week, parseBlockLogWithOptions({ unit: 'reps', blockIndex, exerciseId: block.exerciseId, sets }, policyForWeek(week)), `${sessionId}:block-${blockIndex}:${setIndex}`)
 }
 
 export function logCampaignBlockAmount(state: CampaignState, sessionId: string, blockIndex: number, amount: string, weight?: string): CampaignState {
@@ -549,7 +641,7 @@ export function logCampaignBlockAmount(state: CampaignState, sessionId: string, 
   const entry = block.unit === 'seconds'
     ? { unit: 'seconds', blockIndex, exerciseId: block.exerciseId, seconds: actual, ...(weight !== undefined ? { weightKg: typedNumber(weight, 'Actual carry weight') } : {}) }
     : { unit: 'throws', blockIndex, drillId: block.drillId, throws: actual }
-  return saveCampaignBlock(state, session, week, parseBlockLog(entry), `${sessionId}:block-${blockIndex}:total`)
+  return saveCampaignBlock(state, session, week, parseBlockLogWithOptions(entry, policyForWeek(week)), `${sessionId}:block-${blockIndex}:total`)
 }
 
 export function completeCampaignSession(
@@ -564,37 +656,74 @@ export function completeCampaignSession(
   number(actualDuration, 'Actual duration', 1, 1440)
   number(effort, 'Whole-session effort', 0, 10)
   boolean(pain, 'Pain flag')
-  const log = parseSessionLog({
+  const log = parseSessionLogWithOptions({
     ...previous, sessionId, status: 'completed', actualDurationMin: actualDuration, actualEffort: effort,
     painFlag: pain || previous?.painFlag === true, notes: previous?.notes ?? '',
-  })
+  }, policyForWeek(week))
   const updated = { ...week, logs: { ...week.logs, [sessionId]: log },
     changes: [...week.changes, { id: `change-${week.plan.weekIndex}-${week.changes.length + 1}`, message: `Completed ${calendarSessionLabel(session)}. Recorded only the sets and session details you entered.` }] }
-  return replaceWeek(state, pain ? applyCalendarPainHold(updated, sessionId) : updated)
+  return replaceWeek(state, updated.authored ? refreshAuthoredCalendar(updated) : pain ? applyCalendarPainHold(updated, sessionId) : updated)
 }
 
-export function nextCampaignWeek(state: CampaignState, revisionDraft?: CampaignDraft): CampaignState {
+function repeatApprovedAuthoredWeek(current: CampaignWeek, input: PlanWeekInput): AuthoredWeekProposal {
+  // A this-week skip or partial-work swap is not approval to rewrite the recurring pattern.
+  const source = current.authoredHistory?.[0]?.proposal ?? current.authored
+  if (!source) fail('This advisory week has no approved prescription to repeat.')
+  const weekStart = addDays(input.block.startDate, input.weekIndex * 7)
+  const offset = dayNumber(weekStart) - dayNumber(source.weekStart)
+  return parseAuthoredWeekProposal({
+    version: 1, weekStart,
+    sessions: source.sessions.map((session, index) => {
+      const date = addDays(session.date, offset)
+      if (session.kind === 'workout' && session.sourceCommitmentId) {
+        return { ...session, id: authoredCommitmentSessionId(input, session.sourceCommitmentId), date }
+      }
+      return { ...session, id: `repeat-${input.weekIndex}-${index + 1}-${weekStart}`, date }
+    }),
+  }, AI_PLANNING_OPTIONS)
+}
+
+export function nextCampaignWeek(state: CampaignState, revisionDraft?: CampaignDraft, proposal?: AuthoredWeekProposal): CampaignState {
   const current = editableWeek(state)
   if (Object.values(current.logs).some(log => log.status === 'partial')) {
     fail('Finish each in-progress session in this week before building the next week. Your logged sets remain saved and editable.')
   }
   const draft = revisionDraft ? parseDraft(normalizeRecommendedDraft(revisionDraft), true) : state.draft
-  const input = revisionDraft ? revisedCampaignInput(state.weeks, state.draft, draft) : nextCalendarInput(state.weeks)
-  if (input.athlete.safetyHold) fail('Pain or another unresolved health hold blocks the next week. Confirm an appropriate new baseline before further planning; no return-to-training advice is inferred.')
-  const planned = campaignPlanCopy(planWeek(input))
-  if (!planned.safety.passed) fail(`The next week has no safe calendar: ${planned.safety.violations.map(item => item.message).join(' ')}`)
+  const repeatApproved = !proposal && policyForWeek(current).policy === 'ai-advisory'
+  const advisory = Boolean(proposal) || repeatApproved
+  const options: ValidationOptions = advisory ? AI_PLANNING_OPTIONS : {}
+  const resourceRevision = advisory && current.input.athlete.program !== undefined
+    && stable(current.input.athlete.program.resources) !== stable(programResources(draft.resources ?? resourcesForEquipment(draft.equipment), options))
+  const inputRevision = revisionDraft !== undefined || resourceRevision
+  if (!advisory) baselineForDraft(draft)
+  const input = inputRevision ? revisedCampaignInput(state.weeks, state.draft, draft, options) : nextCalendarInput(state.weeks, options)
+  if (input.athlete.safetyHold && options.policy !== 'ai-advisory') fail('Pain or another unresolved health hold blocks the next week. Confirm an appropriate new baseline before further planning; no return-to-training advice is inferred.')
+  const builtIn = advisory ? undefined : builtInWeekForDraft(input, draft)
+  const authored = proposal ? parseAuthoredWeekProposal(proposal, options)
+    : repeatApproved ? repeatApprovedAuthoredWeek(current, input) : builtIn?.authored
+  const planned = campaignPlanCopy(authored ? buildAuthoredWeek(input, authored, options) : builtIn!.plan)
+  if (!planned.safety.passed) fail(`The next week fails app checks: ${planned.safety.violations.map(item => item.message).join(' ')}`)
   const fatigue = state.weeks.some(week => Object.values(week.logs).some(log => log.skipReason === 'too_tired'))
   const plan = { ...planned, warnings: [...planned.warnings, ...assumptionsForDraft(draft),
-    ...(fatigue ? ['A fatigue skip keeps future optional workload conservatively capped until a newly confirmed baseline; ordinary time skips do not signal fatigue.'] : []),
-    ...(input.athlete.safetyHold ? ['An unresolved health hold blocks generated running and lifting. Fixed practices are only existing commitments, not advice to continue them.'] : []),
-    'Unlogged prior sessions remain unlogged. Recovery uses entered completed/partial history; neighboring planned sessions retain conservative timing checks.',
+    ...(repeatApproved ? ['Repeated the originally approved AI weekly pattern with unchanged quantities and corresponding new dates. This-week skips, moves and swaps do not automatically change future training; review this preview before approving. No new AI request was made.'] : []),
+    ...(fatigue ? [advisory ? 'Reported fatigue remains visible for AI and human review; ordinary time skips do not signal fatigue.'
+      : 'A fatigue skip keeps future optional workload conservatively capped until a newly confirmed baseline; ordinary time skips do not signal fatigue.'] : []),
+    ...(input.athlete.safetyHold ? [advisory ? 'An unresolved health report carries forward. Approval is not medical clearance, and does not clear the report.'
+      : 'An unresolved health hold blocks generated running and lifting. Fixed practices are only existing commitments, not advice to continue them.'] : []),
+    advisory
+      ? 'Unlogged prior sessions remain unlogged. Entered actuals and neighboring planned sessions inform training advice.'
+      : 'Unlogged prior sessions remain unlogged. Recovery uses entered completed/partial history; neighboring planned sessions retain conservative timing checks.',
   ] }
-  const revisions: CampaignRevision[] | undefined = revisionDraft
+  const revisions: CampaignRevision[] | undefined = inputRevision
     ? [...(state.revisions ?? [{ weekIndex: 0, draft: state.draft }]), { weekIndex: state.weeks.length, draft }]
     : state.revisions
   return { ...state, draft, selectedWeek: state.weeks.length, ...(revisions ? { revisions } : {}),
-    weeks: [...state.weeks, { input, plan, logs: {}, removed: [], changes: [{ id: `change-${input.weekIndex}-1`,
-      message: revisionDraft
+    weeks: [...state.weeks, { input, plan, logs: {}, removed: [], ...(authored ? { authored } : {}), changes: [{ id: `change-${input.weekIndex}-1`,
+      message: repeatApproved
+        ? 'Repeated the originally approved AI week for explicit review, without reducing quantities or calling AI. Earlier prescriptions, actuals and one-week changes remain unchanged.'
+        : advisory
+        ? 'Applied the reviewed AI week. Earlier prescriptions, actuals and reported health concerns remain unchanged.'
+        : revisionDraft
         ? 'Applied the reviewed exercise revision to this week. Earlier prescriptions and logs are unchanged; recovery, fatigue and health holds carry forward.'
         : 'Created the next week from the unchanged observed baseline, carried recovery/history, and conservative workload caps. Earlier weeks are preserved.' }] }] }
 }
@@ -602,9 +731,9 @@ export function nextCampaignWeek(state: CampaignState, revisionDraft?: CampaignD
 function strings(value: unknown, label: string, max = 1000): string[] {
   return array(value, label, max).map(item => text(item, label, 8000))
 }
-function validateSets(session: Session, log: SessionLog): void {
+function validateSets(session: Session, log: SessionLog, options: ValidationOptions = {}): void {
   if (log.blockLogs) {
-    validateBlockLogs(session, log)
+    validateBlockLogs(session, log, options)
   }
   if (!log.sets) return
   if (session.kind !== 'strength') fail('Non-strength sessions cannot contain set logs.')
@@ -621,10 +750,14 @@ function validateSets(session: Session, log: SessionLog): void {
 }
 
 function parseWeek(value: unknown): CampaignWeek {
-  const raw = object(value, 'Campaign week', ['input', 'plan', 'logs', 'removed', 'changes'])
-  const input = parsePlanWeekInput(raw.input)
-  equal(input.library, input.athlete.program ? resolveProgramLibrary(input.athlete.program) : libraryForVersion(input.library.version), 'Stored exercise library')
+  const candidate = object(value, 'Campaign week')
+  const raw = object(candidate, 'Campaign week', ['input', 'plan', 'logs', 'removed', 'changes', ...['authored', 'feedback', 'authoredHistory'].filter(key => Object.hasOwn(candidate, key))])
+  const options: ValidationOptions = Object.hasOwn(raw, 'authored') ? authoredPolicyOptions(object(raw.plan, 'Stored plan').policyVersion) : {}
+  const input = parsePlanWeekInputWithOptions(raw.input, options)
+  equal(input.library, input.athlete.program ? resolveProgramLibrary(input.athlete.program, options) : libraryForVersion(input.library.version), 'Stored exercise library')
   equal(input.athlete.calibration, { version: 1, costMultiplier: 1, observationCount: 0 }, 'Disabled calibration')
+  if (Object.hasOwn(raw, 'authored')) return parseAuthoredCalendar(raw, input)
+  if (Object.hasOwn(raw, 'authoredHistory')) fail('Authored prescription history requires an authored calendar.')
   const p = object(raw.plan, 'Stored plan', ['engineVersion', 'policyVersion', 'libraryVersion', 'weekIndex', 'weekStart', 'phase', 'intent', 'sessions', 'totalScore', 'penalties', 'warnings', 'omitted', 'feasibility', 'safety', 'audit'])
   const sessions = array(p.sessions, 'Scheduled sessions', 20).map(parseSession)
   const removed = array(raw.removed, 'Removed sessions', 20).map(parseSession)
@@ -739,12 +872,24 @@ function parseWeek(value: unknown): CampaignWeek {
     safety,
     audit: { candidatesScored, rejectedBySafety },
   }
-  return { input, plan, logs, removed, changes }
+  return { input, plan, logs, removed, changes, ...parseWeekFeedback(raw, logs) }
+}
+
+function parseWeekFeedback(raw: Record<string, unknown>, logs: Record<string, SessionLog>): Pick<CampaignWeek, 'feedback'> {
+  if (!Object.hasOwn(raw, 'feedback')) return {}
+  const feedback: NonNullable<CampaignWeek['feedback']> = {}
+  const records = object(raw.feedback, 'Session feedback')
+  if (Object.keys(records).length > 100) fail('Too many session feedback records.')
+  for (const [id, value] of Object.entries(records)) {
+    if (!Object.hasOwn(logs, id) || logs[id]?.status !== 'completed') fail('Feedback must reference an explicitly finished session.')
+    Object.defineProperty(feedback, id, { value: parseSessionFeedback(value), enumerable: true, configurable: true, writable: true })
+  }
+  return { feedback }
 }
 
 function parseSavedPlan(value: unknown): SavedPlan {
   const candidate = object(value, 'Campaign')
-  const raw = object(candidate, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts', ...['cards', 'revisions'].filter(key => Object.hasOwn(candidate, key))])
+  const raw = object(candidate, 'Campaign', ['version', 'step', 'setupComplete', 'sample', 'draft', 'weeks', 'selectedWeek', 'setDrafts', ...['cards', 'revisions', 'pendingWeek'].filter(key => Object.hasOwn(candidate, key))])
   if (raw.version !== 1) fail('Unsupported campaign version; saved data has not been replaced.')
   const setupComplete = boolean(raw.setupComplete, 'Setup complete')
   const draft = parseDraft(raw.draft, setupComplete)
@@ -762,22 +907,23 @@ function parseSavedPlan(value: unknown): SavedPlan {
     equal(draft, revisions.at(-1)!.draft, 'Latest reviewed setup')
   }
   if (setupComplete !== (weeks.length > 0)) fail('Saved setup status conflicts with the calendar.')
+  if (setupComplete && Object.hasOwn(raw, 'pendingWeek')) fail('A proposed week must be reviewed in a separate draft, not overwrite a saved week.')
   if (weeks.length) {
     const firstDraft = revisions?.[0]?.draft ?? draft
-    const initial = initialCampaignInput(firstDraft)
+    const initial = initialCampaignInput(firstDraft, policyForWeek(weeks[0]!))
     equal(weeks[0]!.input, initial, 'Initial confirmed planning input')
     let expected = initial.block
     let activeDraft = firstDraft
     for (const [index, week] of weeks.entries()) {
       const revision = revisions?.find(item => item.weekIndex === index && index > 0)
       if (revision) {
-        const input = revisedCampaignInput(weeks.slice(0, index), activeDraft, revision.draft)
+        const input = revisedCampaignInput(weeks.slice(0, index), activeDraft, revision.draft, policyForWeek(week))
         equal(week.input, input, 'Reviewed programming revision')
         expected = input.block
         activeDraft = revision.draft
-      } else if (index > 0) equal(week.input, nextCalendarInput(weeks.slice(0, index)), 'Next-week history and safety context')
+      } else if (index > 0) equal(week.input, nextCalendarInput(weeks.slice(0, index), policyForWeek(week)), 'Next-week history and safety context')
       if (week.input.weekIndex !== index || week.input.block.id !== expected.id) fail('Stored campaign weeks are missing, duplicated or belong to another goal.')
-      equal(week.input.athlete.baseline, baselineForDraft(activeDraft).baseline, 'Confirmed baseline')
+      equal(week.input.athlete.baseline, baselineForDraft(activeDraft, policyForWeek(week)).baseline, 'Confirmed baseline')
       equal(week.input.block.goal, expected.goal, 'Confirmed goal')
       equal(week.input.block.anchors, expected.anchors, 'Confirmed exercise anchors')
     }
@@ -795,6 +941,7 @@ function parseSavedPlan(value: unknown): SavedPlan {
     selectedWeek: number(raw.selectedWeek, 'Selected week', 0, Math.max(0, weeks.length - 1), true), setDrafts,
     ...(Object.hasOwn(raw, 'cards') ? { cards: parseWorkoutCards(raw.cards, draft.program) } : {}),
     ...(revisions ? { revisions } : {}),
+    ...(Object.hasOwn(raw, 'pendingWeek') ? { pendingWeek: parseAuthoredWeekProposal(raw.pendingWeek, AI_PLANNING_OPTIONS) } : {}),
   }
 }
 

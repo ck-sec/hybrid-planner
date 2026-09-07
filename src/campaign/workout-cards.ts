@@ -5,6 +5,7 @@ import {
   MAX_RESOURCES, RESOURCE_CATALOG, equipmentAvailable, exerciseAvailable, parseResources, programResourcesForResources,
 } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
+import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
 
 export interface WorkoutCard {
   id: string
@@ -55,8 +56,8 @@ const GENERIC_CARD_EXERCISES = Object.freeze(WORKOUT_CARD_EXERCISES.filter(item 
 
 /** Includes unavailable historical definitions so their saved links stay readable. */
 export function workoutCardCatalog(program?: ProgramConfigV1): readonly WorkoutCardCatalogItem[] {
-  const library = resolveProgramLibrary(program)
-  if (library === DEFAULT_LIBRARY) {
+  const library = resolveProgramLibrary(program, AI_PLANNING_OPTIONS)
+  if (library === DEFAULT_LIBRARY && !program?.customSportDrills?.length) {
     return program?.goal === 'dodgeball' ? WORKOUT_CARD_EXERCISES : GENERIC_CARD_EXERCISES
   }
   return Object.freeze([
@@ -67,6 +68,10 @@ export function workoutCardCatalog(program?: ProgramConfigV1): readonly WorkoutC
         requirements: Object.freeze([...(exercise.requirements ?? [])]),
       })),
     ...(program?.goal === 'dodgeball' ? WORKOUT_CARD_EXERCISES.filter(item => item.kind === 'sport_drill') : []),
+    ...(program?.customSportDrills ?? []).map(drill => Object.freeze({
+      id: drill.id, name: drill.name, kind: 'sport_drill' as const,
+      requirements: Object.freeze([...drill.requirements]),
+    })),
   ])
 }
 

@@ -1,6 +1,10 @@
 import type { Day, Equipment, ExerciseObservation, PlanWeekInput, ProgramConfigV1, Quality, Session, SessionLog, WeekPlan } from '../../engine/types.ts'
 import type { ResourceId } from './equipment.ts'
 import type { WorkoutCard } from './workout-cards.ts'
+import type { TrainingPreferences, CurrentTraining } from './training-baseline.ts'
+import type { TrainingHistory } from './garmin-import.ts'
+import type { SessionFeedback } from './training-feedback.ts'
+import type { AuthoredWeekProposal } from '../../engine/authored-week.ts'
 
 export type GoalKind = 'dodgeball' | 'running' | 'hybrid' | 'custom'
 export interface RecommendedSetup {
@@ -22,6 +26,7 @@ export interface CampaignDraft {
   practiceDays: Day[]
   practiceTime: string
   practiceDuration: number
+  practiceProfile?: 'controlled_target_throw'
   weeklyRunMinutes: number
   runsPerWeek: number
   liftsPerWeek: number
@@ -33,6 +38,9 @@ export interface CampaignDraft {
   exercises: ExerciseObservation[]
   confirmed: boolean
   recommendedSetup?: RecommendedSetup
+  trainingPreferences?: TrainingPreferences
+  currentTraining?: CurrentTraining
+  trainingHistory?: TrainingHistory
 }
 
 export interface CalendarChange {
@@ -46,6 +54,9 @@ export interface CampaignWeek {
   logs: Record<string, SessionLog>
   removed: Session[]
   changes: CalendarChange[]
+  authored?: AuthoredWeekProposal
+  feedback?: Record<string, SessionFeedback>
+  authoredHistory?: Array<{ proposal: AuthoredWeekProposal; reason: string }>
 }
 
 export interface CampaignRevision {
@@ -70,6 +81,7 @@ export interface SavedPlan {
   setDrafts: Record<string, SetDraft>
   cards?: WorkoutCard[]
   revisions?: CampaignRevision[]
+  pendingWeek?: AuthoredWeekProposal
 }
 
 export interface CampaignState extends SavedPlan {

@@ -39,6 +39,63 @@ function customProgram(): ProgramConfigV1 {
   }
 }
 
+function throwingProgram(): ProgramConfigV1 {
+  return {
+    version: 1, libraryVersion: PROGRAM_LIBRARY_VERSION, goal: 'dodgeball',
+    resources: ['bodyweight', 'floor_space', 'dodgeball', 'court_space', 'safe_target'], conditioningBaselines: [],
+    customSportDrills: [{
+      version: 1, id: 'custom-standing-target', name: 'My standing target throw', profileId: 'controlled_target_throw',
+      requirements: ['dodgeball', 'court_space', 'safe_target'], description: 'A confirmed familiar throwing drill.',
+      focus: 'Aim at the established target.', why: 'Controlled technique within practice.',
+    }],
+  }
+}
+
+test('saved custom throwing identities remain linkable without extending the exercise library or prescribing throws', () => {
+  const program = throwingProgram()
+  const before = structuredClone(program)
+  const linked = card({ exerciseId: 'custom-standing-target', title: 'My target setup' })
+  const catalog = workoutCardCatalog(program)
+  const entry = catalog.find(item => item.id === linked.exerciseId)!
+  assert.deepEqual(entry, {
+    id: linked.exerciseId, name: 'My standing target throw', kind: 'sport_drill',
+    requirements: ['dodgeball', 'court_space', 'safe_target'],
+  })
+  assert.ok(Object.isFrozen(catalog))
+  assert.ok(Object.isFrozen(entry))
+  assert.ok(Object.isFrozen(entry.requirements))
+  assert.equal(DEFAULT_LIBRARY.exercises.some(item => item.id === linked.exerciseId), false)
+  assert.deepEqual(parseWorkoutCards([linked], program), [linked])
+  const saved = saveWorkoutCard([], linked, null, program)
+  const edited = saveWorkoutCard(saved, { ...linked, cues: 'Keep the saved setup.' }, linked, program)
+  assert.equal(edited[0].exerciseId, linked.exerciseId)
+  const other = card({ id: 'other-note' })
+  assert.equal(moveWorkoutCard([...edited, other], linked.id, 1, program)[1].exerciseId, linked.exerciseId)
+  assert.throws(() => parseWorkoutCards([{ ...linked, throws: 20 }], program), /extra fields/)
+  assert.deepEqual(program, before)
+})
+
+test('custom throwing links need approved definitions while historical missing equipment stays visible', () => {
+  const program = throwingProgram()
+  const linked = card({ exerciseId: 'custom-standing-target' })
+  for (const missing of [undefined, { ...program, customSportDrills: [] }]) {
+    assert.throws(() => parseWorkoutCards([linked], missing), /supported/)
+    assert.equal(workoutCardAvailable(linked.exerciseId!, ['dodgeballs', 'court', 'safe_target'], missing), false)
+  }
+  assert.throws(() => workoutCardCatalog({
+    ...program, customSportDrills: [{ ...program.customSportDrills![0], profileId: 'unreviewed_ballistic_throw' }],
+  } as never), /profileId/)
+  assert.equal(workoutCardAvailable(linked.exerciseId!, ['dodgeballs', 'court', 'safe_target'], program), true)
+  const historical: ProgramConfigV1 = { ...program, goal: 'balanced', resources: ['bodyweight', 'floor_space'] }
+  assert.equal(workoutCardCatalog(historical).find(item => item.id === linked.exerciseId)?.name, 'My standing target throw')
+  assert.deepEqual(parseWorkoutCards([linked], historical), [linked])
+  assert.equal(workoutCardAvailable(linked.exerciseId!, ['dodgeballs', 'court', 'safe_target'], historical), false)
+  assert.deepEqual(workoutCardMissingResources(linked, [], historical), ['court', 'dodgeballs', 'safe_target'])
+  const both = { ...customProgram(), customSportDrills: program.customSportDrills }
+  assert.ok(workoutCardCatalog(both).some(item => item.id === 'custom-supported-handle-row'))
+  assert.ok(workoutCardCatalog(both).some(item => item.id === linked.exerciseId))
+})
+
 test('approved custom exercise links round-trip, save edits, and reorder without becoming unlinked notes', () => {
   const program = customProgram()
   const linked = card({ exerciseId: 'custom-supported-handle-row', resources: ['custom:rowing-handles'] })
@@ -336,17 +393,28 @@ test('native notebook renders identity and provenance separately without form or
     await t.test('custom title cannot replace the canonical exercise identity', () => {
       const html = render([card({ title: 'My custom nickname' })])
       assert.match(html, /My custom nickname/)
-      assert.match(html, /Catalog exercise/)
+      assert.match(html, /Exercise: /)
       assert.match(html, /Bodyweight squat/)
       assert.match(html, /User/)
       assert.match(html, /Draft/)
-      assert.match(html, /not engine-approved instructions/)
+      assert.match(html, /Reference only/)
       assert.match(html, /do not add work/)
       assert.match(html, /Edit/)
       assert.match(html, /Delete/)
-      assert.match(html, /Add reference note/)
+      assert.match(html, /Add note/)
+      assert.match(html, /<details class="cf-notebook-text"><summary aria-label="Manage My custom nickname">Manage note<\/summary>/)
+      assert.doesNotMatch(html, /<details[^>]*\bopen=/)
       assert.doesNotMatch(html, /<form|<input|<textarea|<select|dangerouslySetInnerHTML/)
       for (const button of html.matchAll(/<button\b[^>]*>/g)) assert.match(button[0], /type="button"/)
+    })
+    await t.test('saved custom throwing notes show their canonical identity without adding a workout', () => {
+      const program = throwingProgram()
+      const linked = card({ exerciseId: 'custom-standing-target', title: 'My target setup' })
+      const html = render([linked], { exerciseId: linked.exerciseId!, program, resources: ['dodgeballs', 'court', 'safe_target'], readOnly: true })
+      assert.match(html, /My standing target throw/)
+      assert.match(html, /My target setup/)
+      assert.match(html, /do not add work/)
+      assert.doesNotMatch(html, /Unscheduled drill idea|Unavailable for use|<button|<input|<select/)
     })
     await t.test('AI reference claims are rendered as drafts and sport ideas remain unscheduled', () => {
       const html = render([card({ exerciseId: null, title: 'Target-lane throwing', source: 'ai', status: 'reference' })])
@@ -386,7 +454,7 @@ test('native notebook renders identity and provenance separately without form or
       assert.match(html, /Fast-intent DB bench press/)
       assert.match(html, /Unavailable for use/)
       assert.match(html, /Missing: Bench, Cones/)
-      assert.match(html, /keep and edit this as a draft/)
+      assert.match(html, /Kept as a draft/)
       assert.match(html, /Edit/)
       assert.doesNotMatch(html, /Use note|Use drill|Add to plan/)
       assert.doesNotMatch(render([note], { resources: ['dumbbell', 'bench', 'rower', 'cones'] }), /Unavailable for use/)
@@ -397,8 +465,8 @@ test('native notebook renders identity and provenance separately without form or
       const program = customProgram()
       const note = card({ exerciseId: 'custom-supported-handle-row', title: 'My own setup' })
       const html = render([note], { program, resources: ['floor_space', 'custom:rowing-handles'], exerciseId: note.exerciseId! })
-      assert.match(html, /Showing notes linked to Supported handle row/)
-      assert.match(html, /Catalog exercise: .*Supported handle row/)
+      assert.match(html, /Notes for Supported handle row/)
+      assert.match(html, /Exercise: .*Supported handle row/)
       assert.match(html, /My own setup/)
       assert.doesNotMatch(html, /Unavailable for use|Unscheduled drill idea/)
       const edited = saveWorkoutCard([note], { ...note, instructions: 'My saved setup detail.' }, note, program)

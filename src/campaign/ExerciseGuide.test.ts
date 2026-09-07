@@ -34,6 +34,7 @@ test('exercise guidance works offline and distinguishes explanation from prescri
       },
     }))
     assert.match(html, /<details/)
+    assert.match(html, /<summary aria-label="A supported squat variant: exercise guide">Exercise guide<\/summary>/)
     assert.match(html, /Description/)
     assert.match(html, /What to focus on/)
     assert.match(html, /Why this exercise/)
@@ -61,7 +62,7 @@ test('exercise guidance works offline and distinguishes explanation from prescri
       assert.doesNotMatch(weightInput[1]!, /required|disabled/)
       assert.match(weightInput[1]!, /value="12"/)
       assert.match(editable, /Actual total seconds across all bouts/)
-      assert.match(editable, /Seconds are not repetitions/)
+      assert.match(editable, /Actual total seconds across all bouts<input[^>]*value="20"/)
       assert.match(editable, /What to focus on/)
       const archived = render(true)
       assert.match(archived, /Controlled carry/)
@@ -76,7 +77,8 @@ test('exercise guidance works offline and distinguishes explanation from prescri
         })
       }
       const overruns = render(false)
-      assert.match(overruns, /Record an extra set already performed/)
+      assert.match(overruns, /Record extra actual set/)
+      assert.match(overruns, /extra set already performed, not prescribed/)
       assert.match(overruns, /role="status"/)
       const exercise = state.weeks[0]!.input.library.exercises.find(item => item.id === reps.exerciseId)!
       assert.ok(overruns.includes(`${exercise.name} set ${reps.sets + 1} kilograms`))

@@ -1,6 +1,13 @@
 .cf-lean-onboarding .cf-step-progress { grid-template-columns: repeat(3, 1fr); }
 .cf-lean-onboarding .cf-goal-prompt textarea { min-height: 112px; }
 .cf-onboarding-routine { display: grid; gap: 18px; }
+.cf-preference-slider { display: grid; gap: 8px; }
+.cf-preference-slider > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.cf-preference-slider label { font-size: 14px; }
+.cf-preference-slider output { flex-shrink: 0; color: var(--cf-lapis); font-weight: 700; font-variant-numeric: tabular-nums; }
+.cf-preference-slider input[type="range"] { width: 100%; min-height: 44px; margin: 0; padding: 0; accent-color: var(--cf-lapis); cursor: pointer; }
+.cf-preference-slider input[type="range"]:focus-visible { outline: 2px solid var(--cf-lapis); outline-offset: 3px; border-radius: 4px; }
+.cf-preference-total { margin: 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--cf-lapis); }
 .cf-onboarding-review { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--cf-line, #d5d8df); border-radius: 12px; }
 .cf-onboarding-review p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
 .cf-onboarding-review h2 { overflow-wrap: anywhere; }

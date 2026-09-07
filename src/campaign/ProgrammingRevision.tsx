@@ -8,7 +8,7 @@ import type { AssistantConfig } from './assistant.ts'
 import { applyHandoff } from './handoff.ts'
 import { equipmentForResources, programResources, resourcesForEquipment } from './equipment.ts'
 import type { ResourceId } from './equipment.ts'
-import { confirmSetupEquipment, nextCampaignWeek, normalizeRecommendedDraft, stable, workoutContent } from './model.ts'
+import { confirmSetupEquipment, nextCampaignWeek, normalizeRecommendedDraft, stable } from './model.ts'
 import type { CampaignDraft, CampaignState } from './types.ts'
 import { programmingChoices, selectProgramExercises } from './programming.ts'
 import { ProgrammingChoice, PracticeBlockOptions } from './ProgrammingOptions.tsx'
@@ -16,6 +16,10 @@ import EquipmentPicker from './EquipmentPicker.tsx'
 import ExercisePoolEditor from './ExercisePoolEditor.tsx'
 import CoachingWorkbench from './CoachingWorkbench.tsx'
 import { parseWorkoutCards } from './workout-cards.ts'
+import { addDays } from '../../engine/dates.ts'
+import { DayPicker } from './components.tsx'
+import WeekPlanPreview from './WeekPlanPreview.tsx'
+import { AI_PLANNING_OPTIONS, policyForWeek } from './authored-policy.ts'
 
 function sourceKey(state: CampaignState): string {
   return stable([state.draft, state.weeks, state.revisions, state.cards])
@@ -40,11 +44,11 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
   const changed = sourceKey(state) !== original
   const draft = working.draft
   const weekReview = buildWeekReview(state)
-  const scope = { purpose: 'suggest_exercises' as const, weekReview }
+  const scope = { purpose: 'suggest_exercises' as const, weekReview, nextWeekStart: addDays(state.draft.startDate, state.weeks.length * 7) }
   const updateDraft = (next: CampaignDraft) => {
     try {
       const normalized = normalizeRecommendedDraft(next)
-      setWorking(previous => ({ ...previous, draft: normalized })); setPreview(null); setIssue(''); return true
+      setWorking(previous => { const next = { ...previous, draft: normalized }; delete next.pendingWeek; return next }); setPreview(null); setIssue(''); return true
     } catch (error) { setIssue(error instanceof Error ? error.message : 'The draft revision could not be changed.'); return false }
   }
   const equipment = (resources: ResourceId[]) => {
@@ -53,7 +57,7 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
       if (!draft.program) { updateDraft(next); return }
       const allowed = new Set(programmingChoices(next).map(item => item.exercise.id))
       const kept = draft.recommendedSetup!.exerciseIds.filter(id => allowed.has(id))
-      const ids = kept.length >= PROGRAM_POLICY.minSelectedExercises ? kept : recommendProgram(programResources(resources), draft.program.goal, resolveProgramLibrary(draft.program)).exerciseIds
+      const ids = kept.length >= PROGRAM_POLICY.minSelectedExercises ? kept : recommendProgram(programResources(resources), draft.program.goal, resolveProgramLibrary(draft.program, AI_PLANNING_OPTIONS)).exerciseIds
       updateDraft(selectProgramExercises(next, ids))
     } catch (error) { setIssue(error instanceof Error ? error.message : 'The equipment revision could not be applied.') }
   }
@@ -73,22 +77,25 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
     }} onClose={() => setShowAI(false)} />
 
   return <section className="cf-stack">
-    <div><p className="cf-kicker">ONE WEEK AT A TIME</p><h2>Review this week. Shape the next.</h2></div>
-    <p className="cf-small">Recorded work stays unchanged. Recovery, fatigue reductions and health holds carry forward. No catch-up work or borrowed weights.</p>
+    <h2>Review next week</h2>
+    <p className="cf-small">Your recorded work, baseline and health holds carry forward. Changes apply only to next week.</p>
+    {policyForWeek(state.weeks.at(-1)!).policy === 'ai-advisory' && !working.pendingWeek && <p role="status">No new AI reply needed: preview repeats your originally approved weekly pattern, not the built-in plan. One-week skips, moves and swaps do not change that template. Review before approving; you can edit the new week locally afterward.</p>}
     {weekReview && <div className="cf-card cf-stack">
       <h3>This week's record</h3>
-      <p>{weekReview.counts.completed} completed · {weekReview.counts.partial} in progress · {weekReview.counts.skipped} skipped · {weekReview.counts.unlogged} unlogged</p>
+      <p>{weekReview.counts.completed} completed · {weekReview.counts.finishedEarly} stopped early · {weekReview.counts.partial} in progress · {weekReview.counts.skipped} skipped · {weekReview.counts.unlogged} unlogged</p>
       {(weekReview.counts.removed > 0 || weekReview.counts.omitted > 0) && <p className="cf-small">{weekReview.counts.removed} removed · {weekReview.counts.omitted} omitted by the engine</p>}
-      <p className="cf-small">Unlogged work stays unknown, not completed. Finish recording before continuing; this week then becomes read-only.</p>
-      {weekReview.counts.partial > 0 && <p role="status">Finish each in-progress session before building the next week.</p>}
+      <p className="cf-small">Finish recording this week before approving the next. Unlogged work stays unknown.</p>
+      {weekReview.counts.partial > 0 && <p role="status">Finish each in-progress workout before previewing next week.</p>}
       <details className="cf-details"><summary>Review individual records</summary>{weekReview.sessions.map(session => <p key={session.id} className="cf-small">
-        {session.date}: {session.label ?? session.kind} — {session.status}{session.skipReason ? ` (${session.skipReason === 'too_tired' ? 'fatigue' : 'time'})` : ''}
+        {session.date}: {session.label ?? session.kind} — {session.status === 'finished_early' ? 'stopped early' : session.status}{session.skipReason ? ` (${session.skipReason === 'too_tired' ? 'fatigue' : 'time'})` : ''}
         {session.actualDurationMin !== null && ` · ${session.actualDurationMin} actual minutes`}
       </p>)}</details>
     </div>}
-    {changed && <p role="alert" className="cf-error">The campaign changed while this revision was open. Close and reopen it before applying anything.</p>}
-    {reviewSummary && <div className="cf-card"><h3>AI notes from your review</h3><p>{reviewSummary}</p><p className="cf-small">Unverified context. Your final selection and all engine guardrails still apply.</p></div>}
-    <details className="cf-details"><summary>Equipment for the revision</summary><EquipmentPicker value={draft.resources ?? resourcesForEquipment(draft.equipment)} onChange={equipment} /></details>
+    {changed && <p role="alert" className="cf-error">Your plan changed during this review. Close and reopen it before approving.</p>}
+    {reviewSummary && <details className="cf-details"><summary>AI review notes</summary><p>{reviewSummary}</p><p className="cf-small">Unverified notes; app checks still apply.</p></details>}
+    <details className="cf-details"><summary>Next week's equipment</summary><EquipmentPicker value={draft.resources ?? resourcesForEquipment(draft.equipment)} onChange={equipment} /></details>
+    <details className="cf-details"><summary>Next week's availability</summary><DayPicker label="Days available next week" value={draft.availableDays} onChange={availableDays => updateDraft({ ...draft, availableDays })} /></details>
+    {working.pendingWeek && <p role="status">A proposed week is ready to preview.</p>}
     <details className="cf-details"><summary>Adjust next week's exercises</summary><div className="cf-stack">
       <ProgrammingChoice draft={draft} onChange={updateDraft} />
       {draft.program && <>
@@ -106,11 +113,11 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
       <PracticeBlockOptions draft={draft} onChange={updateDraft} />
       </>}
     </div></details>
-      <button type="button" className="cf-button cf-secondary" disabled={changed} onClick={() => setShowAI(true)}>Review with my AI</button>
+      <button type="button" className="cf-text-button" disabled={changed} onClick={() => setShowAI(true)}>Review with AI (optional)</button>
       <button type="button" className="cf-button cf-primary" disabled={changed} onClick={() => {
         try {
           const confirmedDraft = normalizeRecommendedDraft({ ...draft, confirmed: true })
-          const next = nextCampaignWeek(state, stable(confirmedDraft) === stable(state.draft) ? undefined : confirmedDraft)
+          const next = nextCampaignWeek(state, stable(confirmedDraft) === stable(state.draft) ? undefined : confirmedDraft, working.pendingWeek)
           if (reviewSummary) {
             const nextWeek = next.weeks.at(-1)!
             nextWeek.changes = [...nextWeek.changes, {
@@ -123,14 +130,10 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
         } catch (error) { setIssue(error instanceof Error ? error.message : 'The revised week could not be generated.'); setPreview(null) }
       }}>Preview next week</button>
     {preview && <div className="cf-card cf-stack">
-      <h3>Review before committing</h3>
-      <p>Only week {preview.selectedWeek + 1} uses this revision. Earlier prescriptions and logs are preserved.</p>
-      {preview.weeks.at(-1)!.plan.sessions.map(session => <div key={session.id}><strong>{workoutContent(preview, session).title}</strong><p className="cf-small">{session.date} · {session.durationMin} min</p>
-        {session.kind === 'workout' && <ul className="cf-small">{session.blocks.map((block, index) => <li key={index}>{block.unit === 'throws' ? `${block.throws} throws within practice` : `${preview.weeks.at(-1)!.input.library.exercises.find(item => item.id === block.exerciseId)?.name}: ${block.sets} x ${block.unit === 'reps' ? `${block.reps} reps at RPE ${block.targetRPE}` : `${block.seconds} seconds`}`}</li>)}</ul>}
-      </div>)}
-      {preview.weeks.at(-1)!.plan.omitted.map(item => <p role="status" className="cf-error" key={item.sessionId}>{item.reason}</p>)}
-      <details className="cf-details"><summary>Engine checks and assumptions</summary>{preview.weeks.at(-1)!.plan.warnings.map((warning, index) => <p key={index} className="cf-small">{warning}</p>)}</details>
-      <button type="button" className="cf-button cf-primary" disabled={changed} onClick={() => { if (onApply(preview)) onClose() }}>Use this next week</button>
+      <h3>Week {preview.selectedWeek + 1} preview</h3>
+      <p>Approving makes the previous week read-only. Its planned and recorded work stays unchanged.</p>
+      <WeekPlanPreview plan={preview.weeks.at(-1)!.plan} library={preview.weeks.at(-1)!.input.library} program={preview.weeks.at(-1)!.input.athlete.program} />
+      <button type="button" className="cf-button cf-primary" disabled={changed} onClick={() => { if (onApply(preview)) onClose() }}>Approve next week</button>
     </div>}
     {issue && <p role="alert" className="cf-error">{issue}</p>}
     <button type="button" className="cf-text-button" onClick={onClose}>Back to my week</button>

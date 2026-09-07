@@ -24,7 +24,7 @@ export const marketingGuides: MarketingGuide[] = [
     slug: "hybrid-training-plan",
     title: "How to build a hybrid training plan",
     description:
-      "Choose your priority, start from your actual training, and give running and lifting a realistic place in your week, with evidence and illustrative examples.",
+      "Set priorities and fit running, lifting and other sports around your current training.",
     category: "Planning foundations",
     intro: [
       "A hybrid training plan brings endurance and strength work into the same overall routine. Researchers usually call this concurrent training. You do not need to race, lift competitively, or split your time equally between the two to use the idea.",
@@ -82,7 +82,7 @@ export const marketingGuides: MarketingGuide[] = [
         heading: "Use the planner for organization, not physiological certainty",
         paragraphs: [
           "Hybrid Coach is a free, MIT-licensed, local-first planner: a static browser app storing training data in IndexedDB, with no accounts or tracking. Setup uses your observed starting point and clearly identified recommended exercises. Log the weights you actually use per set; the app does not automatically increase them.",
-          "Optional, user-connected AI can interpret goals and propose compatible exercises. It never sets loads, repetitions, durations, or scheduling. A deterministic engine applies the prescriptions and an independent, rule-based safety floor. Those limits are product policies, not a validated model of your readiness or a promise to prevent injury. The planner supports an established routine; it does not guarantee results or replace individual coaching.",
+          "Optional AI can propose a complete week. You and your AI choose training frequency, rest and progression; the app surfaces training concerns as advice and checks data, equipment and recorded-work integrity. You review and approve the week. Initial weights are not guessed. The built-in route remains conservative. Neither route measures readiness, guarantees results or replaces individual coaching.",
         ],
       },
     ],
@@ -103,7 +103,7 @@ export const marketingGuides: MarketingGuide[] = [
     slug: "running-and-lifting-same-day",
     title: "Running and lifting on the same day",
     description:
-      "Understand when to run or lift first, what research says about separating sessions, and how to judge a same-day arrangement without rigid timing rules.",
+      "Choose which session comes first and when to separate running and lifting.",
     category: "Session scheduling",
     intro: [
       "Running and lifting on the same day can be a practical way to fit both into your life. It does not automatically cancel the benefits of either activity. But doing a run immediately before lifting is a different arrangement from running in the morning and lifting later.",
@@ -176,7 +176,7 @@ export const marketingGuides: MarketingGuide[] = [
     slug: "hybrid-training-busy-schedule",
     title: "Hybrid training around a busy schedule",
     description:
-      "Build running and lifting around fixed commitments, distinguish missed time from fatigue, and keep rest in the plan without accumulating catch-up work.",
+      "Plan around fixed commitments, missed sessions and rest, without catch-up work.",
     category: "Training around life",
     intro: [
       "A busy week needs decisions about what will not happen, not just a more tightly packed calendar. Work, caring responsibilities, travel, and sport all compete with running and lifting. A plan that ignores them is already asking you to improvise.",
@@ -229,7 +229,7 @@ export const marketingGuides: MarketingGuide[] = [
         heading: "Review the constraints, not your willpower",
         paragraphs: [
           "At the end of the week, ask which openings were reliable, which sessions took longer than expected, and why work was skipped. Repeated time conflicts suggest revising availability. Repeated fatigue-related changes suggest reconsidering demands, not just finding a more persuasive reminder. Change the next plan using those distinctions rather than drawing conclusions from a completion percentage.",
-          "Use the planner to keep a clear record of what actually happened. Weights are logged per set; planned values are not completed work. Activity-file and Garmin imports are not implemented, so do not assume a watch has filled in missing sessions. Training data stays in your browser's IndexedDB, with no account or tracking. The useful output is an honest, workable record, not a guarantee that the engine has optimized your biology.",
+          "Use the planner to keep a clear record of what actually happened. Weights are logged per set; planned values are not completed work. You can review Garmin activity-summary CSV exports locally. They do not confirm your current training or mark planned sessions complete; FIT and Apple Health imports are not supported. Training records are saved in your browser's IndexedDB, with no account or tracking. The useful output is an honest, workable record, not a guarantee that the engine has optimized your biology.",
         ],
       },
     ],

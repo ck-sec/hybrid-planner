@@ -7,7 +7,8 @@ import {
 import { dayNumber, dayOfWeek, parseISODate } from './dates.ts'
 import type { AnchorAssignment, AthleteState, Block, ExerciseLibrary, Goal, Phase, PhaseKind, TargetRPE } from './types.ts'
 import { recommendProgram } from './program.ts'
-import { InputError, parseAthlete, parseGoal, parseLibrary } from './validation.ts'
+import { InputError, parseAthleteWithOptions, parseGoal, parseLibrary } from './validation.ts'
+import type { ValidationOptions } from './validation.ts'
 
 function identifier(text: string): string {
   let hash = 2166136261
@@ -18,15 +19,20 @@ function identifier(text: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
+/** Advisory opt-in changes fact parsing only; templates remain the legacy scaffold, not an AI week. */
 export function generateBlock(
   rawAthlete: AthleteState,
   rawGoal: Goal,
   startDate: string,
   rawLibrary: ExerciseLibrary,
+  options: ValidationOptions = {},
 ): Block {
-  const athlete = parseAthlete(rawAthlete)
+  const athlete = parseAthleteWithOptions(rawAthlete, options)
+  if (options.policy === 'ai-advisory' && !athlete.program) {
+    throw new InputError(['Advisory block scaffolding requires an opt-in program; legacy generation is unchanged.'])
+  }
   const goal = parseGoal(rawGoal)
-  const library = parseLibrary(rawLibrary, athlete.program)
+  const library = parseLibrary(rawLibrary, athlete.program, options)
   parseISODate(startDate)
   if (dayOfWeek(startDate) !== 0) throw new InputError(['Blocks must begin on a Monday (day 0).'])
   if (dayNumber(athlete.baseline.asOf) > dayNumber(startDate)) throw new InputError(['The baseline cannot be observed after the block begins.'])

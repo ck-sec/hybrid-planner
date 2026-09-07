@@ -1,39 +1,66 @@
-import type { CustomExerciseSpec, Session } from '../../engine/types.ts'
+import type { CustomExerciseSpec, CustomSportDrillSpec, Session } from '../../engine/types.ts'
+import { parseAuthoredWeekProposal } from '../../engine/authored-week.ts'
+import type { AuthoredWeekProposal } from '../../engine/authored-week.ts'
 import { AssistantError, requestAssistantJson } from './assistant.ts'
 import type { AssistantConfig } from './assistant.ts'
 import { equipmentForResources, resourcesForEquipment, resourceLabels } from './equipment.ts'
-import { parseCampaign, stable } from './model.ts'
+import { normalizeRecommendedDraft, parseCampaign, stable } from './model.ts'
 import { applySetupProposal } from './setup-proposal.ts'
 import { buildGoalProposalRequest, buildSetupAssistantContext, maxProposedExercises, minProposedExercises, parseGoalProposalForReview } from './setup-assistant.ts'
 import type { GoalDateIssue, GoalProposal, GoalProposalPurpose } from './setup-assistant.ts'
 import type { CampaignDraft, CampaignState } from './types.ts'
 import { parseWorkoutCards } from './workout-cards.ts'
 import type { WorkoutCard } from './workout-cards.ts'
-import { assertReferenceCardText, MAX_PROPOSED_CUSTOM_EXERCISES, stageCustomExercises } from './custom-exercises.ts'
+import { assertNonPrescriptiveText, assertReferenceCardText, customSportDrillCatalog, MAX_PROPOSED_CUSTOM_EXERCISES, stageCustomExercises, stageCustomSportDrills } from './custom-exercises.ts'
 import type { WeekReview } from './week-review.ts'
+import { assertCurrentTrainingDate, parseCurrentTraining } from './training-baseline.ts'
+import type { CurrentTraining } from './training-baseline.ts'
+import { buildFullWeekHandoff, handoffWeekStart } from './full-week-handoff.ts'
+import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
 
 export const HANDOFF_LIMIT = 32_768
+export const FULL_WEEK_HANDOFF_LIMIT = 131_072
 export const HANDOFF_COMPLETION_TOKENS = 6_144
 export const MAX_HANDOFF_SUMMARY_LENGTH = 1_200
-/** Canonical review representation; compatible version 1 wire replies normalize to version 2. */
-export interface HandoffReply {
+interface HandoffReplyBase {
   format: 'hybrid-coach-reply'
-  version: 2
   contextId: string
   proposal: GoalProposal | null
   summary: string
   customExercises: CustomExerciseSpec[]
   cards: WorkoutCard[]
 }
+/** Compatible version 1 wire replies still normalize to version 2. */
+export interface LegacyHandoffReply extends HandoffReplyBase {
+  version: 2
+}
+export interface FullWeekHandoffReply extends HandoffReplyBase {
+  version: 3
+  customSportDrills: CustomSportDrillSpec[]
+  currentTraining: CurrentTraining | null
+  week: AuthoredWeekProposal | null
+}
+export type HandoffReply = LegacyHandoffReply | FullWeekHandoffReply
 export interface HandoffReview {
   reply: HandoffReply
   dateIssue: GoalDateIssue | null
   summaryShortened?: boolean
+  currentTrainingAcknowledged?: boolean
+  customSportDrillsAcknowledged?: boolean
+  includeTrainingHistory?: boolean
+  reviewedReplyId?: string
 }
 export interface HandoffScope {
   purpose: GoalProposalPurpose
   sessionId?: string
   weekReview?: WeekReview
+  nextWeekStart?: string
+  includeTrainingHistory?: boolean
+}
+
+export function supportsFullWeekHandoff(state: CampaignState, scope: HandoffScope): boolean {
+  return !state.setupComplete && state.weeks.length === 0
+    && (state.draft.trainingPreferences !== undefined || scope.weekReview !== undefined)
 }
 
 function proposalDraft(state: CampaignState): CampaignDraft {
@@ -83,10 +110,14 @@ export function buildHandoff(state: CampaignState, scope: HandoffScope, request 
   if (scope.sessionId && !week?.plan.sessions.some(session => session.id === scope.sessionId)) {
     throw new AssistantError('This session is no longer in the selected calendar. Open a current session.')
   }
+  const contextScope = { ...scope }
+  if (supportsFullWeekHandoff(state, scope) && !contextScope.includeTrainingHistory) delete contextScope.includeTrainingHistory
   const contextId = fingerprint([
-    state.draft, state.cards ?? [], state.weeks, state.selectedWeek, state.setupComplete, scope,
+    state.draft, state.cards ?? [], state.weeks, state.selectedWeek, state.setupComplete, contextScope,
     ...(state.revisions === undefined ? [] : [state.revisions]),
+    ...(supportsFullWeekHandoff(state, scope) ? [state.pendingWeek ?? null, request.trim()] : []),
   ])
+  if (supportsFullWeekHandoff(state, scope)) return buildFullWeekHandoff(state, draft, scope, contextId, base)
   const context = {
     ...base,
     resources,
@@ -104,7 +135,7 @@ export function buildHandoff(state: CampaignState, scope: HandoffScope, request 
     cards: state.cards ?? [],
     ...(scope.weekReview === undefined ? {} : { weekReview: structuredClone(scope.weekReview) }),
   }
-  const example: HandoffReply = {
+  const example: LegacyHandoffReply = {
     format: 'hybrid-coach-reply', version: 2, contextId,
     proposal: context.planLocked ? null : {
       goalKind: draft.goalKind === 'dodgeball' ? 'custom' : draft.goalKind, label: draft.goalLabel || 'My sporting goal', location: draft.location,
@@ -205,37 +236,54 @@ function rejectRepeatedKeys(content: string): void {
 }
 
 export function parseHandoffReply(content: string, state: CampaignState, scope: HandoffScope, request = ''): HandoffReview {
-  if (typeof content !== 'string' || new TextEncoder().encode(content).length > HANDOFF_LIMIT) {
-    throw new AssistantError('Choose a coaching reply smaller than 32 KB.')
+  const limit = supportsFullWeekHandoff(state, scope) ? FULL_WEEK_HANDOFF_LIMIT : HANDOFF_LIMIT
+  if (typeof content !== 'string' || new TextEncoder().encode(content).length > limit) {
+    throw new AssistantError(`Choose a coaching reply smaller than ${limit / 1024} KB. Nothing was truncated or applied.`)
   }
   const trimmed = content.trim()
   const json = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed)?.[1] ?? trimmed
   let value: unknown
-  try { value = JSON.parse(json) } catch { throw new AssistantError('Paste the final JSON reply, or upload its .json file. Chat commentary is not a workout import.') }
+  try { value = JSON.parse(json) } catch { throw new AssistantError('Paste the final JSON reply from your chat. Chat commentary is not a workout import.') }
   rejectRepeatedKeys(json)
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AssistantError('The reply must be a JSON object.')
   const raw = value as Record<string, unknown>
   const keys = [
     'format', 'version', 'contextId', 'proposal', 'cards',
     ...(raw.version === 2 ? ['customExercises', ...(Object.hasOwn(raw, 'summary') ? ['summary'] : [])] : []),
+    ...(raw.version === 3 ? ['customExercises', 'summary', 'currentTraining', 'week',
+      ...(Object.hasOwn(raw, 'customSportDrills') ? ['customSportDrills'] : [])] : []),
   ]
   if (Object.keys(raw).length !== keys.length || keys.some(key => !Object.hasOwn(raw, key))
-    || raw.format !== 'hybrid-coach-reply' || (raw.version !== 1 && raw.version !== 2)) {
-    throw new AssistantError('Use the Hybrid Coach reply format, version 2 (or compatible version 1). Extra prescription fields and campaign backups are not accepted here.')
+    || raw.format !== 'hybrid-coach-reply' || ![1, 2, 3].includes(raw.version as number)) {
+    throw new AssistantError('Use the Hybrid Coach reply format and the version in your brief (compatible versions 1 and 2 are still accepted). Extra fields and campaign backups are not accepted here.')
   }
   const brief = buildHandoff(state, scope, request)
   if (raw.contextId !== brief.contextId) throw new AssistantError('Your equipment, goal, cards or calendar changed since this brief. Copy the updated brief into the same chat, then request an updated final reply.')
-  const summary = raw.version === 2 && Object.hasOwn(raw, 'summary') ? parseSummary(raw.summary) : ''
+  if (raw.version === 3 && !supportsFullWeekHandoff(state, scope)) {
+    throw new AssistantError('Full-week replies require an opted-in setup or next-week review draft. Committed calendars stay locked.')
+  }
+  const summary = raw.version !== 1 && Object.hasOwn(raw, 'summary') ? parseSummary(raw.summary) : ''
+  if (raw.version === 3) {
+    if (summary.length > MAX_HANDOFF_SUMMARY_LENGTH) throw new AssistantError(`Keep the AI review summary within ${MAX_HANDOFF_SUMMARY_LENGTH} characters. Nothing was shortened or applied.`)
+    assertNonPrescriptiveText(summary)
+  }
   if (brief.context.planLocked && (raw.proposal !== null
-    || (raw.version === 2 && (!Array.isArray(raw.customExercises) || raw.customExercises.length > 0)))) {
+    || (raw.version !== 1 && (!Array.isArray(raw.customExercises) || raw.customExercises.length > 0)))) {
     throw new AssistantError('This calendar is committed. Open a new revision draft before proposing definitions or selections; existing prescriptions and identities cannot be replaced.')
   }
   const draft = proposalDraft(state)
-  const staged = stageCustomExercises(draft, raw.version === 2 ? raw.customExercises : [])
-  const ids = raw.version === 2 ? (raw.customExercises as Array<{ id: string }>).map(item => item.id) : []
+  const staged = stageCustomSportDrills(
+    stageCustomExercises(draft, raw.version !== 1 ? raw.customExercises : []),
+    raw.version === 3 && Object.hasOwn(raw, 'customSportDrills') ? raw.customSportDrills : [],
+  )
+  const ids = raw.version !== 1 ? (raw.customExercises as Array<{ id: string }>).map(item => item.id) : []
   const customExercises = (staged.program?.customExercises ?? []).filter(item => ids.includes(item.id))
+  const drillIds = raw.version === 3 && Array.isArray(raw.customSportDrills)
+    ? (raw.customSportDrills as Array<{ id: string }>).map(item => item.id) : []
+  const customSportDrills = (staged.program?.customSportDrills ?? []).filter(item => drillIds.includes(item.id))
   const goal = raw.proposal === null ? null : parseGoalProposalForReview(JSON.stringify(raw.proposal), staged)
-  if (!brief.context.planLocked && scope.purpose === 'interpret_goal' && !goal) throw new AssistantError('Goal interpretation needs a proposal. Ask the chat to include the goal and equipped exercise selection.')
+  if (raw.version !== 3 && !brief.context.planLocked && scope.purpose === 'interpret_goal' && !goal) throw new AssistantError('Goal interpretation needs a proposal. Ask the chat to include the goal and equipped exercise selection.')
+  if (raw.version === 3 && goal) assertNonPrescriptiveText(goal.proposal.label, goal.proposal.location)
   const cards = parseWorkoutCards(raw.cards, staged.program)
   if (cards.some(card => card.source !== 'ai' || card.status !== 'draft')) {
     throw new AssistantError('AI replies may contain only unverified draft cards. Imported text cannot approve itself.')
@@ -243,9 +291,47 @@ export function parseHandoffReply(content: string, state: CampaignState, scope: 
   for (const card of cards) {
     assertReferenceCardText(brief.context.resources, card.title, card.purpose, card.instructions, card.cues)
   }
-  const stagedCatalog = buildSetupAssistantContext(staged).allowedCatalog
+  const stagedCatalog = [...buildSetupAssistantContext(staged).allowedCatalog, ...customSportDrillCatalog(staged)]
   if (cards.some(card => card.exerciseId && !stagedCatalog.some(item => item.id === card.exerciseId))) {
     throw new AssistantError('A card references an exercise unavailable with your equipment. Choose an equipped exercise or keep it as an unscheduled drill idea.')
+  }
+  if (raw.version === 3) {
+    if (scope.weekReview && raw.currentTraining !== null) {
+      throw new AssistantError('A weekly review cannot replace your confirmed training baseline. Return currentTraining:null; recorded gaps are not a new baseline.')
+    }
+    const currentTraining = raw.currentTraining === null ? null : { ...parseCurrentTraining(raw.currentTraining), source: 'chat' as const }
+    if (currentTraining) assertCurrentTrainingDate(currentTraining, handoffWeekStart(state, scope))
+    const week = raw.week === null ? null : parseAuthoredWeekProposal(raw.week, AI_PLANNING_OPTIONS)
+    if (week) {
+      if (!staged.program) throw new AssistantError('Full-week sessions require the expanded exercise library and confirmed equipment.')
+      if (!currentTraining && !(draft.currentTraining && draft.confirmed) && !scope.weekReview) {
+        throw new AssistantError('Current training is unknown. Complete the assessment and review the reported facts before proposing a week; desired training is not a baseline.')
+      }
+      if (week.weekStart !== handoffWeekStart(state, scope)) {
+        throw new AssistantError('The proposed week does not match the target week start. Keep the exact target date from the latest brief.')
+      }
+      for (const session of week.sessions) {
+        if ('label' in session && typeof session.label === 'string') assertNonPrescriptiveText(session.label)
+        if ('blocks' in session) {
+          for (const block of session.blocks) {
+            const id = 'exerciseId' in block ? block.exerciseId : block.drillId
+            if (!stagedCatalog.some(item => item.id === id)) {
+              throw new AssistantError(`The proposed week uses unavailable exercise "${id}". Use an equipped library identity or define a compatible new custom exercise.`)
+            }
+          }
+        }
+      }
+    }
+    const reply: FullWeekHandoffReply = {
+      format: 'hybrid-coach-reply', version: 3, contextId: brief.contextId,
+      proposal: goal?.proposal ?? null, summary, customExercises, customSportDrills, cards, currentTraining, week,
+    }
+    return {
+      reply,
+      reviewedReplyId: fingerprint(reply),
+      dateIssue: goal?.dateIssue ?? null,
+      includeTrainingHistory: scope.includeTrainingHistory === true,
+    }
   }
   return {
     reply: {
@@ -262,16 +348,44 @@ export function parseHandoffReply(content: string, state: CampaignState, scope: 
 export function applyHandoff(
   state: CampaignState, review: HandoffReview, scope: HandoffScope, request = '', confirmedDate?: string,
 ): CampaignState {
-  const validated = parseHandoffReply(JSON.stringify(review.reply), state, scope, request)
-  let next = {
+  const reviewScope = { ...scope }
+  if (review.includeTrainingHistory === true) reviewScope.includeTrainingHistory = true
+  else if (review.reply.version === 3 && review.includeTrainingHistory === false) delete reviewScope.includeTrainingHistory
+  const validated = parseHandoffReply(JSON.stringify(review.reply), state, reviewScope, request)
+  if (validated.reply.version === 3 && review.reviewedReplyId !== fingerprint(validated.reply)) {
+    throw new AssistantError('The full proposal changed after review. Import and review the complete reply again before applying.')
+  }
+  if (validated.reply.version === 3 && validated.reply.currentTraining && review.currentTrainingAcknowledged !== true) {
+    throw new AssistantError('Acknowledge the imported current-training facts before applying. AI-reported facts are not automatically confirmed.')
+  }
+  if (validated.reply.version === 3 && validated.reply.customSportDrills.length && review.customSportDrillsAcknowledged !== true) {
+    throw new AssistantError('Review and acknowledge the custom throwing drills, their equipment and controlled practice profile before applying.')
+  }
+  let next: CampaignState = {
     ...state,
-    draft: stageCustomExercises(state.draft, validated.reply.customExercises ?? []),
+    draft: stageCustomSportDrills(
+      stageCustomExercises(state.draft, validated.reply.customExercises ?? []),
+      validated.reply.version === 3 ? validated.reply.customSportDrills : [],
+    ),
   }
   if (validated.reply.proposal) {
     const prepared = { ...next, draft: proposalDraft(next) }
     next = applySetupProposal(prepared, validated.reply.proposal, scope.purpose, confirmedDate)
     if (scope.purpose === 'suggest_exercises' && state.draft.recommendedSetup?.mode === 'classic') {
       next = { ...next, draft: { ...next.draft, recommendedSetup: { ...next.draft.recommendedSetup!, mode: 'classic' } } }
+    }
+  }
+  if (validated.reply.version === 3) {
+    const { currentTraining, week } = validated.reply
+    if (currentTraining || week) {
+      next = {
+        ...next,
+        draft: normalizeRecommendedDraft({
+          ...next.draft, confirmed: false,
+          ...(currentTraining ? { currentTraining: { ...currentTraining, source: 'chat' } } : {}),
+        }),
+        ...(week ? { pendingWeek: week } : {}),
+      }
     }
   }
   const merged = [...(state.cards ?? [])]

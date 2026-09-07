@@ -11,6 +11,8 @@ import {
   AssistantError, buildAssistantJsonBody, requestAssistantJson,
 } from './assistant.ts'
 import type { AssistantConfig } from './assistant.ts'
+import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
+import { parseCurrentTraining } from './training-baseline.ts'
 import {
   exerciseAvailable, maxExerciseSelection, parseResources, resourceLabels,
 } from './equipment.ts'
@@ -97,7 +99,7 @@ function proposalRange(minimum: number, maximum: number): string {
 }
 
 function programCatalog(program: ProgramConfigV1) {
-  const exercises = availableExerciseMetadata(program.resources, resolveProgramLibrary(program)).map(metadata => ({
+  const exercises = availableExerciseMetadata(program.resources, resolveProgramLibrary(program, AI_PLANNING_OPTIONS)).map(metadata => ({
     kind: 'exercise' as const,
     id: metadata.id,
     name: metadata.label,
@@ -164,7 +166,7 @@ export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '
   }
   if (program && setup.exerciseIds.length) {
     try {
-      recommendProgram(program.resources, program.goal, resolveProgramLibrary(program), setup.exerciseIds, program.includeMobility)
+      recommendProgram(program.resources, program.goal, resolveProgramLibrary(program, AI_PLANNING_OPTIONS), setup.exerciseIds, program.includeMobility)
     } catch {
       throw new AssistantError(`Choose ${PROGRAM_POLICY.minSelectedExercises}-${PROGRAM_POLICY.maxSelectedExercises} equipped movements for your active routine.`)
     }
@@ -200,7 +202,8 @@ export function buildSetupAssistantContext(draft: CampaignDraft, requestText = '
         conditioningBaselines: program.conditioningBaselines.map(item => ({ ...item })),
         ...(program.comfortableThrowsPerPractice === undefined
           ? {} : { comfortableThrowsPerPractice: program.comfortableThrowsPerPractice }),
-        includeMobility: program.includeMobility === true,
+        includeMobility: program.includeMobility === true || allowedExercises.some(exercise =>
+          'template' in exercise && exercise.template === 'mobility' && setup.exerciseIds.includes(exercise.id)),
         ...(program.customExercises ? { customExercises: program.customExercises.map(item => ({
           ...item, requirements: [...item.requirements],
         })) } : {}),
@@ -226,11 +229,18 @@ export function buildGoalProposalRequest(
     throw new AssistantError('Choose goal interpretation or exercise suggestions.')
   }
   const rhythm = [draft.recommendedSetup!.typicalRunMinutes, draft.runsPerWeek, draft.liftsPerWeek, draft.liftDurationMin]
-  if (!draft.availableDays.length || rhythm.some(value => !Number.isFinite(value) || value <= 0)
+  const reported = draft.currentTraining ? parseCurrentTraining(draft.currentTraining) : null
+  if (reported && (reported.weeklyRunMinutes !== draft.weeklyRunMinutes
+    || reported.longestRunMinutes !== draft.recommendedSetup!.typicalRunMinutes
+    || reported.runsPerWeek !== draft.runsPerWeek || reported.liftsPerWeek !== draft.liftsPerWeek
+    || reported.liftDurationMin !== draft.liftDurationMin)) {
+    throw new AssistantError('Reported current training must match the unchanged baseline facts in this brief.')
+  }
+  if (!reported && (!draft.availableDays.length || rhythm.some(value => !Number.isFinite(value) || value <= 0)
     || !Number.isInteger(draft.runsPerWeek) || draft.runsPerWeek > LIMITS.maxRuns
     || !Number.isInteger(draft.liftsPerWeek) || draft.liftsPerWeek > LIMITS.maxLifts
     || draft.recommendedSetup!.typicalRunMinutes > LIMITS.maxRunMinutes || draft.liftDurationMin > 180
-    || (draft.practiceDays.length > 0 && (!Number.isFinite(draft.practiceDuration) || !(draft.practiceDuration > 0)))) {
+    || (draft.practiceDays.length > 0 && (!Number.isFinite(draft.practiceDuration) || !(draft.practiceDuration > 0))))) {
     throw new AssistantError('Complete your usual training rhythm, session lengths and available days before asking AI for a final setup suggestion.')
   }
   return buildAssistantJsonBody(model, [
@@ -256,6 +266,7 @@ export function buildGoalProposalRequest(
           ? 'When the athlete requests a new movement, prefer a real customExercises definition with its own identity, description, focus and why, not a notes-only workaround or a renamed catalog ID. It must fit an exact supplied customProfileCatalog entry and confirmed resources.'
           : 'You may select compatible library cards not currently selected. You may add, keep or swap cards, but cannot invent exercise IDs or include high-skill/ineligible entries.',
         ...(programForDraft(draft) ? [
+          'Include suitable mobility (mobilisation) exercises in the proposed exercise selection, unless the athlete explicitly declines. Use equipped catalog entries with template:"mobility", or a supported custom mobility profile when custom definitions are permitted. They are real planned exercises, not merely reference notes; do not invent unsupported identities, units or techniques.',
           'The catalog profile, unit and execution fields are immutable engine facts. Do not return them or propose replacements.',
           'Fast concentric intent is controlled, non-ballistic lifting. Slow lowering and fast-intent variants are separate canonical IDs with independent history.',
           'Choose exact compatible movements without claims of guaranteed sport transfer or injury prevention.',
@@ -360,7 +371,7 @@ function parseProposal(
   const program = programForDraft(draft)
   if (program) {
     try {
-      recommendProgram(program.resources, program.goal, resolveProgramLibrary(program), value.exerciseIds as string[], program.includeMobility)
+      recommendProgram(program.resources, program.goal, resolveProgramLibrary(program, AI_PLANNING_OPTIONS), value.exerciseIds as string[], program.includeMobility)
     } catch {
       throw new AssistantError(`The proposed IDs must form an equipped ${PROGRAM_POLICY.minSelectedExercises}–${PROGRAM_POLICY.maxSelectedExercises} movement program using engine-owned profiles.`)
     }
@@ -437,7 +448,7 @@ export function applyGoalProposal(
 
 export function proposalExerciseChanges(draft: CampaignDraft, proposal: GoalProposal) {
   const previous = draft.recommendedSetup?.exerciseIds ?? []
-  const library = draft.program ? resolveProgramLibrary(draft.program) : DEFAULT_LIBRARY
+  const library = draft.program ? resolveProgramLibrary(draft.program, AI_PLANNING_OPTIONS) : DEFAULT_LIBRARY
   return [
     ...proposal.exerciseIds.map(id => ({ id, change: previous.includes(id) ? 'kept' as const : 'added' as const })),
     ...previous.filter(id => !proposal.exerciseIds.includes(id)).map(id => ({ id, change: 'removed' as const })),

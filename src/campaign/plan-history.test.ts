@@ -171,7 +171,7 @@ test('confirmation and training history render without mutating data or hiding p
     assert.match(confirmation, /Start new plan &amp; keep history/)
     assert.match(confirmation, /Keep current plan/)
     assert.match(confirmation, /Export backup first/)
-    assert.match(confirmation, /Unlogged workouts are not marked completed/)
+    assert.match(confirmation, /Unlogged workouts stay unlogged/)
     assert.match(renderToStaticMarkup(createElement(NewPlanConfirmation, { ...props, ready: false })), /disabled=""/)
     const history = renderToStaticMarkup(createElement(History, { state: startNewPlan(state, '2026-09-14') }))
     assert.match(history, /My floor core/)

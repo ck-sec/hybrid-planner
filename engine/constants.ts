@@ -3,6 +3,29 @@ export const POLICY_VERSION = 'baseline-bounded-1'
 export const LIBRARY_VERSION = 'exercise-estimates-1'
 export const PROGRAM_LIBRARY_VERSION = 'exercise-profiles-1'
 export const PROGRAM_POLICY_VERSION = 'extensible-programming-1'
+export const AI_ADVISORY_POLICY_VERSION = 'authored-ai-advisory-1'
+/** Finite representation bounds for opt-in AI data, not medical or training-safe limits. */
+export const AI_ADVISORY_LIMITS = Object.freeze({
+  maxSessions: 56,
+  maxRuns: 56,
+  maxLifts: 56,
+  maxWeeklyRunMinutes: 56 * 1440,
+  maxRunMinutes: 1440,
+  maxLiftMinutes: 1440,
+  maxSetsPerBlock: 10,
+  maxRepsPerSet: 50,
+  maxTimedSecondsPerBlock: 1440 * 60,
+  maxThrowsPerBlock: 1_000_000,
+})
+/** Confirmed devices, never inferred from a conditioning baseline or a generic machine. */
+export const AI_ADVISORY_CONDITIONING_RESOURCES = Object.freeze({
+  run_road: Object.freeze([] as const),
+  run_trail: Object.freeze([] as const),
+  bike_road: Object.freeze(['bike'] as const),
+  bike_gravel: Object.freeze(['bike'] as const),
+  row: Object.freeze(['rower'] as const),
+  ski_erg: Object.freeze(['ski_erg'] as const),
+})
 /** Absolute storage bound for truthful actual sets; this is not a prescription ceiling. */
 export const MAX_LOGGED_SETS_PER_BLOCK = 10
 export const LEGACY_EXERCISE_IDS = [
@@ -122,3 +145,13 @@ export const PROGRAM_POLICY = {
     ski_erg: { systemic: 3, structural: 1.25 },
   },
 } as const
+
+/** Administrative input bounds, not validated physiological or injury-safe limits. */
+export const CONTROLLED_TARGET_THROW_PROFILE = Object.freeze({
+  id: 'controlled_target_throw' as const,
+  requirements: Object.freeze(['dodgeball', 'court_space', 'safe_target'] as const),
+  minThrowsPerPractice: 1,
+  maxThrowsPerPractice: 500,
+  maxDefinitions: LIMITS.maxCustomExercises,
+  calibrationFraction: PROGRAM_POLICY.throwingCalibrationFraction,
+})

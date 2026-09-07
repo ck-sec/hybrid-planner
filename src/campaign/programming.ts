@@ -5,6 +5,7 @@ import type { ProgramGoal, Resource } from '../../engine/types.ts'
 import { equipmentForResources, parseResources, programResources, resourcesForEquipment } from './equipment.ts'
 import type { ExerciseChoice } from './ExercisePoolEditor.tsx'
 import type { CampaignDraft, GoalKind } from './types.ts'
+import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
 
 const VARIANT_FAMILIES: Readonly<Record<string, string>> = {
   'back-squat-slow-lowering': 'back-squat',
@@ -33,7 +34,8 @@ export function enableTemplateProgramming(draft: CampaignDraft): CampaignDraft {
   const resources = parseResources(draft.resources ?? resourcesForEquipment(draft.equipment))
   const capabilities = programResources(resources)
   const goal = programGoalForKind(draft.goalKind)
-  const recommendation = recommendProgram(capabilities, goal)
+  // Seed mobility in new routines without forcing it back into later user-edited selections.
+  const recommendation = recommendProgram(capabilities, goal, undefined, undefined, true)
   return {
     ...draft, resources: [...resources], equipment: equipmentForResources(resources), confirmed: false,
     program: {
@@ -46,7 +48,7 @@ export function enableTemplateProgramming(draft: CampaignDraft): CampaignDraft {
 
 export function programmingChoices(draft: CampaignDraft): ExerciseChoice[] {
   if (!draft.program) throw new Error('Enable template programming before editing its exercise pool.')
-  const library = resolveProgramLibrary(draft.program)
+  const library = resolveProgramLibrary(draft.program, AI_PLANNING_OPTIONS)
   return availableExerciseMetadata(programResources(draft.resources ?? resourcesForEquipment(draft.equipment)), library).map(metadata => {
     const exercise = library.exercises.find(item => item.id === metadata.id)
     if (!exercise) throw new Error('Template metadata is missing its canonical exercise.')
@@ -70,7 +72,7 @@ export function selectProgramExercises(draft: CampaignDraft, ids: readonly strin
   }
   const choices = new Set(programmingChoices(draft).map(item => item.exercise.id))
   if (ids.some(id => !choices.has(id))) throw new Error('Each selected movement needs its stated equipment and execution template.')
-  const library = resolveProgramLibrary(draft.program)
+  const library = resolveProgramLibrary(draft.program, AI_PLANNING_OPTIONS)
   for (const id of ids) exerciseMetadata(id, library)
   return {
     ...draft, confirmed: false,

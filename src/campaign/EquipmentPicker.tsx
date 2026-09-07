@@ -31,9 +31,9 @@ function CustomEquipment({ value, onChange, disabled }: EquipmentPickerProps) {
     }
   }
   return <details className="cf-resource-details">
-    <summary>Add other gear (optional)</summary>
+    <summary>Other equipment</summary>
     <div className="cf-custom-resource">
-      <p className="cf-resource-help">Name any other equipment or space, such as a ball or mat. This records what you have; it does not add training or assume a safe exercise dose.</p>
+      <p className="cf-resource-help">Add equipment or space not listed above.</p>
       <label className="cf-field">Equipment name
         <input type="text" maxLength={120} value={name} placeholder="e.g. Ball or mat" disabled={disabled || atLimit}
           onChange={event => { setName(event.target.value); setIssue('') }}
@@ -68,13 +68,13 @@ export function EquipmentPicker({ value, onChange, disabled = false }: Equipment
         <span>{preset.resources.length ? `${preset.resources.length} items` : 'Bodyweight'}</span>
       </button>
     })}</div>
-    <p className="cf-resource-help">Presets replace your selection. Bodyweight is always included.</p>
+    <p className="cf-resource-help">Presets replace your selection.</p>
     <p className="cf-resource-summary" role="status" aria-atomic="true">
       <strong>Selected:</strong> Bodyweight{selectedLabels.length ? ` · ${selectedLabels.join(' · ')}` : ' only'}
     </p>
     <details className="cf-resource-details">
-      <summary>Adjust strength &amp; cardio equipment (optional)</summary>
-      <p className="cf-resource-help">Tick only what you can use. Racks, benches, pull-up bars and cardio machines are separate choices.</p>
+      <summary>Adjust equipment</summary>
+      <p className="cf-resource-help">Select each item you can use, including racks and benches.</p>
       <div className="cf-resource-groups">{groups.map(group => <fieldset key={group.id} className="cf-resource-group">
         <legend>{group.label}</legend>
         <div className="cf-resource-options">{RESOURCE_CATALOG.filter(resource => resource.group === group.id).map(resource =>

@@ -9,6 +9,7 @@ import { MAX_GOAL_TEXT_LENGTH } from './setup-assistant.ts'
 import { selectProgramExercises } from './programming.ts'
 import { validateSetupDate } from './setup-dates.ts'
 import type { CampaignDraft, CampaignState, RecommendedSetup } from './types.ts'
+import { parseTrainingPreferences, TRAINING_PREFERENCE_LIMITS } from './training-baseline.ts'
 
 export const ONBOARDING_STEPS = [
   { value: 1, label: 'Goal' },
@@ -65,16 +66,27 @@ function validateGoal(draft: CampaignDraft): CampaignDraft {
 
 export function validateOnboardingRoutine(draft: CampaignDraft): void {
   const positive = (value: number, max: number) => Number.isFinite(value) && value > 0 && value <= max
-  if (!positive(draft.recommendedSetup?.typicalRunMinutes ?? 0, LIMITS.maxRunMinutes)
-    || !positive(draft.runsPerWeek, LIMITS.maxRuns) || !Number.isInteger(draft.runsPerWeek)
-    || !positive(draft.liftsPerWeek, LIMITS.maxLifts) || !Number.isInteger(draft.liftsPerWeek)
-    || !positive(draft.liftDurationMin, 180)) {
-    throw new Error('Choose your usual run length, run frequency, lift frequency and session length.')
+  // Legacy zeros mean unanswered; explicit preferences can request no running or lifting.
+  if (!draft.trainingPreferences && (
+    !positive(draft.recommendedSetup?.typicalRunMinutes ?? 0, TRAINING_PREFERENCE_LIMITS.maxDurationMin)
+    || !positive(draft.runsPerWeek, TRAINING_PREFERENCE_LIMITS.maxRunsPerWeek) || !Number.isInteger(draft.runsPerWeek)
+    || !positive(draft.liftsPerWeek, TRAINING_PREFERENCE_LIMITS.maxLiftsPerWeek) || !Number.isInteger(draft.liftsPerWeek)
+    || !positive(draft.liftDurationMin, TRAINING_PREFERENCE_LIMITS.maxDurationMin))) {
+    throw new Error('Choose your preferred weekly frequency and average duration for running and lifting.')
   }
-  if (dayOfWeek(draft.startDate) !== 0) throw new Error('Choose a Monday for your block start in Availability & fixed sessions.')
-  if (!draft.availableDays.length) throw new Error('Choose at least one training day in Availability & fixed sessions.')
+  const routine = parseTrainingPreferences(draft.trainingPreferences ?? {
+    version: 1,
+    runDurationMin: draft.recommendedSetup?.typicalRunMinutes ?? 0,
+    runsPerWeek: draft.runsPerWeek, liftsPerWeek: draft.liftsPerWeek, liftDurationMin: draft.liftDurationMin,
+  })
+  if ((routine.runsPerWeek > 0 && routine.runDurationMin === 0)
+    || (routine.liftsPerWeek > 0 && routine.liftDurationMin === 0)) {
+    throw new Error('Choose an average duration for each activity you want to include. These preferences do not change your current training.')
+  }
+  if (dayOfWeek(draft.startDate) !== 0) throw new Error('Choose a Monday for your block start in Availability & start date.')
+  if (!draft.availableDays.length) throw new Error('Choose at least one training day in Availability & start date.')
   if (draft.practiceDays.length && (!positive(draft.practiceDuration, 240) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.practiceTime))) {
-    throw new Error('Add the usual length and start time for your fixed sessions.')
+    throw new Error('Add the usual length and start time for your club training or fixed sessions.')
   }
 }
 

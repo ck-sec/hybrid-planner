@@ -26,7 +26,7 @@ export default function CustomExerciseEditor({ resources, existing, onCreate }: 
   if (!open) return <div className="cf-stack">
     <button type="button" className="cf-button cf-secondary" onClick={() => setOpen(true)}>Create an exercise</button>
     {existing.length > 0 && <details className="cf-details"><summary>Revise a custom exercise</summary>
-      <p className="cf-small">Changes create a new exercise identity. Earlier sessions and weight records stay attached to the original.</p>
+      <p className="cf-small">Revisions create a new exercise. The original keeps its records.</p>
       {existing.map(exercise => <button type="button" className="cf-text-button" key={exercise.id} onClick={() => {
         setName(`${exercise.name.slice(0, 70)} (revised)`); setDescription(exercise.description); setFocus(exercise.focus); setWhy(exercise.why)
         setProfileId(exercise.profileId); setRequirements(exercise.requirements)
@@ -38,7 +38,7 @@ export default function CustomExerciseEditor({ resources, existing, onCreate }: 
   </div>
   return <fieldset className="cf-card cf-stack">
     <legend>Create an exercise</legend>
-    <p className="cf-small">Add a controlled movement you understand. It gets its own identity and log; the app, not this description, sets the workload.</p>
+    <p className="cf-small">Add a familiar, controlled movement. Your plan sets the training amounts.</p>
     <label className="cf-field">Exercise name<input value={name} maxLength={80} onChange={event => { setName(event.target.value); changed() }} /></label>
     <label className="cf-field">Movement category<select value={profileId} onChange={event => {
       const profile = Object.values(CUSTOM_EXERCISE_PROFILES).find(item => item.id === event.target.value)

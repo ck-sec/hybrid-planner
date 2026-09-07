@@ -1,4 +1,4 @@
-import { CAMPAIGN_POLICY, DAY_NAMES, LIMITS, SAFETY } from './constants.ts'
+import { AI_ADVISORY_POLICY_VERSION, CAMPAIGN_POLICY, DAY_NAMES, LIMITS, SAFETY } from './constants.ts'
 import { addDays, dayNumber, dayOfWeek, parseISODate, sessionStartMinutes, timeMinutes } from './dates.ts'
 import { predictSessionLoad, residualBefore } from './load.ts'
 import { fixedSessions } from './planner.ts'
@@ -7,7 +7,8 @@ import { scoreSessions } from './scoring.ts'
 import type {
   CompletedWeek, PlanWeekInput, RecentSession, SafetyFloorResult, Session, SessionLog, WeekPlan,
 } from './types.ts'
-import { parsePlanWeekInput } from './validation.ts'
+import { parsePlanWeekInput, parsePlanWeekInputWithOptions, Validator } from './validation.ts'
+import type { ValidationOptions } from './validation.ts'
 
 export interface CalendarWeek {
   input: PlanWeekInput
@@ -278,12 +279,27 @@ export function applyCalendarPainHold(week: CalendarWeek, sessionId: string): Ca
 }
 
 /** Known recurring commitments provide a future boundary without inventing completed work. */
-export function followingCommitments(input: PlanWeekInput): Session[] {
+export function followingCommitments(input: PlanWeekInput, options: ValidationOptions = {}): Session[] {
+  const v = new Validator(options)
   if (input.weekIndex + 1 >= input.block.totalWeeks) return []
+  if (v.aiAdvisory) {
+    const block = v.finish(v.block(input.block, 'input.block'))
+    const weekStart = addDays(block.startDate, (input.weekIndex + 1) * 7)
+    // Future commitments are facts, not permission to generate calibration throws.
+    return [...block.goal.fixedCommitments].sort((a, b) => compare(a.id, b.id))
+      .map((commitment, index): Session => ({
+        id: `fixed-${index + 1}-${weekStart}`, kind: 'commitment',
+        date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+        durationMin: commitment.durationMin, discipline: commitment.discipline, modality: commitment.modality,
+        label: commitment.label, predictedLoad: { ...commitment.estimatedLoad }, pinned: true, isCalibration: false,
+        reason: 'An established commitment. Its time and workload are not changed by the optimizer.',
+      }))
+  }
   return fixedSessions({ ...input, weekIndex: input.weekIndex + 1 })
 }
 
-export function nextCalendarInput(weeks: readonly CalendarWeek[]): PlanWeekInput {
+export function nextCalendarInput(weeks: readonly CalendarWeek[], options: ValidationOptions = {}): PlanWeekInput {
+  const advisory = new Validator(options).aiAdvisory
   const previous = weeks.at(-1)
   if (!previous) throw new Error('Build the first week before advancing.')
   const weekIndex = previous.input.weekIndex + 1
@@ -314,7 +330,8 @@ export function nextCalendarInput(weeks: readonly CalendarWeek[]): PlanWeekInput
       weekStart: week.plan.weekStart,
       runMinutes: actual.reduce((sum, session) => sum + (session.discipline === 'run' && week.logs[session.id]?.status === 'completed'
         ? week.logs[session.id]!.actualDurationMin! : 0), 0),
-      plannedDeload: week.plan.weekIndex === 0 || ['deload', 'taper'].includes(week.plan.phase),
+      plannedDeload: (week.plan.policyVersion !== AI_ADVISORY_POLICY_VERSION && week.plan.weekIndex === 0)
+        || ['deload', 'taper'].includes(week.plan.phase),
       disrupted: actual.some(session => week.logs[session.id]?.painFlag || ['pain', 'illness'].includes(week.logs[session.id]?.skipReason ?? '')),
     })
   }
@@ -322,7 +339,7 @@ export function nextCalendarInput(weeks: readonly CalendarWeek[]): PlanWeekInput
     (record.log?.painFlag || record.log?.skipReason === 'pain' || record.log?.skipReason === 'illness')).at(-1)
   let input: PlanWeekInput = {
     ...previous.input, weekIndex,
-    block: { ...previous.input.block, phases: previous.input.block.phases.map(phase => ({
+    block: advisory ? previous.input.block : { ...previous.input.block, phases: previous.input.block.phases.map(phase => ({
       ...phase, volumeFraction: Math.min(phase.volumeFraction, ceiling),
     })) },
     athlete: { ...previous.input.athlete,
@@ -344,6 +361,6 @@ export function nextCalendarInput(weeks: readonly CalendarWeek[]): PlanWeekInput
       { ...input, context: { ...input.context, recentSessions: allHistory } }, [])
     input = { ...input, athlete: { ...input.athlete, residual: { asOfDate: start, asOfTime: '00:00', load } } }
   }
-  input = { ...input, context: { ...input.context, neighboringSessions: [...input.context.neighboringSessions, ...followingCommitments(input)] } }
-  return parsePlanWeekInput(input)
+  input = { ...input, context: { ...input.context, neighboringSessions: [...input.context.neighboringSessions, ...followingCommitments(input, options)] } }
+  return parsePlanWeekInputWithOptions(input, options)
 }

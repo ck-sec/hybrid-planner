@@ -22,6 +22,8 @@ export function startNewPlan(state: CampaignState, startMonday: string): Campaig
     ...(!previous.sample && previous.cards ? { cards: structuredClone(previous.cards) } : {}),
     pastPlans: [...pastPlans, previous],
   })
+  delete next.draft.currentTraining
+  delete next.draft.trainingHistory
   return parseCampaign(next)
 }
 

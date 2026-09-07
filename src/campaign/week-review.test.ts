@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { Session, SessionLog, WorkoutSession } from '../../engine/types.ts'
 import { adaptCampaign, buildCampaign, exampleCampaign, nextCampaignWeek, parseCampaign } from './model.ts'
 import { buildWeekReview } from './week-review.ts'
+import { finishWithFeedback } from './training-feedback.ts'
 
 function fixture() {
   const initial = exampleCampaign('2026-09-07')
@@ -57,7 +58,7 @@ test('one-week review counts explicit outcomes, removals and omissions without i
   const before = structuredClone(state)
   const review = buildWeekReview(state)!
   assert.deepEqual(review.counts, {
-    completed: 1, partial: 1, skipped: 2, skippedTime: 1, skippedFatigue: 1,
+    completed: 1, finishedEarly: 0, partial: 1, skipped: 2, skippedTime: 1, skippedFatigue: 1,
     removed: 1, unlogged: 1, omitted: 1,
   })
 
@@ -114,7 +115,7 @@ test('unknown actuals stay null even after completion; missing pain flags and no
   const review = buildWeekReview(fixture())!
   for (const id of ['complete-unknown', 'unlogged', 'removed-run', 'time-skip']) {
     const session = review.sessions.find(item => item.id === id)!
-    for (const key of ['actualDurationMin', 'actualEffort', 'durationOverrunMin', 'sets', 'blockLogs'] as const) {
+    for (const key of ['actualDurationMin', 'actualEffort', 'durationOverrunMin', 'sets', 'blockLogs', 'feedback', 'actualPaceMinPerKm'] as const) {
       assert.equal(session[key], null, `${id}.${key}`)
     }
   }
@@ -149,4 +150,67 @@ test('default review is latest, explicit index is exact, and no history produces
   assert.equal(buildWeekReview(state)?.weekIndex, 1)
   assert.throws(() => buildWeekReview(state, 10), /existing week/)
   assert.equal(buildWeekReview(exampleCampaign('2026-09-07')), undefined)
+})
+
+test('review distinguishes early finish and compares explicit run feedback with the unchanged plan', () => {
+  const initial = exampleCampaign('2026-09-07')
+  const state = buildCampaign({ ...initial, draft: { ...initial.draft, confirmed: true } })
+  const run = state.weeks[0].plan.sessions.find(item => item.kind === 'run')!
+  assert.ok(run.kind === 'run')
+  const finished = finishWithFeedback(state, run.id, 20, 8, false, {
+    version: 1, feeling: 'harder', outcome: 'finished_early', distanceKm: 3, note: 'Stopped because I ran out of time.',
+  })
+  const before = structuredClone(finished)
+  const review = buildWeekReview(finished)!
+  const recorded = review.sessions.find(item => item.id === run.id)!
+  assert.equal(recorded.status, 'finished_early')
+  assert.equal(review.counts.finishedEarly, 1)
+  assert.equal(review.counts.completed, 0)
+  assert.equal(review.counts.partial, 0)
+  assert.equal(recorded.plannedDurationMin, run.durationMin)
+  assert.deepEqual(recorded.plannedEndurance, run.endurancePrescription)
+  assert.equal(recorded.actualDurationMin, 20)
+  assert.equal(recorded.actualEffort, 8)
+  assert.equal(recorded.actualPaceMinPerKm, 20 / 3)
+  assert.deepEqual(recorded.feedback, finished.weeks[0].feedback?.[run.id])
+  assert.equal(Object.hasOwn(recorded.feedback!, 'averageHr'), false)
+  assert.match(review.observations.join('\n'), /not full completion|do not infer fatigue/)
+  assert.match(review.observations.join('\n'), /does not authorize progression/)
+  assert.match(review.observations.join('\n'), /not RPE or readiness/)
+  assert.match(review.observations.join('\n'), /Missing heart rate.*must not be estimated/)
+  assert.deepEqual(finished, before)
+  recorded.feedback!.note = 'Review edits must not change training.'
+  assert.deepEqual(finished, before)
+})
+
+test('observations preserve time/fatigue distinctions, explicit unknowns and pain holds deterministically', () => {
+  const state = fixture()
+  const observations = buildWeekReview(state)!.observations
+  assert.deepEqual(buildWeekReview(state)!.observations, observations)
+  const text = observations.join('\n')
+  assert.match(text, /time-skip\): Skipped for time\/life, not evidence of fatigue/)
+  assert.match(text, /fatigue-skip\): Skipped for reported fatigue; do not add catch-up work/)
+  assert.match(text, /Missing actuals and feedback remain unknown/)
+  assert.match(text, /Pain was reported\. Keep health holds/)
+  assert.match(text, /30 min planned; 45 min recorded; feeling unknown/)
+})
+
+test('version-one reviews include only the selected week decisions and retain swap reasons and future preferences', () => {
+  const state = fixture()
+  state.weeks[0].changes = [{
+    id: 'swap-1',
+    message: 'Original movement -> Replacement: This movement was too difficult. Prefer this replacement in future proposals. Logged work is unchanged.',
+  }]
+  const newer = structuredClone(state.weeks[0])
+  newer.plan.weekIndex = 1
+  newer.changes = [{ id: 'other-week', message: 'OTHER-WEEK-DECISION' }]
+  state.weeks.push(newer)
+  const before = structuredClone(state)
+  const review = buildWeekReview(state, 0)!
+  assert.equal(review.version, 1)
+  assert.deepEqual(review.changes, state.weeks[0].changes)
+  assert.match(JSON.stringify(review.changes), /too difficult|Prefer this replacement in future proposals/)
+  assert.doesNotMatch(JSON.stringify(review.changes), /OTHER-WEEK-DECISION/)
+  review.changes![0].message = 'Not a state mutation.'
+  assert.deepEqual(state, before)
 })

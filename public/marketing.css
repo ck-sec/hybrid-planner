@@ -92,7 +92,6 @@ ul,ol{padding-left:1.4em}
 .how-title h2{font-size:52px;margin:24px 0}
 .how-title .eyebrow{color:#b8bfe0}
 .how-title>p:not(.eyebrow){font-size:14px;line-height:1.8;color:#d4caca;max-width:330px}
-.how-title .text-link{margin-top:15px}
 .steps{padding:0;margin:0;list-style:none}
 .steps li{display:flex;gap:26px;padding:26px 0;border-bottom:1px solid #ecdfd22b}
 .steps li:first-child{padding-top:0}
@@ -148,7 +147,6 @@ ul,ol{padding-left:1.4em}
 .guide-card-body>.eyebrow{color:var(--plum);font-size:9px}
 .guide-card h3{font-size:22px;line-height:1.22;margin:12px 0}
 .guide-card p{font-size:13px;color:var(--muted);line-height:1.75}
-.guide-card .text-link{margin-top:15px;font-size:12px}
 .guide-card:hover h3{text-decoration:underline;text-underline-offset:5px;text-decoration-thickness:1px}
 .faq-section{border-top:1px solid var(--line);display:grid;grid-template-columns:.9fr 1.1fr;gap:95px}
 .faq-section>div>p:last-child{max-width:280px;margin-top:23px;color:var(--muted);font-size:14px}
@@ -192,8 +190,8 @@ ul,ol{padding-left:1.4em}
 .article-sidebar{align-self:start;position:sticky;top:25px}
 .article-sidebar h2{font-size:12px;letter-spacing:0;font-weight:650}
 .article-sidebar ol{padding:0;list-style:none;margin:15px 0 26px}
-.article-sidebar a:not(.button){display:block;padding:9px 0;font-size:12px;line-height:1.55;color:var(--muted);text-decoration:none}
-.article-sidebar a:not(.button):hover{text-decoration:underline}
+.article-sidebar a{display:block;padding:9px 0;font-size:12px;line-height:1.55;color:var(--muted);text-decoration:none}
+.article-sidebar a:hover{text-decoration:underline}
 .prose{font-size:16px;line-height:1.85;overflow-wrap:anywhere}
 .prose section{margin-bottom:38px;scroll-margin-top:25px}
 .prose h2{font-size:28px;line-height:1.22;margin-bottom:20px}
@@ -245,7 +243,7 @@ ul,ol{padding-left:1.4em}
   .principle-strip span::before{margin-right:7px}.section{padding-block:54px}.section-heading{margin-bottom:30px}
   .section-heading h2,.goal-copy h2,.faq-section h2{font-size:34px}.section-heading>p:last-child{font-size:14px;margin-top:20px}
   .benefit-grid{grid-template-columns:1fr;gap:27px}.benefit-grid article{padding-top:20px}.benefit-grid h3{max-width:none;font-size:22px;margin:10px 0}.benefit-grid p{font-size:14px}
-  .how-section{padding-block:48px}.how-grid{grid-template-columns:1fr;gap:35px}.how-title h2{font-size:46px;margin-block:21px}.how-title .text-link{margin-top:12px}
+  .how-section{padding-block:48px}.how-grid{grid-template-columns:1fr;gap:35px}.how-title h2{font-size:46px;margin-block:21px}
   .steps li{gap:22px;padding-block:23px}.steps p{font-size:14px}.steps h3{font-size:21px}
   .goal-section{grid-template-columns:1fr;gap:34px}.exercise-card{padding:25px}
   .harness-grid,.review-loop{grid-template-columns:1fr;gap:24px}.harness-option{padding:24px}.harness-option h3{font-size:22px}
@@ -261,7 +259,7 @@ ul,ol{padding-left:1.4em}
   .hub-guides{padding-bottom:40px}.editorial-note{padding-block:29px;margin-bottom:40px}
   .article{padding-top:13px}.breadcrumbs{font-size:10px;gap:8px}.article-header{margin:28px 0 30px}.article-header h1{font-size:39px}.article-meta{font-size:10px;line-height:1.9}
   .article-lead{font-size:17px;line-height:1.85;margin-top:25px}.article-layout{display:block;padding-top:25px}.article-sidebar{position:static;margin-bottom:35px;padding-bottom:25px;border-bottom:1px solid var(--line)}
-  .article-sidebar ol{margin-bottom:15px}.article-sidebar a:not(.button){font-size:13px;min-height:44px;padding-block:11px}.article-sidebar .button{display:none}
+  .article-sidebar ol{margin-bottom:15px}.article-sidebar a{font-size:13px;min-height:44px;padding-block:11px}
   .prose{font-size:16px;line-height:1.9}.prose h2{font-size:27px}.prose section{margin-bottom:32px}.prose ul{padding-left:20px}.sources{margin-top:35px}
   .article-next{padding:25px}.article-next .button{width:100%}.document-layout{display:block;padding-top:25px}.document-layout aside{margin-bottom:30px}.document-layout aside .eyebrow{margin-bottom:12px}
 }

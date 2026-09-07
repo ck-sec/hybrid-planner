@@ -11,6 +11,7 @@ export default function CustomExerciseCards({ exercises }: { exercises: readonly
       <dt>What to focus on</dt><dd>{exercise.focus}</dd>
       <dt>Why this exercise</dt><dd>{exercise.why}</dd>
     </dl>
-    <p className="cf-small">If approved, this becomes a real exercise with its own records. The app sets its quantities and placement; its workload estimate does not validate technique.</p>
-  </article>)}</div>
+  </article>)}
+    {exercises.length > 0 && <p className="cf-small">If approved, each exercise gets its own records. App checks do not assess technique.</p>}
+  </div>
 }

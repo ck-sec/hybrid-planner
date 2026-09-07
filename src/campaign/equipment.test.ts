@@ -306,8 +306,8 @@ test('equipment picker is accessible, controlled and changes resources only on e
     }))
     assert.doesNotMatch(html, /<form|<details[^>]*\bopen=/)
     assert.match(html, /<legend>What can you train with\?<\/legend>/)
-    assert.match(html, /<summary>Adjust strength &amp; cardio equipment \(optional\)<\/summary>/)
-    assert.match(html, /<summary>Add other gear \(optional\)<\/summary>/)
+    assert.match(html, /<summary>Adjust equipment<\/summary>/)
+    assert.match(html, /<summary>Other equipment<\/summary>/)
     assert.match(html, /<p[^>]*role="status"[^>]*>.*Bodyweight · Rower · SkiErg<\/p>/)
     assert.match(html, /Presets replace your selection/)
     for (const group of ['Strength equipment', 'Cardio equipment']) {

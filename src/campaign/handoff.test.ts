@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PROGRAM_LIBRARY_VERSION } from '../../engine/constants.ts'
+import { AI_ADVISORY_LIMITS, CONTROLLED_TARGET_THROW_PROFILE, PROGRAM_LIBRARY_VERSION } from '../../engine/constants.ts'
+import { addDays } from '../../engine/dates.ts'
+import { AUTHORED_WEEK_POLICY } from '../../engine/authored-week.ts'
+import { CUSTOM_EXERCISE_PROFILES } from '../../engine/custom-exercises.ts'
 import { recommendProgram } from '../../engine/program.ts'
-import { applyHandoff, buildHandoff, exportHandoff, HANDOFF_COMPLETION_TOKENS, HANDOFF_LIMIT, MAX_HANDOFF_SUMMARY_LENGTH, parseHandoffReply, requestHandoff } from './handoff.ts'
-import { buildCampaign, exampleCampaign, normalizeRecommendedDraft, parseCampaign } from './model.ts'
+import { applyHandoff, buildHandoff, exportHandoff, FULL_WEEK_HANDOFF_LIMIT, HANDOFF_COMPLETION_TOKENS, HANDOFF_LIMIT, MAX_HANDOFF_SUMMARY_LENGTH, parseHandoffReply, requestHandoff } from './handoff.ts'
+import { buildCampaign, completeCampaignSession, exampleCampaign, logCampaignBlockAmount, nextCampaignWeek, normalizeRecommendedDraft, parseCampaign } from './model.ts'
 import { equipmentForResources, parseResources, programResources } from './equipment.ts'
 import type { HandoffScope } from './handoff.ts'
 import type { WorkoutCard } from './workout-cards.ts'
-import type { CustomExerciseSpec } from '../../engine/types.ts'
+import type { CustomExerciseSpec, CustomSportDrillSpec } from '../../engine/types.ts'
 import { buildWeekReview } from './week-review.ts'
-import { stageCustomExercises } from './custom-exercises.ts'
+import { stageCustomExercises, stageCustomSportDrills } from './custom-exercises.ts'
 import { buildAssistantJsonBody } from './assistant.ts'
+import type { AuthoredWeekProposal } from '../../engine/authored-week.ts'
+import type { CurrentTraining } from './training-baseline.ts'
 
 const scope: HandoffScope = { purpose: 'interpret_goal' }
 function draft() {
@@ -34,6 +39,13 @@ const custom: CustomExerciseSpec = {
   description: 'Use the rear foot for balance while moving the hips back and keeping the load close.',
   focus: 'Keep the trunk stable and the movement controlled.',
   why: 'A distinct hinge variation to consider for the athlete’s sporting goal.',
+}
+const customDrill: CustomSportDrillSpec = {
+  version: 1, id: 'custom-alternating-target-throw', name: 'Alternating target throw',
+  profileId: 'controlled_target_throw', requirements: ['court_space', 'dodgeball', 'safe_target'],
+  description: 'Use familiar controlled target throws while alternating the target lane.',
+  focus: 'Keep the established technique and aim toward the confirmed target.',
+  why: 'An identifiable practice variation for the athlete to review with their coach.',
 }
 function reply(state = draft(), task = scope) {
   const value = buildHandoff(state, task).example
@@ -189,7 +201,12 @@ test('invalid schemas and hidden prescriptions cannot enter through either reply
   ]) assert.throws(() => parseHandoffReply(JSON.stringify(invalid), state, scope), JSON.stringify(invalid))
   assert.throws(() => parseHandoffReply(JSON.stringify(valid).replace('"status":"draft"', '"status":"reference","status":"draft"'), state, scope), /repeats/)
   assert.throws(() => parseHandoffReply('x'.repeat(HANDOFF_LIMIT + 1), state, scope), /32 KB/)
-  assert.throws(() => parseHandoffReply('Here is my plan: ' + JSON.stringify(valid), state, scope), /final JSON/)
+  assert.throws(() => parseHandoffReply('Here is my plan: ' + JSON.stringify(valid), state, scope), error => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /final JSON/)
+    assert.doesNotMatch(error.message, /download|upload/i)
+    return true
+  })
 })
 
 test('program handoff exposes compatible templates and canonical variants without costs or AI capabilities', () => {
@@ -518,14 +535,21 @@ test('weekly handoff includes only the explicit review, exposes exact preview an
     sessionId: session.id, status: 'partial', actualDurationMin: 12, actualEffort: 7,
     notes: 'RECORDED REVIEW NOTE', painFlag: true,
   }
+  built.weeks[0].changes.push(
+    { id: 'prefer-next', message: 'Prefer this movement in future weeks: it fits my available equipment.' },
+    { id: 'swap-once', message: 'This session only: substituted while the equipment was busy.' },
+  )
   const weekReview = buildWeekReview(built)!
   const task: HandoffScope = { purpose: 'suggest_exercises', weekReview }
   const working = { ...built, setupComplete: false, weeks: [], revisions: undefined }
   const brief = buildHandoff(working, task)
   assert.deepEqual(brief.context.weekReview, weekReview)
+  assert.deepEqual(brief.context.weekReview?.changes, built.weeks[0].changes)
   assert.equal(brief.context.sessions.length, 0)
   assert.match(brief.instructions, /unknown, not completed and not zero/)
-  assert.match(brief.instructions, /never change baseline quantities, history/)
+  assert.equal(brief.example.version, 3)
+  assert.match(brief.instructions, /never change baseline quantities, history/i)
+  assert.match(brief.instructions, /this-session-only swap is not a future preference/)
   const exported = exportHandoff(working, task)
   assert.ok(exported.endsWith(JSON.stringify(brief.context, null, 2)))
   assert.match(exported, /RECORDED REVIEW NOTE/)
@@ -536,6 +560,9 @@ test('weekly handoff includes only the explicit review, exposes exact preview an
   changed.weekReview!.sessions[0].actualEffort = 9
   assert.throws(() => parseHandoffReply(text, working, changed), /changed since this brief/)
   assert.throws(() => applyHandoff(working, parseHandoffReply(text, working, task), changed), /changed since this brief/)
+  const changedReason = structuredClone(task)
+  changedReason.weekReview!.changes!.at(-1)!.message = 'Prefer this change in future weeks instead.'
+  assert.throws(() => parseHandoffReply(text, working, changedReason), /changed since this brief/)
 })
 
 test('custom reply budget is bounded and generic prompt advertises real definitions, not a default sport', () => {
@@ -549,6 +576,448 @@ test('custom reply budget is bounded and generic prompt advertises real definiti
   assert.doesNotMatch(brief.instructions, /"goalKind":"dodgeball|dodgeball for dodgeball|athlete throws/)
   assert.equal(brief.context.customProfileCatalog?.length, 9)
   assert.doesNotMatch(JSON.stringify(brief.context.customProfileCatalog), /coefficients|schedulingEstimate/)
+})
+
+const currentTraining: CurrentTraining = {
+  version: 1, source: 'manual', asOf: '2026-09-07',
+  weeklyRunMinutes: 60, longestRunMinutes: 30, runsPerWeek: 2, liftsPerWeek: 2, liftDurationMin: 45,
+}
+const authoredWeek: AuthoredWeekProposal = {
+  version: 1, weekStart: '2026-09-07', sessions: [{
+    id: 'comfortable-run', kind: 'run', date: '2026-09-07', startTime: '08:00',
+    durationMin: 20, label: 'Comfortable run', modality: 'run_road', intent: 'easy',
+  }, {
+    id: 'familiar-lifting', kind: 'workout', date: '2026-09-09', startTime: '08:00',
+    durationMin: 30, label: 'Familiar lifting',
+    blocks: [{ unit: 'reps', exerciseId: 'push-up', sets: 1, reps: 5, targetRPE: 6 }],
+  }],
+}
+function fullWeekState(confirmed = false) {
+  const state = programState()
+  state.draft = normalizeRecommendedDraft({
+    ...state.draft,
+    trainingPreferences: { version: 1, runsPerWeek: 4, runDurationMin: 50, liftsPerWeek: 3, liftDurationMin: 60 },
+    ...(confirmed ? { currentTraining } : {}),
+    confirmed,
+  })
+  return state
+}
+
+test('v3 separates desired routine from unknown or confirmed facts and starts assessment without inventing a baseline', () => {
+  const state = fullWeekState()
+  const brief = buildHandoff(state, scope)
+  assert.equal(brief.example.version, 3)
+  assert.equal(brief.example.proposal, null)
+  assert.equal(brief.context.baseline, null)
+  assert.ok('assessmentRequired' in brief.context && brief.context.assessmentRequired)
+  assert.ok('desiredTraining' in brief.context && brief.context.desiredTraining?.runsPerWeek === 4)
+  assert.equal(brief.context.sessions.length, 0)
+  assert.match(brief.instructions, /ASSESS FIRST/)
+  assert.match(brief.instructions, /Full prescriptions are permitted ONLY in structured week fields/)
+  assert.doesNotMatch(brief.instructions, /This is not permission to write a training schedule|Never output sets/)
+  const assessment = parseHandoffReply(JSON.stringify({ ...brief.example, summary: 'Please describe your recent actual training before planning.' }), state, scope)
+  assert.deepEqual(applyHandoff(state, assessment, scope).draft, state.draft)
+  assert.throws(() => parseHandoffReply(JSON.stringify({ ...brief.example, week: authoredWeek }), state, scope), /Current training is unknown/)
+  const confirmed = buildHandoff(fullWeekState(true), scope)
+  assert.deepEqual(confirmed.context.baseline, currentTraining)
+  assert.ok('desiredTraining' in confirmed.context && confirmed.context.desiredTraining?.runDurationMin === 50)
+})
+
+test('v3 imports fact and dose proposals only after explicit fact acknowledgement and stages without committing', () => {
+  const state = fullWeekState()
+  const before = structuredClone(state)
+  const review = parseHandoffReply(JSON.stringify({
+    ...buildHandoff(state, scope).example, currentTraining, week: authoredWeek,
+    summary: 'The proposed routine starts with familiar movements and comfortable running.',
+  }), state, scope)
+  assert.equal(review.reply.version, 3)
+  assert.throws(() => applyHandoff(state, review, scope), /Acknowledge/)
+  const applied = applyHandoff(state, { ...review, currentTrainingAcknowledged: true }, scope)
+  assert.deepEqual(applied.pendingWeek, authoredWeek)
+  assert.deepEqual(applied.draft.currentTraining, { ...currentTraining, source: 'chat' })
+  assert.equal(applied.draft.weeklyRunMinutes, currentTraining.weeklyRunMinutes)
+  assert.equal(applied.draft.runsPerWeek, currentTraining.runsPerWeek)
+  assert.equal(applied.draft.confirmed, false)
+  assert.deepEqual(applied.draft.trainingPreferences, before.draft.trainingPreferences)
+  assert.deepEqual(applied.weeks, [])
+  assert.equal(applied.setupComplete, false)
+  assert.deepEqual(state, before)
+  assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(applied))), applied)
+})
+
+test('v3 includes all fixed club sessions before assessment and counts them inside the weekly budget', () => {
+  const state = fullWeekState()
+  state.draft.practiceDays = [3, 1]
+  state.draft.practiceTime = '18:30'
+  state.draft.practiceDuration = 75
+  const nextScope: HandoffScope = { ...scope, nextWeekStart: '2026-09-21' }
+  const { context, instructions } = buildHandoff(state, nextScope)
+  assert.equal(context.baseline, null)
+  assert.ok('fixedCommitments' in context)
+  assert.deepEqual(context.fixedCommitments, [
+    { id: 'practice-1', sessionId: 'fixed-1-2026-09-21', label: 'Dodgeball practice',
+      dayOfWeek: 1, date: '2026-09-22', startTime: '18:30', durationMin: 75, discipline: 'sport', modality: 'court_sport' },
+    { id: 'practice-3', sessionId: 'fixed-2-2026-09-21', label: 'Dodgeball practice',
+      dayOfWeek: 3, date: '2026-09-24', startTime: '18:30', durationMin: 75, discipline: 'sport', modality: 'court_sport' },
+  ])
+  assert.equal(context.calendarConstraints.fixedCommitmentMinutes, 150)
+  assert.equal(context.calendarConstraints.timeBudgetIncludesFixedCommitments, true)
+  assert.doesNotMatch(JSON.stringify(context.fixedCommitments), /estimatedLoad|coefficients|predictedLoad/)
+  assert.match(instructions, /before discussing weekly load distribution/)
+  assert.match(instructions, /independently of baseline confirmation/)
+  assert.match(instructions, /weeklyTimeBudgetMin already includes fixedCommitmentMinutes/)
+  assert.match(instructions, /omit unchanged club sessions from week.sessions/)
+  assert.match(instructions, /Do not duplicate club training/)
+  const content = JSON.stringify(buildHandoff(state, nextScope).example)
+  assert.throws(() => parseHandoffReply(content, {
+    ...state, draft: { ...state.draft, practiceDuration: 90 },
+  }, nextScope), /changed since this brief/)
+  const withoutClub = buildHandoff({ ...state, draft: { ...state.draft, practiceDays: [] } }, scope)
+  assert.ok('fixedCommitments' in withoutClub.context)
+  assert.deepEqual(withoutClub.context.fixedCommitments, [])
+  assert.equal(withoutClub.context.calendarConstraints.fixedCommitmentMinutes, 0)
+})
+
+test('v3 exports advisory dose references and independent baseline comparisons without safety coefficients', () => {
+  const state = fullWeekState(true)
+  state.draft = normalizeRecommendedDraft({
+    ...state.draft, currentTraining: { ...currentTraining, weeklyRunMinutes: 50 },
+  })
+  const observed: typeof state.draft.exercises[number] = {
+    exerciseId: 'push-up', date: '2026-09-07', weightKg: 0,
+    sets: 1, reps: 5, actualRPE: 6, experienceMonths: 12,
+  }
+  state.draft.exercises = [observed]
+  const { context, instructions } = buildHandoff(state, scope)
+  assert.ok('authoredWeekLimits' in context)
+  const limits = context.authoredWeekLimits
+  assert.equal(limits.trainingReferences.workUnitsPerSession, AUTHORED_WEEK_POLICY.maxSessionWorkUnits)
+  assert.equal(limits.trainingReferences.repetitionsPerSession, AUTHORED_WEEK_POLICY.maxSessionRepetitions)
+  assert.equal(limits.trainingReferences.advisory, true)
+  assert.equal(limits.aboveBaselineProposalsSupported, true)
+  assert.deepEqual(limits.requiredConditioningResources.row, ['rower'])
+  assert.deepEqual(limits.requiredConditioningResources.ski_erg, ['ski_erg'])
+  assert.equal(limits.maxDistinctExercises, 32)
+  assert.equal(limits.automaticProgressionSupported, false)
+  assert.equal(limits.baselineComparisons?.advisory, true)
+  assert.equal(limits.baselineComparisons?.running.maxMinutes, 50)
+  assert.equal(limits.baselineComparisons?.running.maxSessionMinutes, 30)
+  assert.equal(limits.baselineComparisons?.running.maxSessions, 2)
+  assert.equal(limits.baselineComparisons?.lifting.maxWorkUnits, 16)
+  assert.equal(limits.baselineComparisons?.lifting.maxRepetitions, 128)
+  assert.equal(limits.baselineComparisons?.lifting.maxMinutes, 90)
+  for (const item of context.customProfileCatalog ?? []) {
+    assert.deepEqual(item.doseReference, CUSTOM_EXERCISE_PROFILES[item.id].profile.prescription)
+  }
+  assert.ok(context.allowedCatalog.filter(item => 'kind' in item && item.kind === 'exercise')
+    .every(item => 'doseReference' in item))
+  const movement = context.allowedCatalog.find(item => item.id === observed.exerciseId)
+  assert.ok(movement && 'doseReference' in movement)
+  assert.deepEqual(movement.doseReference, { unit: 'reps', sets: 1, reps: 5, targetRPE: 6 })
+  const unknown = buildHandoff(fullWeekState(), scope)
+  assert.ok('authoredWeekLimits' in unknown.context)
+  assert.equal(unknown.context.authoredWeekLimits.baselineComparisons, null)
+  assert.doesNotMatch(JSON.stringify(context), /"coefficients"|"schedulingEstimate"|"predictedLoad"/)
+  assert.match(instructions, /app is a validation, approval and logging harness/)
+  assert.match(instructions, /advisory starting references, not upper bounds/)
+  assert.match(instructions, /Never replace weekly minutes with longestRunMinutes multiplied by runsPerWeek/)
+  assert.match(instructions, /Above-baseline proposals and deliberate progression are supported/)
+})
+
+test('v3 quantities cannot hide in prose or carry AI approval, load coefficients or extra dose fields', () => {
+  const state = fullWeekState(true)
+  const reply = { ...buildHandoff(state, scope).example, week: authoredWeek }
+  for (const invalid of [
+    { ...reply, summary: 'Do 3 sets of 10 reps.' },
+    { ...reply, summary: 'A'.repeat(MAX_HANDOFF_SUMMARY_LENGTH + 1) },
+    { ...reply, currentTraining: { ...currentTraining, approved: true } },
+    { ...reply, currentTraining: { ...currentTraining, weeklyRunMinutes: 999 } },
+    { ...reply, week: { ...authoredWeek, safety: { passed: true } } },
+    { ...reply, week: { ...authoredWeek, sessions: [{ ...authoredWeek.sessions[0], predictedLoad: { systemic: 0, structural: 0 } }] } },
+    { ...reply, week: { ...authoredWeek, sessions: [{ ...authoredWeek.sessions[0], label: 'Run for 30 minutes' }] } },
+    { ...reply, week: { ...authoredWeek, sessions: [{ ...authoredWeek.sessions[1], blocks: [{ unit: 'reps', exerciseId: 'push-up', sets: 1, reps: 5, targetRPE: 6, weightKg: 20 }] }] } },
+    { ...reply, cards: [{ ...card, instructions: 'Run 30 minutes.' }] },
+  ]) assert.throws(() => parseHandoffReply(JSON.stringify(invalid), state, scope), JSON.stringify(invalid))
+  assert.throws(() => parseHandoffReply(JSON.stringify(reply).replace('"sets":1', '"sets":4,"sets":1'), state, scope), /repeats/)
+  assert.throws(() => parseHandoffReply('x'.repeat(FULL_WEEK_HANDOFF_LIMIT + 1), state, scope), /128 KB/)
+})
+
+test('v3 full weeks may use more than seven equipped identities without expanding the built-in selection', () => {
+  const state = fullWeekState(true)
+  const brief = buildHandoff(state, scope)
+  const movements = brief.context.allowedCatalog.filter(item => 'kind' in item && item.kind === 'exercise' && item.unit === 'reps').slice(0, 8)
+  assert.equal(movements.length, 8)
+  const week: AuthoredWeekProposal = {
+    ...authoredWeek, sessions: [0, 1].map(index => ({
+      id: `varied-lifting-${index}`, kind: 'workout', date: index ? '2026-09-11' : '2026-09-09',
+      startTime: '08:00', durationMin: 30, label: 'Controlled lifting',
+      blocks: movements.slice(index * 4, index * 4 + 4).map(item => ({
+        unit: 'reps', exerciseId: item.id, sets: 1, reps: 5, targetRPE: 6,
+      })),
+    })),
+  }
+  const review = parseHandoffReply(JSON.stringify({ ...brief.example, week }), state, scope)
+  assert.equal(review.reply.version, 3)
+  assert.deepEqual(applyHandoff(state, review, scope).pendingWeek, week)
+  assert.deepEqual(applyHandoff(state, review, scope).draft.program?.selectedExerciseIds, state.draft.program?.selectedExerciseIds)
+  assert.match(brief.instructions, /including more than seven/)
+  assert.throws(() => parseHandoffReply(JSON.stringify({
+    ...brief.example,
+    proposal: { goalKind: 'hybrid', label: 'Goal', location: '', eventDate: null, priorities: ['aerobic_base'], exerciseIds: movements.map(item => item.id) },
+  }), state, scope), /exercise IDs/)
+})
+
+test('v3 accepts up to 32 immutable custom definitions and shows oversized replies instead of truncating them', () => {
+  const state = fullWeekState(true)
+  const definitions = Array.from({ length: 32 }, (_, index) => ({
+    ...custom, id: `custom-reviewed-hinge-${index}`,
+    description: 'Controlled movement with a steady position. '.repeat(10).trim(),
+    focus: 'Keep a stable position and comfortable range. '.repeat(10).trim(),
+    why: 'An alternative movement for the stated goal. '.repeat(10).trim(),
+  }))
+  const content = JSON.stringify({ ...buildHandoff(state, scope).example, customExercises: definitions })
+  assert.ok(content.length > HANDOFF_LIMIT)
+  const review = parseHandoffReply(content, state, scope)
+  assert.equal(review.reply.customExercises.length, 32)
+  assert.equal(applyHandoff(state, review, scope).draft.program?.customExercises?.length, 32)
+  assert.throws(() => parseHandoffReply(JSON.stringify({ ...buildHandoff(state, scope).example,
+    customExercises: [...definitions, { ...custom, id: 'custom-too-many' }],
+  }), state, scope), /at most 32/)
+})
+
+test('v3 custom throwing definitions become approved scheduled and loggable identities, not notes-only cards', () => {
+  const state = fullWeekState(true)
+  const week: AuthoredWeekProposal = { version: 1, weekStart: '2026-09-07', sessions: [{
+    id: 'fixed-1-2026-09-07', kind: 'workout', date: '2026-09-08', startTime: '19:00',
+    durationMin: 90, label: 'Dodgeball practice', sourceCommitmentId: 'practice-1',
+    blocks: [{ unit: 'throws', drillId: customDrill.id, throws: 10 }],
+  }] }
+  const linked: WorkoutCard = {
+    ...card, id: 'target-throw-reference', exerciseId: customDrill.id, title: customDrill.name,
+    purpose: customDrill.why, instructions: customDrill.description, cues: customDrill.focus,
+    resources: ['court', 'dodgeballs', 'safe_target'],
+  }
+  const before = structuredClone(state)
+  const review = parseHandoffReply(JSON.stringify({
+    ...buildHandoff(state, scope).example, customSportDrills: [customDrill], cards: [linked], week,
+  }), state, scope)
+  assert.equal(review.reply.version, 3)
+  assert.ok(review.reply.version === 3 && review.reply.customSportDrills[0].id === customDrill.id)
+  assert.throws(() => applyHandoff(state, review, scope), /acknowledge the custom throwing drills/)
+  const staged = applyHandoff(state, { ...review, customSportDrillsAcknowledged: true }, scope)
+  assert.deepEqual(staged.draft.program?.customSportDrills, [customDrill])
+  assert.deepEqual(staged.pendingWeek, week)
+  assert.equal(staged.draft.confirmed, false)
+  assert.deepEqual(staged.cards, [linked])
+  assert.deepEqual(state, before)
+  const context = buildHandoff(staged, scope).context
+  assert.ok(context.allowedCatalog.some(item => item.id === customDrill.id && 'kind' in item && item.kind === 'sport_drill'))
+  assert.ok('customSportDrillProfileCatalog' in context
+    && context.customSportDrillProfileCatalog[0].id === customDrill.profileId)
+  const built = buildCampaign({ ...staged, draft: { ...staged.draft, confirmed: true } })
+  assert.equal(built.weeks[0].plan.safety.passed, true)
+  assert.equal(built.weeks[0].plan.sessions.length, 2)
+  const session = built.weeks[0].plan.sessions.find(item => item.id === week.sessions[0].id)
+  assert.ok(session?.kind === 'workout')
+  assert.deepEqual(session.blocks, [{
+    unit: 'throws', drillId: customDrill.id, throws: 10, intent: 'controlled_technique', embedded: true,
+  }])
+  const logged = logCampaignBlockAmount(built, session.id, 0, '8')
+  const completed = completeCampaignSession(logged, session.id, 90, 5, false)
+  assert.deepEqual(completed.weeks[0].logs[session.id].blockLogs, [{
+    unit: 'throws', blockIndex: 0, drillId: customDrill.id, throws: 8,
+  }])
+  assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(completed))), completed)
+  assert.equal(buildWeekReview(completed)?.sessions.find(item => item.id === session.id)?.blockLogs?.[0].unit, 'throws')
+  const repeated = nextCampaignWeek(completed)
+  const repeatedPractice = repeated.weeks[1]!.plan.sessions.find(item => item.kind === 'workout' && item.sourceCommitmentId === 'practice-1')
+  assert.ok(repeatedPractice?.kind === 'workout')
+  assert.equal(repeatedPractice.id, 'fixed-1-2026-09-14')
+  assert.equal(repeatedPractice.date, '2026-09-15')
+  assert.deepEqual(repeatedPractice.blocks, session.blocks)
+  assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(repeated))), repeated)
+  assert.throws(() => parseHandoffReply(JSON.stringify({
+    ...buildHandoff(state, scope).example, customSportDrills: [], cards: [linked], week,
+  }), state, scope))
+})
+
+test('v3 explicit controlled court practice works with a neutral goal and an independently reported practice cap', () => {
+  const state = fullWeekState(true)
+  state.draft = normalizeRecommendedDraft({
+    ...state.draft, goalKind: 'custom', goalLabel: 'Local club competition',
+    practiceProfile: 'controlled_target_throw',
+    recommendedSetup: { ...state.draft.recommendedSetup!, goalText: 'Prepare for my local club competition.' },
+  })
+  const brief = buildHandoff(state, scope)
+  assert.ok('fixedCommitments' in brief.context)
+  assert.ok(brief.context.fixedCommitments.every(item => item.modality === 'court_sport' && item.label === 'Goal practice'))
+  assert.equal(brief.context.goal.label, 'Local club competition')
+  assert.equal(brief.context.practiceProfile, 'controlled_target_throw')
+  const profile = brief.context.customSportDrillProfileCatalog[0]
+  assert.equal(profile.id, CONTROLLED_TARGET_THROW_PROFILE.id)
+  assert.deepEqual(profile.requirements, CONTROLLED_TARGET_THROW_PROFILE.requirements)
+  assert.deepEqual(profile.technicalBounds, {
+    minThrowsPerPractice: CONTROLLED_TARGET_THROW_PROFILE.minThrowsPerPractice,
+    maxThrowsPerPractice: AI_ADVISORY_LIMITS.maxThrowsPerBlock,
+    maxDefinitions: CONTROLLED_TARGET_THROW_PROFILE.maxDefinitions,
+  })
+  assert.ok(!('calibrationFraction' in profile))
+  const assessing = buildHandoff({ ...state, draft: { ...state.draft, confirmed: false } }, scope)
+  assert.equal(assessing.context.baseline, null)
+  assert.equal(assessing.context.program?.comfortableThrowsPerPractice, 60)
+  assert.ok('authoredWeekLimits' in assessing.context)
+  assert.equal(assessing.context.authoredWeekLimits.throwing?.maxPerConfirmedPractice, 60)
+  assert.equal(assessing.context.authoredWeekLimits.throwing?.maxPerUncalibratedPractice, 30)
+  assert.match(brief.instructions, /format bounds, not recommended or medically safe doses/)
+  const fixed = brief.context.fixedCommitments[0]
+  const week: AuthoredWeekProposal = { version: 1, weekStart: state.draft.startDate, sessions: [{
+    kind: 'workout', id: fixed.sessionId, date: fixed.date, startTime: fixed.startTime,
+    durationMin: fixed.durationMin, label: fixed.label, sourceCommitmentId: fixed.id,
+    blocks: [{ unit: 'throws', drillId: customDrill.id, throws: 10 }],
+  }] }
+  const review = parseHandoffReply(JSON.stringify({ ...brief.example, customSportDrills: [customDrill], week }), state, scope)
+  const staged = applyHandoff(state, { ...review, customSportDrillsAcknowledged: true }, scope)
+  const built = buildCampaign({ ...staged, draft: { ...staged.draft, confirmed: true } })
+  assert.equal(built.weeks[0].plan.safety.passed, true)
+  assert.equal(built.draft.goalKind, 'custom')
+  assert.equal(built.draft.goalLabel, 'Local club competition')
+  assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(built))), built)
+  const withoutCap = structuredClone(state)
+  delete withoutCap.draft.program!.comfortableThrowsPerPractice
+  const noExposure = buildHandoff(withoutCap, scope)
+  assert.ok('customSportDrillProfileCatalog' in noExposure.context)
+  assert.deepEqual(noExposure.context.customSportDrillProfileCatalog, [])
+  assert.match(brief.instructions, /Preserve their goal name and classification/)
+})
+
+test('v3 throwing definitions reject identity reuse, hidden doses, unsupported resources and self-approval', () => {
+  const state = fullWeekState(true)
+  const example = buildHandoff(state, scope).example
+  for (const drill of [
+    { ...customDrill, id: 'dodgeball-controlled-target-throw' },
+    { ...customDrill, profileId: 'ballistic_throw' },
+    { ...customDrill, requirements: ['dodgeball'] },
+    { ...customDrill, requirements: [...customDrill.requirements, 'custom:unconfirmed-target'] },
+    { ...customDrill, unit: 'throws' }, { ...customDrill, throws: 99 },
+    { ...customDrill, coefficients: { systemic: 0, structural: 0 } },
+    { ...customDrill, approved: true },
+    { ...customDrill, description: 'Perform 100 throws.' },
+  ]) assert.throws(() => parseHandoffReply(JSON.stringify({ ...example, customSportDrills: [drill] }), state, scope))
+  assert.throws(() => parseHandoffReply(JSON.stringify({ ...example, customSportDrills: [customDrill, customDrill] }), state, scope), /unique/)
+  const staged = { ...state, draft: stageCustomSportDrills(state.draft, [customDrill]) }
+  const edited = { ...buildHandoff(staged, scope).example, customSportDrills: [{ ...customDrill, focus: 'A changed technique.' }] }
+  assert.throws(() => parseHandoffReply(JSON.stringify(edited), staged, scope), /immutable/)
+  const collision = { ...example, customExercises: [{ ...custom, id: customDrill.id }], customSportDrills: [customDrill] }
+  assert.throws(() => parseHandoffReply(JSON.stringify(collision), state, scope), /collide/)
+  const olderV3 = JSON.parse(JSON.stringify(example))
+  delete olderV3.customSportDrills
+  const compatible = parseHandoffReply(JSON.stringify(olderV3), state, scope)
+  assert.ok(compatible.reply.version === 3)
+  assert.deepEqual(compatible.reply.customSportDrills, [])
+  const legacy = programState()
+  assert.throws(() => parseHandoffReply(JSON.stringify({
+    ...buildHandoff(legacy, scope).example, customSportDrills: [],
+  }), legacy, scope), /format/)
+})
+
+test('v3 stale target, staged week, baseline, scope and post-review edits invalidate the entire proposal', () => {
+  const state = fullWeekState(true)
+  const input = { ...buildHandoff(state, scope).example, week: authoredWeek }
+  const review = parseHandoffReply(JSON.stringify(input), state, scope)
+  assert.throws(() => applyHandoff({ ...state, pendingWeek: authoredWeek }, review, scope), /changed since this brief/)
+  assert.throws(() => applyHandoff(state, review, { ...scope, nextWeekStart: '2026-09-14' }), /changed since this brief/)
+  assert.throws(() => applyHandoff(state, review, scope, 'A different requested week'), /changed since this brief/)
+  assert.throws(() => applyHandoff({ ...state, draft: { ...state.draft, confirmed: false } }, review, scope), /changed since this brief/)
+  const changed = structuredClone(review)
+  if (changed.reply.version === 3) changed.reply.week = { ...authoredWeek, sessions: [] }
+  assert.throws(() => applyHandoff(state, changed, scope), /changed after review/)
+  assert.throws(() => parseHandoffReply(JSON.stringify({ ...input, week: { ...authoredWeek, weekStart: '2026-09-14' } }), state, scope), /target week start/)
+})
+
+test('v3 weekly review preserves the baseline and actual target start, while committed current-week notes stay v2', () => {
+  const initial = programState()
+  const committed = buildCampaign({ ...initial, draft: { ...initial.draft, confirmed: true } })
+  const state = fullWeekState(true)
+  const weekly: HandoffScope = { purpose: 'suggest_exercises', weekReview: buildWeekReview(committed), nextWeekStart: '2026-09-14' }
+  const brief = buildHandoff(state, weekly)
+  assert.equal(brief.example.version, 3)
+  assert.equal(brief.context.calendarConstraints.startDate, '2026-09-14')
+  assert.throws(() => parseHandoffReply(JSON.stringify({ ...brief.example, currentTraining }), state, weekly), /cannot replace/)
+  const review = parseHandoffReply(JSON.stringify({
+    ...brief.example, week: { version: 1, weekStart: '2026-09-14', sessions: [] },
+  }), state, weekly)
+  const applied = applyHandoff(state, review, weekly)
+  assert.deepEqual(applied.draft.currentTraining, state.draft.currentTraining)
+  assert.equal(applied.draft.confirmed, false)
+  const locked = { ...committed, draft: { ...committed.draft, trainingPreferences: state.draft.trainingPreferences } }
+  const lockedBrief = buildHandoff(locked, { purpose: 'suggest_exercises' })
+  assert.equal(lockedBrief.example.version, 2)
+  assert.throws(() => parseHandoffReply(JSON.stringify({ ...lockedBrief.example, version: 3, currentTraining: null, week: null }), locked, { purpose: 'suggest_exercises' }), /locked/)
+})
+
+test('exact ProgrammingRevision initialization retains the approved current or legacy baseline for a nonempty v3 week', () => {
+  for (const original of [fullWeekState(true), programState()]) {
+    const committed = buildCampaign({ ...original, draft: { ...original.draft, confirmed: true } })
+    const working: typeof committed = {
+      version: 1, step: 3, setupComplete: false, sample: committed.sample,
+      draft: { ...committed.draft, confirmed: false }, weeks: [], selectedWeek: 0, setDrafts: {}, cards: committed.cards ?? [],
+    }
+    const weekly: HandoffScope = {
+      purpose: 'suggest_exercises', weekReview: buildWeekReview(committed),
+      nextWeekStart: addDays(committed.draft.startDate, committed.weeks.length * 7),
+    }
+    const brief = buildHandoff(working, weekly)
+    assert.ok('assessmentRequired' in brief.context)
+    assert.equal(brief.context.assessmentRequired, false)
+    assert.equal(brief.context.baselineConfirmed, true)
+    assert.deepEqual(brief.context.currentTraining, committed.draft.currentTraining ?? null)
+    assert.equal(brief.context.baseline?.weeklyRunMinutes, committed.draft.weeklyRunMinutes)
+    assert.equal(brief.context.baseline?.runsPerWeek, committed.draft.runsPerWeek)
+    assert.equal(brief.context.baseline?.liftsPerWeek, committed.draft.liftsPerWeek)
+    assert.equal(brief.context.calendarConstraints.fixedCommitmentMinutes, committed.draft.practiceDays.length * committed.draft.practiceDuration)
+    assert.equal(brief.context.calendarConstraints.weeklyTimeBudgetMin, committed.draft.weeklyTimeBudgetMin)
+    assert.deepEqual(brief.context.program?.conditioningBaselines, committed.draft.program?.conditioningBaselines)
+    assert.equal(brief.context.program?.comfortableThrowsPerPractice, committed.draft.program?.comfortableThrowsPerPractice)
+    assert.deepEqual(brief.context.confirmedExerciseObservations, committed.draft.exercises)
+    const week: AuthoredWeekProposal = { version: 1, weekStart: weekly.nextWeekStart!, sessions: [{
+      id: 'reviewed-next-run', date: weekly.nextWeekStart!, startTime: '08:00', durationMin: 20,
+      label: 'Comfortable run', kind: 'run', modality: 'run_road', intent: 'easy',
+    }] }
+    const review = parseHandoffReply(JSON.stringify({ ...brief.example, week }), working, weekly)
+    assert.ok(review.reply.version === 3)
+    assert.equal(review.reply.currentTraining, null)
+    const staged = applyHandoff(working, review, weekly)
+    assert.deepEqual(staged.pendingWeek, week)
+    assert.deepEqual(staged.draft.currentTraining, committed.draft.currentTraining)
+    assert.equal(staged.draft.confirmed, false)
+    assert.throws(() => parseHandoffReply(JSON.stringify({ ...brief.example, currentTraining }), working, weekly), /cannot replace/)
+  }
+})
+
+test('v3 shares only explicitly included confirmed sanitized activity evidence, never previous plan data', () => {
+  const state = fullWeekState(true)
+  const prior = programState()
+  state.pastPlans = [buildCampaign({ ...prior, draft: { ...prior.draft, goalLabel: 'PRIVATE PRIOR PLAN TITLE', confirmed: true } })]
+  state.draft.trainingHistory = {
+    version: 1, units: 'metric', confirmed: true,
+    activities: [{ source: 'garmin_csv', localTimestamp: '2026-09-05T10:00:00',
+      type: 'running', durationMin: 30, distanceKm: 5, averageHr: 130 }],
+  }
+  const defaultBrief = exportHandoff(state, scope)
+  assert.doesNotMatch(defaultBrief, /PRIVATE PRIOR PLAN TITLE|"trainingHistory"|"averageHr"/)
+  const included: HandoffScope = { ...scope, includeTrainingHistory: true }
+  const brief = buildHandoff(state, included)
+  assert.ok('trainingHistory' in brief.context && brief.context.trainingHistory?.records.length === 1)
+  assert.doesNotMatch(JSON.stringify(brief.context), /PRIVATE PRIOR PLAN TITLE|latitude|longitude|filename/)
+  assert.throws(() => buildHandoff({ ...state, draft: { ...state.draft,
+    trainingHistory: { ...state.draft.trainingHistory!, confirmed: false },
+  } }, included), /confirm the activity history/)
+  const review = parseHandoffReply(JSON.stringify(brief.example), state, included)
+  assert.doesNotThrow(() => applyHandoff(state, review, scope))
+  const history = state.draft.trainingHistory!
+  assert.throws(() => applyHandoff({ ...state, draft: { ...state.draft, trainingHistory: {
+    ...history, activities: [{ ...history.activities[0], durationMin: 45 }],
+  } } }, review, scope), /changed since this brief/)
 })
 test('committed plans accept reference cards only, without changing prescriptions, logs, costs or scheduling', () => {
   const state = exampleCampaign('2026-09-07')
