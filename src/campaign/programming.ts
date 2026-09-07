@@ -35,7 +35,8 @@ export function enableTemplateProgramming(draft: CampaignDraft): CampaignDraft {
   const capabilities = programResources(resources)
   const goal = programGoalForKind(draft.goalKind)
   // Seed mobility in new routines without forcing it back into later user-edited selections.
-  const recommendation = recommendProgram(capabilities, goal, undefined, undefined, true)
+  const includeMobility = availableExerciseMetadata(capabilities).some(exercise => exercise.template === 'mobility')
+  const recommendation = recommendProgram(capabilities, goal, undefined, undefined, includeMobility)
   return {
     ...draft, resources: [...resources], equipment: equipmentForResources(resources), confirmed: false,
     program: {

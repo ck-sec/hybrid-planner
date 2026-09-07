@@ -48,8 +48,9 @@ observations**. No previous weights, sets, RPE ratings or exercise dates are
 required for this path. Built-in planning uses conservative first-exposure templates;
 kilograms remain unset until the athlete finds and logs their own weight.
 Built-in or approved custom exercises can be selected before committing the block.
-New built-in selections include an equipped, timed mobility exercise in the
-reviewable A/B rotation. Selections remain editable; existing approved weeks are
+New built-in selections include a timed mobility exercise in the reviewable A/B
+rotation when confirmed equipment and space support one; missing floor space is
+never assumed. Selections remain editable; existing approved weeks are
 not rewritten. AI setup and weekly-review briefs also request suitable
 mobilisation as scheduled, loggable workout blocks, not merely stretching advice
 or reference notes. AI and the user choose its placement and amounts, including

@@ -157,7 +157,8 @@ not mean the app currently generates a complete coaching programme for every spo
   IDs; weights and logs must not be borrowed from a different movement or variant.
 - Personal reference cards remain separate from scheduled exercises.
 - Mobility/mobilisation belongs in **both AI and built-in plans**. New built-in
-  selections include a supported timed mobility exercise in the A/B rotation,
+  selections include a supported timed mobility exercise in the A/B rotation
+  when confirmed equipment and space allow it,
   without forcing it back into explicitly edited selections or changing saved
   weeks. AI setup and weekly-review prompts request real scheduled mobility
   blocks with catalog/custom identities, units and doses, not notes alone.
@@ -371,7 +372,9 @@ not mean the app currently generates a complete coaching programme for every spo
   and explicitly edited selections are not rewritten.
 - Corrected shared preview titles, repeated-advice display, exact conditioning
   equipment projection, repeated fixed-practice matching and swap validation
-  after actual-set overruns.
+  after actual-set overruns. Release CI also caught the mobility default forcing
+  unavailable floor-space exercises; it now uses the existing capability check
+  without blocking otherwise equipped routines or assuming unconfirmed space.
 - Updated the README and this memory. The checks above describe local evidence;
   the user requested publication today. Use the existing Git-integrated
   Cloudflare Pages release path, validate the branch preview and CI, then verify

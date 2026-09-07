@@ -60,6 +60,22 @@ test('new built-in routines schedule equipped mobility, with real seconds and no
   }
 })
 
+test('mobility defaults do not invent floor space or block otherwise equipped routines', () => {
+  const state = prepared(['barbell', 'rack', 'bench', 'dumbbell', 'cable', 'machine', 'carry_space'])
+  const before = structuredClone(state)
+  const built = buildCampaign(state)
+  const week = built.weeks[0]!
+  assert.ok(!state.draft.resources!.includes('floor_space'))
+  assert.ok(!week.input.athlete.program!.resources.includes('floor_space'))
+  const mobilityIds = week.input.library.exercises.filter(exercise => exercise.template === 'mobility').map(exercise => exercise.id)
+  assert.ok(state.draft.recommendedSetup!.exerciseIds.every(id => !mobilityIds.includes(id)))
+  assert.ok(week.plan.sessions.some(session => session.kind === 'workout'))
+  assert.ok(week.plan.sessions.every(session => session.kind !== 'workout'
+    || session.blocks.every(block => block.unit !== 'seconds' || !mobilityIds.includes(block.exerciseId))))
+  assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(built))), built)
+  assert.deepEqual(state, before)
+})
+
 test('mobility defaults do not overwrite saved or explicitly edited selections', () => {
   const state = prepared()
   const library = resolveProgramLibrary(state.draft.program)
