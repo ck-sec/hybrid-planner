@@ -293,7 +293,7 @@ not mean the app currently generates a complete coaching programme for every spo
   separate browser storage. Test a preview before publishing and verify the live
   outcome before saying a change is live.
 
-## Current boundaries and last verified release
+## Current boundaries and historical checks
 
 - The built-in planner remains baseline-bounded. AI/user-approved training uses
   advisory training policies, not automatic progression or medical clearance.
@@ -306,7 +306,7 @@ not mean the app currently generates a complete coaching programme for every spo
   sets/weights or comfort/readiness. Use synthetic fixtures, not personal exports.
   Historical files are not automatically current baselines; reimports must not
   duplicate records. Garmin FIT and Apple Health imports remain outside this work.
-- As of the last verification on **2026-09-06**, commit **`da82850`** was live:
+- The previous release verified on **2026-09-06**, commit **`da82850`**, included:
   restored training headline, room for other sports, AI-context explanation,
   privacy-first positioning, plan restart with history, and AI import recovery.
 - That release passed CI, marketing tests, lint/build and desktop/mobile checks.
@@ -333,13 +333,14 @@ not mean the app currently generates a complete coaching programme for every spo
   longer run, approval/reload and unchanged next-week repetition. Reported
   training stayed separate from desired/planned totals. Mobile and desktop had
   no horizontal overflow. Isolated synthetic records were removed afterward.
-  These changes were not committed or deployed.
+  These were pre-release checks; the live release is recorded below.
 - Local mobility verification on 2026-09-07: **153 targeted tests passed**,
   including built-in selection, AI/API handover, timed actuals, weekly review,
   repetition and saved-plan compatibility. Lint and production build passed.
   Browser checks confirmed the named mobility workout card, a 35-second actual
   surviving reload independently of its 30-second prescription, and no horizontal
-  overflow at 390px. The isolated synthetic record was removed. Not deployed.
+  overflow at 390px. The isolated synthetic record was removed. These were
+  pre-release checks.
 
 ## Work completed on 2026-09-07
 
@@ -375,7 +376,34 @@ not mean the app currently generates a complete coaching programme for every spo
   after actual-set overruns. Release CI also caught the mobility default forcing
   unavailable floor-space exercises; it now uses the existing capability check
   without blocking otherwise equipped routines or assuming unconfirmed space.
-- Updated the README and this memory. The checks above describe local evidence;
-  the user requested publication today. Use the existing Git-integrated
-  Cloudflare Pages release path, validate the branch preview and CI, then verify
-  production before recording a live release below.
+- Updated the README and this memory, then published through the existing
+  Git-integrated Cloudflare Pages release path after preview and CI validation.
+
+## Verified live release on 2026-09-07
+
+- Application release: [`24d339d`](https://github.com/ck-sec/hybrid-planner/commit/24d339df7e2827f85b45f6d8e7b0f87f2ad1467e),
+  including the main implementation in `fb34391` and the equipment-compatible
+  mobility correction. Fast-forwarded and pushed to `main`; no force push.
+- [Hosted preview](https://e91a2e2c.hybrid-planner.pages.dev/app/) passed before
+  production: working goal/routine flow, exact weekly slider totals, the named
+  mobility selection and mobilisation instructions in the shared AI brief.
+  Only the verified synthetic preview draft was removed afterward.
+- [Release CI](https://github.com/ck-sec/hybrid-planner/actions/runs/34149820476)
+  passed **584 tests, zero failures/skips**, lint and production build.
+  [Production-branch CI](https://github.com/ck-sec/hybrid-planner/actions/runs/34150080976)
+  also passed.
+- Cloudflare Pages production deployment
+  [`854c16a4`](https://854c16a4.hybrid-planner.pages.dev) succeeded at
+  **18:04:09 UTC / 20:04:09 CEST** for that exact application commit.
+- Verified HTTP 200 at [the public site](https://hybridcoach.ai/) and
+  [the planner](https://hybridcoach.ai/app/). Production serves
+  `index-DtK0L-XF.js`, matching the tested local build byte-for-byte
+  (SHA-256 `a5671f9f7acfeb353acd3e3d72c1cb171f7b07d199d94863838f4b5c57c6f730`).
+  The live browser loaded that bundle with an active service worker.
+- Existing non-blocking warnings remain: the application bundle exceeds Vite's
+  chunk-size warning threshold, and GitHub reports legacy declared action
+  runtimes while running them on Node 24. No hosting configuration or secrets
+  were changed, and no existing user training records were cleared.
+- This is a dated deployment receipt for the application release. Documentation-
+  only follow-up commits can advance `main` without changing the application
+  bundle; recheck the actual production commit before future releases.
