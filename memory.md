@@ -464,3 +464,30 @@ not mean the app currently generates a complete coaching programme for every spo
 - Production publication was requested after local verification. The September 7
   receipt remains historical; the September 8 live receipt is recorded separately
   after verifying the deployed release.
+
+## Verified live release on 2026-09-08
+
+- Application commit: [`86e590f`](https://github.com/ck-sec/hybrid-planner/commit/86e590f1874df7db78108f99f47e17fc0f8dc81e).
+  Pushed a release branch, verified the hosted preview and CI, then fast-forwarded
+  `main` and pushed without force.
+- [Release CI](https://github.com/ck-sec/hybrid-planner/actions/runs/34202013706)
+  passed lint, tests and production build. Local verification passed all 617 tests.
+- [Production-branch CI](https://github.com/ck-sec/hybrid-planner/actions/runs/34202340008)
+  also passed all 617 tests with zero failures or skips.
+- [Hosted preview](https://eff69b4e.hybrid-planner.pages.dev/app/) served the
+  validated bundle byte-for-byte. Browser checks confirmed the today default,
+  a Wednesday start, the fixed Wednesday club session, no throwing control and
+  an 8,768-character AI brief without the full exercise library. Only the verified
+  synthetic preview draft was removed.
+- Cloudflare Pages production deployment
+  [`e764e3f5`](https://e764e3f5.hybrid-planner.pages.dev) succeeded at
+  **08:02:55 UTC / 10:02:55 CEST** for the exact application commit.
+- After deployment completed, verified HTTP 200 at
+  [the public site](https://hybridcoach.ai/), [the planner](https://hybridcoach.ai/app/)
+  and the application asset. Live `index-b4T-s9Se.js` matches the tested local build
+  (SHA-256 `cb8d9295f6b0f2e22763babf13d0494d142eb04d196b12518cb9302d6f5127a3`).
+  The live browser loaded that bundle with an active service worker.
+- The user's standing production-delivery preference is saved above. Existing
+  training records, hosting settings and secrets were not changed by publication.
+  This receipt identifies the application release; documentation-only follow-ups
+  can advance `main` without changing its application bundle.
