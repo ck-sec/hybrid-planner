@@ -1,5 +1,5 @@
 import { AI_ADVISORY_POLICY_VERSION, CAMPAIGN_POLICY, DAY_NAMES, LIMITS, SAFETY } from './constants.ts'
-import { addDays, dayNumber, dayOfWeek, parseISODate, sessionStartMinutes, timeMinutes } from './dates.ts'
+import { addDays, dateForWeekday, dayNumber, dayOfWeek, parseISODate, sessionStartMinutes, timeMinutes } from './dates.ts'
 import { predictSessionLoad, residualBefore } from './load.ts'
 import { fixedSessions } from './planner.ts'
 import { checkSafety } from './safety.ts'
@@ -137,8 +137,7 @@ function rearrange(
   const mandatoryIds = new Set(mandatory.map(session => session.id))
   const movable = sortSessions(sessions.filter(session => !mandatoryIds.has(session.id)))
   const start = week.plan.weekStart
-  const days = [...input.athlete.availableDays].sort((a, b) => a - b)
-    .map(day => addDays(start, day))
+  const days = input.athlete.availableDays.map(day => dateForWeekday(start, day)).sort()
     .filter(date => date <= input.block.goal.peakDate)
   let candidatesScored = 0
   let rejectedBySafety = 0
@@ -289,7 +288,7 @@ export function followingCommitments(input: PlanWeekInput, options: ValidationOp
     return [...block.goal.fixedCommitments].sort((a, b) => compare(a.id, b.id))
       .map((commitment, index): Session => ({
         id: `fixed-${index + 1}-${weekStart}`, kind: 'commitment',
-        date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+        date: dateForWeekday(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
         durationMin: commitment.durationMin, discipline: commitment.discipline, modality: commitment.modality,
         label: commitment.label, predictedLoad: { ...commitment.estimatedLoad }, pinned: true, isCalibration: false,
         reason: 'An established commitment. Its time and workload are not changed by the optimizer.',

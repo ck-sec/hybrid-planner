@@ -1,12 +1,14 @@
 import type { ExerciseLibrary, ProgramConfigV1, WeekPlan } from '../../engine/types.ts'
 import { authoredPolicyOptions } from './authored-policy.ts'
 import { sessionTitle } from './session-title.ts'
+import { displayPlanWarnings } from './plan-warnings.ts'
 
 export default function WeekPlanPreview({ plan, library, program }: { plan: WeekPlan; library: ExerciseLibrary; program?: ProgramConfigV1 }) {
   const advisory = authoredPolicyOptions(plan.policyVersion).policy === 'ai-advisory'
+  const relevantWarnings = displayPlanWarnings(plan)
   const warnings = advisory
-    ? [...new Set(plan.warnings.map(warning => warning.replace(/^\[[^\]]+\] [^\n]*?: Advisory only: /, '')))]
-    : plan.warnings
+    ? [...new Set(relevantWarnings.map(warning => warning.replace(/^\[[^\]]+\] [^\n]*?: Advisory only: /, '')))]
+    : relevantWarnings
   return <div className="cf-card cf-stack">
     <h3>Checked week starting {plan.weekStart}</h3>
     <p className="cf-small">{plan.safety.passed ? advisory ? 'Hard data and equipment checks passed' : 'App checks passed' : 'Hard app checks need attention'}—not medical clearance or a technique assessment. Nothing is logged until you record it.</p>

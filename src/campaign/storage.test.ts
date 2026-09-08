@@ -102,6 +102,29 @@ test('draft and unconfirmed set values save only after transaction commit', asyn
   assert.deepEqual(database.data, { revision: 1, state })
 })
 
+test('loading an existing calendar ignores the new today default and persists a rolling replacement exactly', async t => {
+  const database = fakeDatabase(t)
+  const initial = exampleCampaign('2026-09-07')
+  const saved = buildCampaign({ ...initial, draft: { ...initial.draft, confirmed: true } })
+  database.data = { revision: 1, state: saved }
+  const loading = loadCampaign(emptyCampaign('2026-09-09'))
+  await tick()
+  database.latest().complete()
+  assert.deepEqual(await loading, { revision: 1, state: saved })
+  assert.equal(database.latest().written, false)
+  const fresh = exampleCampaign('2026-09-09')
+  const rolling = buildCampaign({ ...fresh, draft: { ...fresh.draft, confirmed: true } })
+  const saving = persistCampaign(rolling, 1)
+  await tick()
+  database.latest().complete()
+  assert.deepEqual(await saving, { revision: 2, state: rolling })
+  const reloading = loadCampaign(emptyCampaign('2026-09-10'))
+  await tick()
+  database.latest().complete()
+  assert.deepEqual(await reloading, { revision: 2, state: rolling })
+  assert.equal(database.latest().written, false)
+})
+
 test('cross-tab conflicts keep the newer campaign intact', async t => {
   const database = fakeDatabase(t)
   const state = emptyCampaign('2026-09-07')

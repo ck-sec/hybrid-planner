@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { LIMITS } from '../../engine/constants.ts'
+import { addDays, dayOfWeek } from '../../engine/dates.ts'
 import type { CustomExerciseSpec } from '../../engine/types.ts'
 import { equipmentForResources, RESOURCE_CATALOG } from './equipment.ts'
 import { emptyCampaign, parseCampaign } from './model.ts'
@@ -56,6 +57,28 @@ test('changing a block start updates only its default review, never a user event
   assert.equal(onboardingReviewDate(''), '')
   assert.throws(() => advanceOnboarding({ ...answeredRoutine(), step: 1, draft: { ...draft, eventDate: '2026-09-01' } }), /Choose a date/)
   assert.throws(() => advanceOnboarding({ ...answeredRoutine(), step: 1, draft: { ...draft, eventDate: '2026-02-31' } }), /including the year/)
+})
+
+test('onboarding accepts every start weekday without rotating availability or practices', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const state = answeredRoutine()
+    const startDate = addDays('2026-09-07', offset)
+    const draft = patchOnboardingDraft(state.draft, {
+      startDate, availableDays: [0, 1, 3, 5, 6], practiceDays: [1, 3], practiceTime: '19:00', practiceDuration: 45,
+    })
+    assert.equal(draft.eventDate, addDays(startDate, 83))
+    const review = advanceOnboarding({ ...state, draft })
+    assert.equal(review.step, 5)
+    assert.equal(review.draft.startDate, startDate)
+    assert.deepEqual(review.draft.availableDays, draft.availableDays)
+    assert.deepEqual(review.draft.practiceDays, draft.practiceDays)
+    const built = advanceOnboarding({ ...review, draft: { ...review.draft, confirmed: true } })
+    assert.equal(built.weeks[0].plan.weekStart, startDate)
+    assert.ok(built.weeks[0].plan.sessions.every(session => draft.availableDays.includes(dayOfWeek(session.date))))
+    assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(built))), built)
+    const explicitEvent = patchOnboardingDraft({ ...draft, eventDate: '2026-12-20' }, { startDate: addDays(startDate, 1) })
+    assert.equal(explicitEvent.eventDate, '2026-12-20')
+  }
 })
 
 test('routine validates real answers and gives missing floor-space feedback', () => {

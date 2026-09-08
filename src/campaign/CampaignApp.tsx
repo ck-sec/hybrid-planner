@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DragEvent, PointerEvent } from 'react'
-import { addDays } from '../../engine/dates.ts'
-import { DAY_NAMES } from '../../engine/constants.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { SUPPORTED_SPORT_DRILLS } from '../../engine/program.ts'
 import type { ExerciseLibrary, Quality, Session } from '../../engine/types.ts'
-import { currentMonday, formatDay, formatWeek } from '../dates.ts'
+import { calendarDays, currentDate, formatDay, formatWeek } from '../dates.ts'
+import { displayPlanWarnings } from './plan-warnings.ts'
 import BrandMark from '../BrandMark.tsx'
 import { observeOfflineWorker } from '../offline.ts'
 import type { OfflineStatus } from '../offline.ts'
@@ -73,7 +72,7 @@ export default function CampaignApp() {
 
   useEffect(() => {
     let disposed = false
-    void loadCampaign(emptyCampaign(addDays(currentMonday(), 7))).then(snapshot => {
+    void loadCampaign(emptyCampaign(currentDate())).then(snapshot => {
       if (disposed) return
       revision.current = snapshot.revision
       const prepared = snapshot.state.setupComplete ? snapshot.state : prepareRecommendedSetup(snapshot.state)
@@ -208,12 +207,12 @@ export default function CampaignApp() {
         onBackup={exportData} onCancel={() => setPanel('settings')}
         onConfirm={() => {
           if (saveStatus !== 'saved') return
-          if (update(previous => startNewPlan(previous, addDays(currentMonday(), 7)))) {
+          if (update(previous => startNewPlan(previous, currentDate()))) {
             setPendingRestore(null); setNotice(''); setPanel(null); navigate('today')
           }
         }}
       />}
-      {panel === 'leave-example' && <section className="cf-stack"><h2>Start your own plan?</h2><p>This clears the example plan and any entries you made in it. Export a backup first to keep them. Previous plans in training history stay saved.</p><div className="cf-inline"><button className="cf-button cf-secondary" onClick={exportData}>Export example</button><button className="cf-button cf-primary" onClick={() => { update(previous => ({ ...emptyCampaign(addDays(currentMonday(), 7)), step: 1, ...(previous.pastPlans ? { pastPlans: previous.pastPlans } : {}) })); setPanel(null); navigate('today') }}>Start my plan</button><button className="cf-text-button" onClick={() => setPanel('settings')}>Cancel</button></div></section>}
+      {panel === 'leave-example' && <section className="cf-stack"><h2>Start your own plan?</h2><p>This clears the example plan and any entries you made in it. Export a backup first to keep them. Previous plans in training history stay saved.</p><div className="cf-inline"><button className="cf-button cf-secondary" onClick={exportData}>Export example</button><button className="cf-button cf-primary" onClick={() => { update(previous => ({ ...emptyCampaign(currentDate()), step: 1, ...(previous.pastPlans ? { pastPlans: previous.pastPlans } : {}) })); setPanel(null); navigate('today') }}>Start my plan</button><button className="cf-text-button" onClick={() => setPanel('settings')}>Cancel</button></div></section>}
       {panel === 'settings' && <section className="cf-stack">
         <div className="cf-dialog-header"><h2>Data &amp; settings</h2><button className="cf-icon-button" aria-label="Close settings" onClick={() => setPanel(null)}><Icon name="close" /></button></div>
         <div className="cf-card"><Icon name="lock" /><h3>Stored in this browser</h3><p className="cf-muted">Clearing browser data removes your training records—keep a backup. AI connects only when you ask.</p><p className="cf-small">{offline.message}</p></div>
@@ -254,6 +253,7 @@ export function CalendarHome({ state, update, onSession, onAction, onAI, onNext 
   const suppressClick = useRef(false)
   if (!week) return <p>No saved week. Complete setup to begin.</p>
   const { plan } = week
+  const days = calendarDays(plan.weekStart)
   const archived = state.selectedWeek < state.weeks.length - 1
   const isLocked = (session: Session) => archived || week.logs[session.id] !== undefined
     || Boolean(week.authored && (session.kind === 'commitment' || (session.kind === 'workout' && session.sourceCommitmentId)))
@@ -283,15 +283,14 @@ export function CalendarHome({ state, update, onSession, onAction, onAI, onNext 
       <div className="cf-page-heading"><h1>Your week</h1><button type="button" className="cf-text-button" onClick={onAI}><Icon name="spark" size={18} />Ask AI (optional)</button></div>
       <div className="cf-campaign-strip"><span className="cf-campaign-symbol"><Icon name={goalIcons[state.draft.goalKind]} /></span><div><span className="cf-kicker">{state.draft.location || 'YOUR GOAL'}</span><strong>{state.draft.goalLabel}</strong></div><span className="cf-tag">WEEK {plan.weekIndex + 1}</span></div>
       <div className="cf-calendar-heading"><div><h2>{formatWeek(plan.weekStart).split(' – ')[0]} <span>— {formatDay(plan.weekStart, 6)}</span></h2><p>{plan.phase === 'base' && plan.weekIndex === 0 ? 'Finding your starting point' : `${plan.phase.charAt(0).toUpperCase() + plan.phase.slice(1)} phase`}<span className="cf-mid-dot">·</span>{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m planned</p></div><div className="cf-inline"><button className="cf-icon-button" aria-label="Previous week" disabled={state.selectedWeek === 0} onClick={() => update(previous => ({ ...previous, selectedWeek: previous.selectedWeek - 1 }))}><Icon name="back" size={19} /></button><button className="cf-icon-button" aria-label={archived ? 'Next saved week' : 'Review next week'} onClick={() => archived ? update(previous => ({ ...previous, selectedWeek: previous.selectedWeek + 1 })) : onNext()}><Icon name="arrow" size={19} /></button></div></div>
-      <div className="cf-calendar-rail">{DAY_NAMES.map((day, index) => <a href={`#day-${index}`} key={day} onClick={event => { event.preventDefault(); document.getElementById(`day-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }}><span>{day.slice(0, 3)}</span><strong>{Number(addDays(plan.weekStart, index).slice(-2))}</strong><span className="cf-day-dots">{plan.sessions.filter(session => session.date === addDays(plan.weekStart, index)).map(session => <i key={session.id} className={`cf-dot-${sessionTheme(session)}`} />)}</span></a>)}</div>
+      <div className="cf-calendar-rail">{days.map(({ day, date }, index) => <a href={`#day-${index}`} key={date} onClick={event => { event.preventDefault(); document.getElementById(`day-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }}><span>{day.slice(0, 3)}</span><strong>{Number(date.slice(-2))}</strong><span className="cf-day-dots">{plan.sessions.filter(session => session.date === date).map(session => <i key={session.id} className={`cf-dot-${sessionTheme(session)}`} />)}</span></a>)}</div>
       {archived && <p className="cf-small">Past week · read-only</p>}
       {plan.sessions.some(session => !isLocked(session)) && <p className="cf-calendar-help"><Icon name="move" size={14} />Drag to another day, or use Session options → Move.</p>}
       {week.changes.length > 1 && <div className="cf-adaptation" role="status"><Icon name="leaf" size={20} /><div><strong>Plan adapted</strong><p>{week.changes.at(-1)?.message}</p></div></div>}
       {!plan.safety.passed && <div className="cf-error" role="alert"><strong>{week.input.athlete.safetyHold || Object.values(week.logs).some(log => log.painFlag) ? 'Training is on hold.' : 'Review the remaining week before continuing.'}</strong>{plan.safety.violations.map(violation => <p key={violation.rule}>{violation.message}</p>)}</div>}
       {plan.safety.passed && (week.input.athlete.safetyHold || Object.values(week.logs).some(log => log.painFlag)) && <p className="cf-error" role="status">Pain or a health concern remains recorded. Review it before further training. Plan approval is not medical clearance and does not clear this report.</p>}
       {plan.omitted.length > 0 && <details className="cf-details cf-omission"><summary>{plan.omitted.length} session{plan.omitted.length === 1 ? '' : 's'} left out to respect your limits</summary>{plan.omitted.map(item => <p key={item.sessionId}>{item.reason}</p>)}</details>}
-      <div className="cf-calendar" aria-label="Weekly training calendar">{DAY_NAMES.map((day, index) => {
-        const date = addDays(plan.weekStart, index)
+      <div className="cf-calendar" aria-label="Weekly training calendar">{days.map(({ day, date }, index) => {
         const sessions = plan.sessions.filter(session => session.date === date)
         const removed = week.removed.filter(session => session.date === date)
         return <section id={`day-${index}`} key={day} data-calendar-date={date} className={`cf-calendar-day ${over === date ? 'cf-drop-target' : ''}`} aria-label={`${day} ${date}`} onDragOver={event => { event.preventDefault(); setOver(date) }} onDrop={event => nativeDrop(event, date)}><div className="cf-date-column"><span>{day.slice(0, 3)}</span><strong>{Number(date.slice(-2))}</strong></div><div className="cf-day-sessions">
@@ -309,7 +308,7 @@ export function CalendarHome({ state, update, onSession, onAction, onAI, onNext 
         </div></section>
       })}</div>
     </section>
-    <aside className="cf-home-aside"><div className="cf-aside-goal"><p className="cf-kicker">YOUR GOAL</p><h2>{state.draft.location || 'Your plan'}</h2><CourtArt /><p>{state.draft.goalLabel}</p><span>{state.draft.eventDate}</span></div><div className="cf-card cf-stack"><h3>Why this week</h3><p className="cf-muted">Your established training and recovery time guide the schedule.</p><details className="cf-details"><summary>Scheduling details</summary><p>{plan.intent}</p>{plan.warnings.map(warning => <p key={warning}>{warning}</p>)}</details></div></aside>
+    <aside className="cf-home-aside"><div className="cf-aside-goal"><p className="cf-kicker">YOUR GOAL</p><h2>{state.draft.location || 'Your plan'}</h2><CourtArt /><p>{state.draft.goalLabel}</p><span>{state.draft.eventDate}</span></div><div className="cf-card cf-stack"><h3>Why this week</h3><p className="cf-muted">Your established training and recovery time guide the schedule.</p><details className="cf-details"><summary>Scheduling details</summary><p>{plan.intent}</p>{displayPlanWarnings(plan).map(warning => <p key={warning}>{warning}</p>)}</details></div></aside>
   </div>
 }
 
@@ -341,7 +340,7 @@ export function Workout({ state, session, update, onBack, onAction, onAI }: { st
     {archived && <p className="cf-small">Past week · read-only</p>}
     {!log && !readOnly && <details className="cf-details"><summary>Session options</summary>
       <div className="cf-session-actions">{!(week.authored && (session.kind === 'commitment' || (session.kind === 'workout' && session.sourceCommitmentId))) && <button type="button" aria-expanded={mode === 'move'} onClick={() => setMode(mode === 'move' ? null : 'move')}><Icon name="move" size={18} />Move</button>}<button type="button" aria-expanded={mode === 'skip'} onClick={() => setMode(mode === 'skip' ? null : 'skip')}><Icon name="leaf" size={18} />Skip</button><button type="button" aria-expanded={mode === 'delete'} onClick={() => setMode(mode === 'delete' ? null : 'delete')}><Icon name="close" size={18} />Remove from week</button></div>
-      {mode === 'move' && <form className="cf-card cf-stack" onSubmit={event => { event.preventDefault(); onAction({ type: 'move', sessionId: session.id, date: moveDate, startTime: moveTime }); setMode(null) }}><h3>Move workout</h3><p className="cf-muted">The app checks the new placement without adding work.</p><div className="cf-two"><label className="cf-field">Day<select value={moveDate} onChange={event => setMoveDate(event.target.value)}>{DAY_NAMES.map((day, index) => <option key={day} value={addDays(week.plan.weekStart, index)}>{day} · {formatDay(week.plan.weekStart, index)}</option>)}</select></label><label className="cf-field">Time<input type="time" required value={moveTime} onChange={event => setMoveTime(event.target.value)} /></label></div><button className="cf-button cf-primary">Check &amp; move</button></form>}
+      {mode === 'move' && <form className="cf-card cf-stack" onSubmit={event => { event.preventDefault(); onAction({ type: 'move', sessionId: session.id, date: moveDate, startTime: moveTime }); setMode(null) }}><h3>Move workout</h3><p className="cf-muted">The app checks the new placement without adding work.</p><div className="cf-two"><label className="cf-field">Day<select value={moveDate} onChange={event => setMoveDate(event.target.value)}>{calendarDays(week.plan.weekStart).map(({ day, date }, index) => <option key={date} value={date}>{day} · {formatDay(week.plan.weekStart, index)}</option>)}</select></label><label className="cf-field">Time<input type="time" required value={moveTime} onChange={event => setMoveTime(event.target.value)} /></label></div><button className="cf-button cf-primary">Check &amp; move</button></form>}
       {mode === 'skip' && <div className="cf-card cf-stack"><h3>Why skip this workout?</h3><button className="cf-choice cf-horizontal" onClick={() => { onAction({ type: 'skip', sessionId: session.id, reason: 'too_tired' }); setMode(null) }}><Icon name="leaf" /><div><strong>I'm fatigued</strong><span>{advisory ? 'Record fatigue for review. No automatic dose reduction.' : 'Reduce upcoming optional work. No catch-up.'}</span></div><Icon name="chevron" /></button><button className="cf-choice cf-horizontal" onClick={() => { onAction({ type: 'skip', sessionId: session.id, reason: 'life' }); setMode(null) }}><Icon name="calendar" /><div><strong>I don't have time</strong><span>Rearrange what's left. No catch-up.</span></div><Icon name="chevron" /></button></div>}
       {mode === 'delete' && <div className="cf-card cf-stack"><h3>Remove from this week?</h3><p>The change stays in history and is not treated as fatigue.</p><div className="cf-inline"><button className="cf-button cf-danger" onClick={() => { onAction({ type: 'delete', sessionId: session.id }); setMode(null) }}>Remove workout</button><button className="cf-button cf-secondary" onClick={() => setMode(null)}>Keep workout</button></div></div>}
     </details>}

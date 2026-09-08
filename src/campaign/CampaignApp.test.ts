@@ -7,6 +7,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
 import { adaptCampaign, buildCampaign, completeCampaignSession, confirmSetupEquipment, exampleCampaign, nextCampaignWeek } from './model.ts'
 import { proposalForSessions } from './authored-calendar.ts'
+import { addDays } from '../../engine/dates.ts'
+import { DAY_NAMES } from '../../engine/constants.ts'
 
 test('workout and week screens disclose optional actions without changing training', async t => {
   const directory = new URL('../', import.meta.url).href
@@ -50,6 +52,40 @@ test('workout and week screens disclose optional actions without changing traini
         sessionId: session.id, status: 'completed', painFlag: false, notes: '',
       }
       assert.doesNotMatch(render(recorded), /cf-calendar-help|cf-drag-handle|draggable="true"/)
+    })
+
+    await t.test('built-in and AI calendars show seven actual weekday labels in rolling date order', () => {
+      for (let startDay = 0; startDay < 7; startDay++) {
+        const startDate = addDays('2026-09-07', startDay)
+        const initial = confirmSetupEquipment(exampleCampaign(startDate), ['dumbbell', 'floor_space', 'bench'])
+        const ready = { ...initial, draft: { ...initial.draft, confirmed: true } }
+        const builtIn = buildCampaign(ready)
+        const authored = buildCampaign({ ...ready, pendingWeek: proposalForSessions(startDate, builtIn.weeks[0].plan.sessions) })
+        for (const candidate of [builtIn, authored]) {
+          const before = structuredClone(candidate)
+          const html = renderToStaticMarkup(createElement(CalendarHome, { state: candidate, ...actions }))
+          const rows = [...html.matchAll(/data-calendar-date="([^"]+)"[^>]*aria-label="([^"]+)"/g)]
+          assert.equal(rows.length, 7)
+          assert.deepEqual(rows.map(row => [row[1], row[2]]), Array.from({ length: 7 }, (_, index) => {
+            const date = addDays(startDate, index)
+            return [date, `${DAY_NAMES[(startDay + index) % 7]} ${date}`]
+          }))
+          const rail = html.slice(html.indexOf('class="cf-calendar-rail"'), html.indexOf('</div>', html.indexOf('class="cf-calendar-rail"')))
+          const labels = [...rail.matchAll(/<a href="#day-\d"[^>]*><span>([^<]+)<\/span><strong>(\d+)<\/strong>/g)]
+          assert.deepEqual(labels.map(item => [item[1], Number(item[2])]), Array.from({ length: 7 }, (_, index) =>
+            [DAY_NAMES[(startDay + index) % 7].slice(0, 3), Number(addDays(startDate, index).slice(-2))]))
+          assert.deepEqual(candidate, before)
+        }
+      }
+    })
+
+    await t.test('fresh setup and both restart paths default to today; move choices share rolling date labels', () => {
+      const source = readFileSync(new URL('./CampaignApp.tsx', import.meta.url), 'utf8')
+      assert.match(source, /loadCampaign\(emptyCampaign\(currentDate\(\)\)\)/)
+      assert.match(source, /startNewPlan\(previous, currentDate\(\)\)/)
+      assert.equal((source.match(/emptyCampaign\(currentDate\(\)\)/g) ?? []).length, 2)
+      assert.match(source, /calendarDays\(week\.plan\.weekStart\)\.map\(\(\{ day, date \}, index\) => <option key=\{date\} value=\{date\}>/)
+      assert.doesNotMatch(source, /currentMonday|DAY_NAMES\.map/)
     })
 
     await t.test('session options start collapsed; archived workouts keep notes but no editing or logging prompts', () => {

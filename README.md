@@ -35,6 +35,10 @@ Setup has three steps, with no AI detour before the routine is complete:
    reported facts, not a multiplication of desired sessions. Review the built-in
    lineup or an AI-authored complete week before building.
 
+Plans can start on any date, defaulting to today. Each week is a rolling seven-day
+period: a Wednesday start runs Wednesday through Tuesday, then advances by seven
+days. Availability and fixed club sessions keep their actual weekdays.
+
 Equipment shortcuts remain editable. Racks, benches and pull-up bars are
 explicit capabilities; owning a barbell does not imply a complete gym. Confirmed
 resources accompany any shared brief. Cardio equipment does not imply a new
@@ -182,10 +186,10 @@ profile and acknowledge the technique/profile fit. An AI reply can propose the
 same kind of real definition, but cannot approve it on your behalf. A supported,
 approved definition can enter the selected routine and receive engine-generated
 prescriptions and its own actual logs.
-Supported custom strength and mobility profiles coexist with controlled target
-throwing identities. Throwing must belong to an established, confirmed practice,
-share that practice's exposure cap and satisfy same-identity calibration limits;
-it is not unrestricted sport-drill programming or a new standalone practice.
+New planning supports custom strength and mobility exercises, not throwing-drill
+generation. Generic club sessions remain fixed calendar commitments. Previously
+saved throwing identities and actuals remain readable without enabling new drill
+imports or practice replacements.
 
 The engine profile owns execution style, units, conservative scheduling costs
 and dose limits. AI-authored structured weeks may propose sets, repetitions,
@@ -226,6 +230,10 @@ workspace. AI is optional in both, not a prerequisite for Goal or Routine:
   the **final app reply**. Paste the JSON reply, review its current-training facts,
   complete week and custom definitions, and apply only what you approve.
   This AI exchange is copy/paste, not brief downloads or reply-file uploads.
+  Every outgoing brief is below 16,000 characters, with its exact count shown.
+  The full exercise library is not copied. AI may choose exercises freely and
+  define them using the compact supported-category contract; a few existing
+  references retain identity/history rather than constrain the exercise menu.
   The brief asks the AI to keep
   schema keys and date-handling details out of the conversation, not the final export.
   No account integration or API key is needed. Providers may require an account;
@@ -310,12 +318,14 @@ memory throughout the open tab, including after setup: disconnect or reload to
 clear them. They are never included in training data, chat briefs or backups.
 The previewable brief includes the goal/date, resources, desired routine and
 explicitly confirmed current-training facts (otherwise an unknown baseline),
-availability/fixed sessions, selected exercise IDs, eligible catalog and profiles,
-custom definitions, reference cards and relevant planned sessions. A **weekly
-review** additionally includes that week's actual logs, notes and health flags
-as described above. Setup sharing does not include campaign session logs.
-An additional, default-off option includes confirmed normalized Garmin records and
-their recorded-period summary. Prior-plan archives, raw activity files, activity
+availability/fixed sessions, selected exercise references and compact custom
+profile categories. Full library entries, duplicate definitions and saved reference
+cards stay local. A **weekly review** adds a bounded summary of recorded work,
+known pain/health flags and selected notes, with explicit detail-omission notices;
+exact sets and notes remain saved in the app. Larger reviews use a shorter summary
+rather than an oversized or split message. Setup sharing excludes campaign logs.
+An additional, default-off option includes a summary of confirmed Garmin history,
+not thousands of individual records. Prior-plan archives, raw activity files, activity
 titles/locations and API keys are not exported through that option.
 Copying is local; pasting into another service or sending an API request is your explicit sharing action.
 
@@ -530,8 +540,8 @@ supported current-week swaps retain their change history.
 **The built-in route remains baseline-bounded, not a validated progression
 system or a substitute for a coach or clinician.** It does not prescribe new
 high-skill lifts, arbitrary sport drills, event-specific intensity or
-rehabilitation. Supported controlled target throwing remains restricted to
-confirmed practice exposure. Olympic-lift entries may be costed/logged but never generated.
+rehabilitation. Throwing-specific support is retained only for existing saved
+data, not new AI replies or setup. Olympic-lift entries may be costed/logged but never generated.
 Exercise choices can change during setup, reviewed future weeks, or supported
 unperformed midweek blocks; logged sets and prior weeks are never rewritten.
 Automatic built-in progression beyond confirmed baseline is not enabled.

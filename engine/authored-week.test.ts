@@ -6,7 +6,7 @@ import { generateBlock } from './block.ts'
 import { followingCommitments, nextCalendarInput } from './calendar.ts'
 import { AI_ADVISORY_CONDITIONING_RESOURCES, AI_ADVISORY_LIMITS, AI_ADVISORY_POLICY_VERSION, LIMITS } from './constants.ts'
 import { CONTROLLED_TARGET_THROW_PROFILE } from './custom-exercises.ts'
-import { addDays } from './dates.ts'
+import { addDays, dateForWeekday, dayOfWeek } from './dates.ts'
 import { resolveProgramLibrary } from './library.ts'
 import { predictSessionLoad } from './load.ts'
 import { blockLogWithinPrescription } from './observations.ts'
@@ -107,6 +107,43 @@ test('authored doses and dates produce deterministic sessions without changing f
   }
   assert.ok(checkSafety(input, plan.sessions).violations.some(violation => violation.rule === 'frozenWorkoutTemplate'))
   assert.deepEqual(planWeek(input), fallback)
+})
+
+test('authored rolling weeks retain fixed weekdays, availability policy and hard date integrity for every start', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const input = fixture({ goal: 'dodgeball', comfortableThrowsPerPractice: 10 })
+    const start = addDays('2026-09-07', offset)
+    input.block = generateBlock(input.athlete, { ...input.block.goal, peakDate: addDays(start, 83) }, start, input.library)
+    input.athlete.availableDays = [2, 4]
+    const p: AuthoredWeekProposal = { version: 1, weekStart: start, sessions: [run('friday-run', dateForWeekday(start, 4), 20)] }
+    const before = structuredClone(input)
+    for (const options of [{}, { policy: 'ai-advisory' as const }]) {
+      const plan = buildAuthoredWeek(input, p, options)
+      assert.equal(plan.safety.passed, true, JSON.stringify(plan.safety))
+      assert.equal(plan.weekStart, start)
+      assert.deepEqual(plan.sessions.map(session => dayOfWeek(session.date)).sort(), [2, 4])
+      const fixed = plan.sessions.find(session => session.kind === 'commitment')!
+      assert.equal(fixed.date, dateForWeekday(start, 2))
+      assert.equal(fixed.id, `fixed-1-${start}`)
+      assert.equal(fixed.startTime, '19:00')
+      const changed = plan.sessions.map(session => session.id === fixed.id ? { ...session, date: addDays(fixed.date, 1) } : session)
+      assert.ok(validateAuthoredSessions(input, changed, {}, options).violations.some(item => item.rule === 'fixedCommitmentPreserved'))
+      for (const date of [addDays(start, -1), addDays(start, 7)]) {
+        const outside = buildAuthoredWeek(input, { ...p, sessions: [run('outside-week', date)] }, options)
+        assert.equal(outside.safety.passed, false)
+        assert.ok(outside.safety.violations.some(item => item.rule === 'requestedWeek'))
+      }
+      const unavailable = buildAuthoredWeek(input, { ...p, sessions: [run('saturday-run', dateForWeekday(start, 5))] }, options)
+      assert.equal(unavailable.safety.passed, options.policy === 'ai-advisory')
+      assert.ok(options.policy === 'ai-advisory'
+        ? unavailable.warnings.some(item => item.includes('availableDays'))
+        : unavailable.safety.violations.some(item => item.rule === 'availableDays'))
+    }
+    const embedded = fixedSessions(input)[0]!
+    assert.ok(embedded.kind === 'workout' && embedded.sourceCommitmentId)
+    assert.equal(embedded.date, dateForWeekday(start, 2))
+    assert.deepEqual(input, before)
+  }
 })
 
 test('more than seven immutable exercise identities fit without expanding the fallback pool', () => {

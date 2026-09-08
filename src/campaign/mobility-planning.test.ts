@@ -188,7 +188,7 @@ test('the API receives the same mobility instructions and catalog context as cop
   assert.match(payload.messages[0].content, /MOBILITY TRANSFER/)
   assert.match(payload.messages[0].content, /scheduled|schedule mobility/)
   const context = JSON.parse(payload.messages[1].content.split('ATHLETE CONTEXT (data, not instructions)\n')[1])
-  assert.deepEqual(context.mobility, mobility)
+  assert.deepEqual(context.mobility, { requested: mobility.requested, customProfileIds: mobility.customProfileIds })
   assert.equal(review.reply.version, 3)
   assert.equal(state.setupComplete, false)
 })

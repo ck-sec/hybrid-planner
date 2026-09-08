@@ -46,6 +46,12 @@ export function dayOfWeek(date: string): Day {
   return (((dayNumber(date) + 3) % 7 + 7) % 7) as Day
 }
 
+/** Resolve a Monday-zero weekday inside the seven days beginning at weekStart. */
+export function dateForWeekday(weekStart: string, weekday: Day): string {
+  if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new Error('A weekday must be Monday through Sunday (0 to 6).')
+  return addDays(weekStart, (weekday - dayOfWeek(weekStart) + 7) % 7)
+}
+
 export function timeMinutes(time: string): number {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error('Session times must use HH:mm from 00:00 to 23:59.')
   const [hours, minutes] = time.split(':').map(Number)

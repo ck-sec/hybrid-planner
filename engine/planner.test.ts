@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { generateBlock } from './block.ts'
 import { ENGINE_VERSION, LIBRARY_VERSION, LIMITS, POLICY_VERSION } from './constants.ts'
+import { addDays, dateForWeekday, dayOfWeek } from './dates.ts'
 import { DEFAULT_LIBRARY } from './library.ts'
-import { planWeek, requestedSessions } from './planner.ts'
+import { fixedSessions, planWeek, requestedSessions } from './planner.ts'
 import { checkSafety } from './safety.ts'
 import type { AthleteState, Day, Goal, PlanWeekInput, Session } from './types.ts'
 
@@ -60,6 +61,53 @@ test('same frozen input gives same entire week and does not mutate it', () => {
   assert.ok(first.sessions.every(session => session.reason.length > 0))
   assert.ok(Number.isFinite(first.totalScore))
   assert.deepEqual(JSON.parse(JSON.stringify(first)), first)
+})
+
+test('all seven start weekdays schedule real availability and preserve fixed weekdays without rotating inputs', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const request = input()
+    const start = addDays('2026-09-07', offset)
+    request.athlete.availableDays = [1, 3, 5]
+    request.athlete.baseline.runsPerWeek = 1
+    request.athlete.baseline.weeklyRunMinutes = 30
+    request.athlete.baseline.longestRunMinutes = 30
+    request.athlete.baseline.liftsPerWeek = 1
+    request.block = generateBlock(request.athlete, { ...request.block.goal, peakDate: addDays(start, 55), fixedCommitments: [{
+      id: 'club-thursday', label: 'Thursday club', dayOfWeek: 3, startTime: '19:00', durationMin: 30,
+      discipline: 'sport', modality: 'court_sport', estimatedLoad: { systemic: 60, structural: 30 },
+    }] }, start, request.library)
+    const before = structuredClone(request)
+    const plan = planWeek(request)
+    assert.equal(plan.weekStart, start)
+    assert.equal(plan.safety.passed, true, JSON.stringify(plan.safety))
+    assert.equal(plan.sessions.length, 3)
+    assert.ok(plan.sessions.every(session => request.athlete.availableDays.includes(dayOfWeek(session.date))))
+    const fixed = plan.sessions.find(session => session.kind === 'commitment')!
+    assert.equal(fixed.date, dateForWeekday(start, 3))
+    assert.equal(fixed.startTime, '19:00')
+    assert.equal(fixed.durationMin, 30)
+    assert.deepEqual(planWeek(request), plan)
+    assert.deepEqual(request, before)
+    const moved = plan.sessions.map(session => session.id === fixed.id ? { ...session, date: addDays(session.date, -1) } : session)
+    assert.ok(checkSafety(request, moved).violations.some(item => item.rule === 'fixedCommitmentPreserved'))
+    const next = fixedSessions({ ...request, weekIndex: 1 })[0]!
+    assert.equal(next.date, addDays(fixed.date, 7))
+    assert.equal(next.id, `fixed-1-${addDays(start, 7)}`)
+  }
+})
+
+test('a midweek goal limits optional dates but never hides or shifts established commitments', () => {
+  const request = input()
+  request.athlete.availableDays = [0, 1, 2, 3, 4, 5, 6]
+  request.block = generateBlock(request.athlete, { ...request.block.goal, peakDate: '2026-09-11', fixedCommitments: [{
+    id: 'club-tuesday', label: 'Tuesday club', dayOfWeek: 1, startTime: '19:00', durationMin: 30,
+    discipline: 'sport', modality: 'court_sport', estimatedLoad: { systemic: 60, structural: 30 },
+  }] }, '2026-09-09', request.library)
+  const plan = planWeek(request)
+  assert.equal(request.block.totalWeeks, 1)
+  assert.equal(plan.safety.passed, true)
+  assert.equal(plan.sessions.find(session => session.kind === 'commitment')!.date, '2026-09-15')
+  assert.ok(plan.sessions.filter(session => session.kind !== 'commitment').every(session => session.date <= '2026-09-11'))
 })
 
 test('RPE and suggested weights use only matching same-exercise observations', () => {

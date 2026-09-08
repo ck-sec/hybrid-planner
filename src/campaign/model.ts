@@ -4,7 +4,7 @@ import {
   followingCommitments, nextCalendarInput,
 } from '../../engine/calendar.ts'
 import { AI_ADVISORY_LIMITS, CAMPAIGN_POLICY, LIMITS, MAX_LOGGED_SETS_PER_BLOCK, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
-import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from '../../engine/dates.ts'
+import { addDays, dayNumber, parseISODate, timeMinutes } from '../../engine/dates.ts'
 import { DEFAULT_LIBRARY, LEGACY_LIBRARY, libraryForVersion, resolveProgramLibrary } from '../../engine/library.ts'
 import { predictSessionLoad } from '../../engine/load.ts'
 import { fixedSessions, planWeek, requestedSessions } from '../../engine/planner.ts'
@@ -103,14 +103,8 @@ function equal(left: unknown, right: unknown, label: string): void {
   if (stable(left) !== stable(right)) fail(`${label} does not match its validated derived values.`)
 }
 
-function monday(value: unknown): string {
-  const date = parseISODate(value)
-  if (dayOfWeek(date) !== 0) fail('The campaign must start on a Monday.')
-  return date
-}
-
-export function emptyCampaign(startMonday: string): CampaignState {
-  const start = monday(startMonday)
+export function emptyCampaign(startDate: string): CampaignState {
+  const start = parseISODate(startDate)
   return {
     version: 1, step: 0, setupComplete: false, sample: false, weeks: [], selectedWeek: 0, setDrafts: {},
     draft: {
@@ -128,8 +122,8 @@ export function emptyCampaign(startMonday: string): CampaignState {
 }
 
 /** Deliberately labelled fictional inputs; loading them does not confirm or log them. */
-export function exampleCampaign(startMonday: string): CampaignState {
-  const state = emptyCampaign(startMonday)
+export function exampleCampaign(startDate: string): CampaignState {
+  const state = emptyCampaign(startDate)
   return {
     ...state, sample: true, step: 1,
     draft: normalizeRecommendedDraft({
@@ -279,7 +273,7 @@ function parseDraft(value: unknown, ready = false): CampaignDraft {
   if (ready) timeMinutes(practiceTime)
   const result: CampaignDraft = {
     goalKind: choice(raw.goalKind, 'Goal type', GOALS), goalLabel: text(raw.goalLabel, 'Goal label', CAMPAIGN_TEXT_LIMITS.goalLabel),
-    location: text(raw.location, 'Location', CAMPAIGN_TEXT_LIMITS.location), startDate: ready ? monday(raw.startDate) : draftDate(raw.startDate, 'Block start date'),
+    location: text(raw.location, 'Location', CAMPAIGN_TEXT_LIMITS.location), startDate: ready ? parseISODate(raw.startDate) : draftDate(raw.startDate, 'Block start date'),
     eventDate: draftDate(raw.eventDate, 'Event date'),
     priorities: unique(array(raw.priorities, 'Priorities', QUALITIES.length).map(value => choice(value, 'Priority', QUALITIES)), 'Priorities'),
     availableDays: days(raw.availableDays, 'Available days'), practiceDays: days(raw.practiceDays, 'Practice days'),

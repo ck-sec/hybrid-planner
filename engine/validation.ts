@@ -5,7 +5,7 @@ import {
 } from './constants.ts'
 import canonicalProgramLibrary from './exercises-v1.json' with { type: 'json' }
 import { CUSTOM_EXERCISE_PROFILES, materializeCustomExercise } from './custom-exercise-profiles.ts'
-import { addDays, dayNumber, dayOfWeek, parseISODate, timeMinutes } from './dates.ts'
+import { addDays, dayNumber, parseISODate, timeMinutes } from './dates.ts'
 import type {
   AnchorAssignment, AthleteState, Block, BlockLog, CompletedWeek, ConditioningBaseline,
   CustomExerciseProfileId, CustomExerciseSpec, CustomSportDrillSpec, Day, Discipline, Equipment,
@@ -678,7 +678,6 @@ export class Validator {
     const startDate = this.date(data.startDate, `${path}.startDate`)
     const totalWeeks = this.number(data.totalWeeks, `${path}.totalWeeks`, 1, LIMITS.maxWeeks, true)
     const goal = this.goal(data.goal, `${path}.goal`)
-    if (dayOfWeek(startDate) !== 0) this.issue(`${path}.startDate`, 'must be a Monday')
     const daysToPeak = dayNumber(goal.peakDate) - dayNumber(startDate)
     if (daysToPeak < 0) this.issue(`${path}.goal.peakDate`, 'cannot precede block.startDate')
     if (Math.floor(daysToPeak / 7) + 1 !== totalWeeks) {
@@ -1033,7 +1032,6 @@ export class Validator {
         const p = `${path}.completedWeeks[${index}]`
         const item = this.object(value, p, ['weekStart', 'runMinutes', 'plannedDeload', 'disrupted'])
         const weekStart = this.date(item.weekStart, `${p}.weekStart`)
-        if (dayOfWeek(weekStart) !== 0) this.issue(`${p}.weekStart`, 'must be a Monday')
         return {
           weekStart,
           runMinutes: this.number(item.runMinutes, `${p}.runMinutes`, 0,
@@ -1048,6 +1046,11 @@ export class Validator {
       .map((item, index) => this.session(item, `${path}.pinnedSessions[${index}]`))
     this.unique(recentSessions, item => item.session.id, `${path}.recentSessions`)
     this.unique(completedWeeks, item => item.weekStart, `${path}.completedWeeks`)
+    const orderedWeeks = [...completedWeeks].sort((a, b) => a.weekStart < b.weekStart ? -1 : a.weekStart > b.weekStart ? 1 : 0)
+    if (orderedWeeks.some((week, index) => index > 0
+      && dayNumber(week.weekStart) - dayNumber(orderedWeeks[index - 1]!.weekStart) < 7)) {
+      this.issue(`${path}.completedWeeks`, 'completed seven-day weeks must not overlap')
+    }
     this.unique(neighboringSessions, item => item.id, `${path}.neighboringSessions`)
     this.unique(pinnedSessions, item => item.id, `${path}.pinnedSessions`)
     const knownSessions = new Map(recentSessions.map(item => [item.session.id, item.session]))
@@ -1224,7 +1227,7 @@ export class Validator {
       checkPrescriptions(item.session, p, false)
     }
     for (const [index, completed] of context.completedWeeks.entries()) {
-      if (completed.weekStart >= weekStart) {
+      if (dayNumber(completed.weekStart) + 7 > weekDay) {
         this.issue(`input.context.completedWeeks[${index}].weekStart`, `must be a completed week before ${weekStart}`)
       }
     }

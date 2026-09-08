@@ -1,6 +1,6 @@
 # Hybrid Coach: project memory
 
-Last updated: 2026-09-07.
+Last updated: 2026-09-08.
 
 This captures the product decisions and preferences established in the conversation,
 not a verbatim transcript. Later decisions supersede earlier experiments. Consult
@@ -22,6 +22,14 @@ details; the release snapshot below is historical, not a live deployment check.
   logbook or a paid AI wrapper. The user's motivating gap was that hybrid planning
   is usually closed/subscription-based while open alternatives focus on logging.
 - Free forever and MIT licensed. Optional third-party AI may have its own costs.
+
+## Delivery preference
+
+- On 2026-09-08 the user set a standing instruction: **always push completed
+  changes to production** after the relevant checks pass. Do not stop at local
+  implementation unless the user explicitly requests that or a blocker prevents
+  safe publication. Use the existing `hybrid-planner` Pages Git integration,
+  verify the live release, and record the work here.
 
 ## Non-negotiables
 
@@ -102,6 +110,8 @@ remember app changes or synchronise an external conversation.
 
 1. **Goal:** free-text intent, with an optional explicit event date. Without an
    event, show a 12-week progress review rather than inventing one.
+   The user chose any-day starts with rolling seven-day periods on 2026-09-08:
+   a Wednesday start means Wednesday-Tuesday, then the next Wednesday-Tuesday.
 2. **Routine:** desired running/lifting frequency and average session lengths, confirmed
    equipment and space, optional availability and fixed practices. Desired amounts
    are never treated as observed training. Optional Garmin CSV history provides
@@ -182,6 +192,13 @@ not mean the app currently generates a complete coaching programme for every spo
 - The latest simplification is **copy/paste only** for chatbot handover: no
   download-brief or upload-reply controls. Keep the readable brief preview as a
   manual-copy fallback. Garmin CSV history upload and campaign backups are separate.
+- On 2026-09-08 the user imposed a hard outgoing limit: **every send must be
+  below 16,000 characters**, without oversized or split-message exceptions.
+  Do not paste the full exercise library. AI chooses suitable exercises and
+  supplies new real definitions using compact supported categories; existing
+  references are for identity/history, not an obligatory exercise menu.
+  Summarize large weekly logs and Garmin evidence with explicit omissions;
+  preserve exact records locally and show the copied character count.
 - Do not surface a separate rower/SkiErg conditioning-baseline setup in the routine
   flow. Preserve compatibility with previously saved equipment and conditioning data.
 - **API:** a compatible endpoint uses the same brief, reply contract and validation.
@@ -323,10 +340,10 @@ not mean the app currently generates a complete coaching programme for every spo
   with matching movement/execution and logging units; introducing a new definition
   belongs in setup or a next-week revision. Recorded timed totals cannot be split
   into guessed remaining work.
-- Controlled target throwing uses the user's explicit supported practice profile
-  and recorded practice context. Existing fixed practices must remain intact,
-  never silently duplicated. Strict built-in practice caps are advisory for new
-  AI weeks. This is not general throwing-sport coaching.
+- On 2026-09-08 the user removed throwing-specific setup and new drill generation.
+  Keep **generic fixed club sessions** to account for their time and load.
+  Retain legacy throwing records/restoration, but do not invite new throwing
+  definitions or replace club sessions with AI-generated practice drills.
 - Local verification of the slider/advisory changes on 2026-09-07: **578 tests
   passed**, lint and production build passed. Browser checks covered 30 x 2 = 60,
   90/120-minute sliders, 14-session preferences, a 14-run/seven-day week with a
@@ -407,3 +424,43 @@ not mean the app currently generates a complete coaching programme for every spo
 - This is a dated deployment receipt for the application release. Documentation-
   only follow-up commits can advance `main` without changing the application
   bundle; recheck the actual production commit before future releases.
+
+## Implemented and verified locally on 2026-09-08
+
+- **Any-day starts:** setup and restart default to local today. Built-in and
+  AI-authored weeks roll forward in seven-day periods; availability, club
+  sessions, calendar labels, moving sessions and next-week handovers use actual
+  weekdays. Tests cover all seven starts. Saved Monday plans and actuals retain
+  their original dates and identities.
+- **Generic club training only for new planning:** removed controlled-throwing
+  setup/revision controls. New AI replies cannot introduce sport drills or
+  replace fixed practices. Legacy saved throwing work remains readable and
+  loggable. Generic-week screens no longer display the irrelevant old throwing
+  feature explanation; stored warnings and real health reports are unchanged.
+- **Strict compact handover:** clipboard and API routes share a compact builder
+  with a hard 15,999-character budget, including the API's reply-request prefix.
+  The preview is the copied text and displays its exact character count. No
+  full library, raw activity dump or split-message exception is sent. If
+  essential context cannot fit, an explicit error prevents sending.
+- AI chooses exercises and mobilisation within supported execution profiles,
+  using structured custom definitions rather than a fixed library menu.
+  Compact current references preserve reusable identities; a collision-free
+  prefix supports new definitions without listing all saved IDs. A regression
+  approves 12 AI-chosen mobility definitions, logs one and restores them.
+- Opt-in Garmin history and weekly logs become bounded summaries with explicit
+  unknowns, missing values and omission counts. Planned versus actual work,
+  early finishes, timed mobility, reported pain and holds stay distinct.
+  Full records remain local, and complete-state fingerprints still invalidate
+  stale replies. Large-fixture sizes: setup 12,748 copied / 12,830 API content;
+  weekly review 13,130 copied / 13,212 API content characters.
+- **Verification:** final full suite passed **617 tests, zero failures/skips**;
+  lint, TypeScript/production build and diff whitespace checks passed.
+  The existing non-blocking bundle-size warning remains.
+- Browser verification: Wednesday September 9-15 and September 16-22 periods,
+  club sessions on both Wednesdays, successful clipboard copy (8,766 characters),
+  next-week brief (11,472 characters), approval/reload persistence, actual
+  35-second mobility work without invented lifting sets, and no horizontal page
+  overflow at 390px. Removed only the verified synthetic test campaign.
+- Production publication was requested after local verification. The September 7
+  receipt remains historical; the September 8 live receipt is recorded separately
+  after verifying the deployed release.

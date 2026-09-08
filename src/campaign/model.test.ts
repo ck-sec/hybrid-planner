@@ -2,15 +2,20 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import {
-  adaptCampaign, buildCampaign, campaignSessionOnHold, completeCampaignSession, emptyCampaign, exampleCampaign,
+  adaptCampaign, buildCampaign, campaignSessionOnHold, completeCampaignSession, confirmSetupEquipment, emptyCampaign, exampleCampaign,
   logCampaignSet, nextCampaignWeek, normalizeRecommendedDraft, parseCampaign, prepareRecommendedSetup, workoutContent,
 } from './model.ts'
 import type { CampaignState, SetDraft } from './types.ts'
 import type { Session } from '../../engine/types.ts'
+import { addDays, dateForWeekday, dayOfWeek } from '../../engine/dates.ts'
+import { AI_ADVISORY_POLICY_VERSION } from '../../engine/constants.ts'
+import { proposalForSessions } from './authored-calendar.ts'
+import { buildWeekReview } from './week-review.ts'
+import { startNewPlan } from './plan-history.ts'
 
 const start = '2026-09-07'
-function configured(): CampaignState {
-  const state = exampleCampaign(start)
+function configured(startDate = start): CampaignState {
+  const state = exampleCampaign(startDate)
   const draft = { ...state.draft, equipment: ['dumbbell', 'bodyweight', 'bands'] as CampaignState['draft']['equipment'], confirmed: true }
   delete draft.recommendedSetup
   draft.exercises = [['goblet-squat', 16], ['dumbbell-row', 12], ['push-up', 0], ['band-rotation', 0]].map(([exerciseId, weightKg]) => ({
@@ -60,6 +65,87 @@ test('sample is labelled, needs confirmation and yields a deterministic safe cal
   assert.ok(state.weeks[0]!.plan.warnings.some(warning => /heuristic/.test(warning)))
   assert.deepEqual(state.weeks[0]!.logs, {})
   assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(state))), state)
+})
+
+test('all weekday starts build, review, advance and restore without changing earlier legacy dates or policies', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const startDate = addDays(start, offset)
+    let state = buildCampaign(configured(startDate))
+    const first = state.weeks[0]
+    assert.equal(first.plan.weekStart, startDate)
+    assert.deepEqual(first.plan.sessions.filter(session => session.kind === 'commitment').map(session => session.date).sort(),
+      [dateForWeekday(startDate, 1), dateForWeekday(startDate, 3)].sort())
+    for (const session of first.plan.sessions) {
+      state = completeCampaignSession(state, session.id, session.durationMin, 4, false)
+    }
+    const recorded = structuredClone(state)
+    const review = buildWeekReview(state)!
+    assert.equal(review.weekStart, startDate)
+    assert.equal(review.counts.completed, first.plan.sessions.length)
+    assert.deepEqual(review.sessions.map(session => session.date), state.weeks[0].plan.sessions.map(session => session.date))
+    const next = nextCampaignWeek(state)
+    assert.equal(next.weeks[1].plan.weekStart, addDays(startDate, 7))
+    assert.equal(next.weeks[1].input.context.completedWeeks[0].weekStart, startDate)
+    assert.equal(next.weeks[1].plan.policyVersion, first.plan.policyVersion)
+    assert.deepEqual(next.weeks[0], recorded.weeks[0])
+    assert.deepEqual(state, recorded)
+    assert.deepEqual(next.weeks[1].input.athlete.availableDays, state.draft.availableDays)
+    assert.deepEqual(next.weeks[1].plan.sessions.filter(session => session.kind === 'commitment').map(session => dayOfWeek(session.date)).sort(), [1, 3])
+    assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(next))), next)
+    const forged = structuredClone(next)
+    forged.weeks[1].plan.weekStart = addDays(startDate, 8)
+    assert.throws(() => parseCampaign(forged), /Week start/)
+  }
+})
+
+test('all weekday starts preserve authored dates and repeat the approved pattern by seven days after a one-week skip', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const startDate = addDays(start, offset)
+    const initial = confirmSetupEquipment(exampleCampaign(startDate), ['floor_space', 'dumbbell', 'bench'])
+    const ready = { ...initial, draft: { ...initial.draft, confirmed: true } }
+    const fallback = buildCampaign(ready)
+    assert.equal(fallback.weeks[0].plan.weekStart, startDate)
+    assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(fallback))), fallback)
+    const pendingWeek = proposalForSessions(startDate, fallback.weeks[0].plan.sessions)
+    let approved = buildCampaign({ ...ready, pendingWeek })
+    const source = structuredClone(approved.weeks[0])
+    assert.equal(source.plan.policyVersion, AI_ADVISORY_POLICY_VERSION)
+    assert.deepEqual(source.authored, pendingWeek)
+    const run = source.plan.sessions.find(session => session.discipline === 'run')!
+    approved = adaptCampaign(approved, { type: 'skip', sessionId: run.id, reason: 'life' })
+    const before = structuredClone(approved)
+    const next = nextCampaignWeek(approved)
+    const repeated = next.weeks[1]
+    assert.equal(repeated.plan.weekStart, addDays(startDate, 7))
+    assert.equal(repeated.plan.policyVersion, source.plan.policyVersion)
+    assert.deepEqual(repeated.authored!.sessions.map(({ id, ...session }) => { void id; return session }),
+      pendingWeek.sessions.map(({ id, ...session }) => { void id; return { ...session, date: addDays(session.date, 7) } }))
+    assert.ok(repeated.plan.sessions.every(session => !source.plan.sessions.some(previous => previous.id === session.id)))
+    assert.deepEqual(repeated.plan.sessions.filter(session => session.kind === 'commitment').map(session => session.date).sort(),
+      [dateForWeekday(addDays(startDate, 7), 1), dateForWeekday(addDays(startDate, 7), 3)].sort())
+    assert.deepEqual(next.weeks[0], before.weeks[0])
+    assert.deepEqual(approved, before)
+    assert.equal(buildWeekReview(next, 0)!.weekStart, startDate)
+    assert.equal(buildWeekReview(next, 0)!.counts.skipped, 1)
+    assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(next))), next)
+  }
+})
+
+test('a new plan can start on each weekday without rebasing saved training or weekday choices', () => {
+  const built = buildCampaign({ ...configured(), sample: false })
+  const session = built.weeks[0].plan.sessions[0]
+  const original = completeCampaignSession(built, session.id, session.durationMin, 4, false)
+  const before = structuredClone(original)
+  for (let offset = 0; offset < 7; offset++) {
+    const startDate = addDays('2026-09-14', offset)
+    const next = startNewPlan(original, startDate)
+    assert.equal(next.draft.startDate, startDate)
+    assert.deepEqual(next.draft.availableDays, original.draft.availableDays)
+    assert.deepEqual(next.draft.practiceDays, original.draft.practiceDays)
+    assert.deepEqual(next.pastPlans, [before])
+    assert.deepEqual(parseCampaign(JSON.parse(JSON.stringify(next))), next)
+  }
+  assert.deepEqual(original, before)
 })
 
 test('classic setup derives weekly totals from normal sessions and builds without exercise observations or AI', () => {

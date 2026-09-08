@@ -123,7 +123,8 @@ test('restart rebases review dates, preserves future events and rejects invalid 
   assert.equal(startNewPlan(withReview, '2026-09-14').draft.eventDate, addDays('2026-09-14', RECOMMENDATION_POLICY.classicReviewOffsetDays))
   assert.equal(startNewPlan(state, '2026-09-14').draft.eventDate, state.draft.eventDate)
   assert.equal(startNewPlan(state, '2027-01-04').draft.eventDate, addDays('2027-01-04', RECOMMENDATION_POLICY.classicReviewOffsetDays))
-  assert.throws(() => startNewPlan(state, '2026-09-15'), /Monday/)
+  assert.equal(startNewPlan(state, '2026-09-15').draft.startDate, '2026-09-15')
+  assert.throws(() => startNewPlan(state, '2026-02-30'), /date/i)
   assert.throws(() => startNewPlan(emptyCampaign('2026-09-14'), '2026-09-14'), /already have a new plan/)
 })
 

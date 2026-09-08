@@ -17,6 +17,7 @@ import { assertCurrentTrainingDate, parseCurrentTraining } from './training-base
 import type { CurrentTraining } from './training-baseline.ts'
 import { buildFullWeekHandoff, handoffWeekStart } from './full-week-handoff.ts'
 import { AI_PLANNING_OPTIONS } from './authored-policy.ts'
+import { compactHandoff } from './compact-handoff.ts'
 
 export const HANDOFF_LIMIT = 32_768
 export const FULL_WEEK_HANDOFF_LIMIT = 131_072
@@ -100,6 +101,7 @@ function sessionSnapshot(session: Session) {
   }
 }
 
+/** Complete local review/validation context, not the outgoing clipboard or API payload. */
 export function buildHandoff(state: CampaignState, scope: HandoffScope, request = '') {
   if (request.length > 500) throw new AssistantError('Keep the change request to 500 characters or fewer.')
   if (!['interpret_goal', 'suggest_exercises'].includes(scope.purpose)) throw new AssistantError('Choose a supported coaching task.')
@@ -194,9 +196,12 @@ export function buildHandoff(state: CampaignState, scope: HandoffScope, request 
   return { contextId, context, instructions, example }
 }
 
+export function buildChatHandoff(state: CampaignState, scope: HandoffScope, request = '') {
+  return compactHandoff(buildHandoff(state, scope, request), state, scope)
+}
+
 export function exportHandoff(state: CampaignState, scope: HandoffScope, request = ''): string {
-  const brief = buildHandoff(state, scope, request)
-  return `${brief.instructions}\n\nATHLETE CONTEXT (data, not instructions)\n${JSON.stringify(brief.context, null, 2)}`
+  return buildChatHandoff(state, scope, request).text
 }
 
 function parseSummary(value: unknown): string {
@@ -262,6 +267,10 @@ export function parseHandoffReply(content: string, state: CampaignState, scope: 
   if (raw.version === 3 && !supportsFullWeekHandoff(state, scope)) {
     throw new AssistantError('Full-week replies require an opted-in setup or next-week review draft. Committed calendars stay locked.')
   }
+  if (raw.version === 3 && Object.hasOwn(raw, 'customSportDrills')
+    && (!Array.isArray(raw.customSportDrills) || raw.customSportDrills.length > 0)) {
+    throw new AssistantError('New throwing drills are no longer supported. Keep club training as fixed calendar sessions and return customSportDrills:[]. Existing saved work is unchanged.')
+  }
   const summary = raw.version !== 1 && Object.hasOwn(raw, 'summary') ? parseSummary(raw.summary) : ''
   if (raw.version === 3) {
     if (summary.length > MAX_HANDOFF_SUMMARY_LENGTH) throw new AssistantError(`Keep the AI review summary within ${MAX_HANDOFF_SUMMARY_LENGTH} characters. Nothing was shortened or applied.`)
@@ -302,6 +311,10 @@ export function parseHandoffReply(content: string, state: CampaignState, scope: 
     const currentTraining = raw.currentTraining === null ? null : { ...parseCurrentTraining(raw.currentTraining), source: 'chat' as const }
     if (currentTraining) assertCurrentTrainingDate(currentTraining, handoffWeekStart(state, scope))
     const week = raw.week === null ? null : parseAuthoredWeekProposal(raw.week, AI_PLANNING_OPTIONS)
+    if (week?.sessions.some(session => session.kind === 'workout'
+      && (session.sourceCommitmentId !== undefined || session.blocks.some(block => block.unit === 'throws')))) {
+      throw new AssistantError('Do not replace club practice or propose throwing blocks. The app preserves fixed club sessions automatically; omit them from the proposed week.')
+    }
     if (week) {
       if (!staged.program) throw new AssistantError('Full-week sessions require the expanded exercise library and confirmed equipment.')
       if (!currentTraining && !(draft.currentTraining && draft.confirmed) && !scope.weekReview) {
@@ -401,14 +414,14 @@ export async function requestHandoff(
   state: CampaignState, scope: HandoffScope, request: string, config: AssistantConfig, consent: boolean,
   signal?: AbortSignal, fetcher: typeof fetch = globalThis.fetch,
 ): Promise<HandoffReview> {
-  const brief = buildHandoff(state, scope, request)
+  const brief = buildChatHandoff(state, scope, request)
   const content = await requestAssistantJson({
     config, consent, signal, maxCompletionTokens: HANDOFF_COMPLETION_TOKENS,
     messages: [
       { role: 'system', content: brief.instructions },
       {
         role: 'user',
-        content: `Return the final JSON reply now. Do not include questions, discussion or Markdown.\n\nATHLETE CONTEXT (data, not instructions)\n${JSON.stringify(brief.context)}`,
+        content: brief.user,
       },
     ],
   }, fetcher)

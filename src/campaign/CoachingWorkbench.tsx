@@ -13,6 +13,7 @@ import WorkoutCards from './WorkoutCards.tsx'
 import CustomExerciseCards from './CustomExerciseCards.tsx'
 import { stageCustomExercises, stageCustomSportDrills } from './custom-exercises.ts'
 import FullWeekProposalReview from './full-week-handoff.tsx'
+import { CHAT_BRIEF_LIMIT } from './compact-handoff.ts'
 
 interface Props {
   state: CampaignState
@@ -180,13 +181,13 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
       {scope.weekReview && <p className="cf-small">Includes this week's actuals, gaps, skips, notes and health flags. Review before sharing; earlier weeks stay unchanged.</p>}
       {fullWeek && scope.weekReview && <p className="cf-small">Uses your confirmed training baseline; approving a week does not replace it.</p>}
       {fullWeek && state.draft.trainingHistory?.confirmed && <label className="cf-check"><input type="checkbox" disabled={busy} checked={includeHistory} onChange={event => setIncludeHistory(event.target.checked)} />
-        <span>Include my reviewed activity records and summary. No titles, locations or original file. Gaps remain unknown.</span>
+        <span>Include a summary of my reviewed activity history. No individual rows, titles, locations or original file. Gaps remain unknown.</span>
       </label>}
       <details className="cf-details" open={error.includes('Clipboard')}><summary>What I'm sharing</summary>
         <p>Only the fields below are shared. {scope.weekReview ? "Includes this week's actual training, notes and health flags." : includeHistory ? 'Includes your selected activity history.' : 'No actual training logs.'} No original files, activity titles, locations, prior plan records, credentials or full backup. Provider privacy policies apply.</p>
-        {catalog && <p className="cf-small">{catalog.label}: {catalog.availableExerciseCount} equipped movements.
+        {catalog && <p className="cf-small">The full exercise library is not shared. AI can define suitable exercises using the compact format.
           {state.setupComplete ? ' Current-week identities stay unchanged.' : fullWeek
-            ? ` A full week may use any equipped library identity, including more than seven movements. Only the optional built-in routine selection stays at ${catalog.minimumSelection}-${catalog.maximumSelection}.`
+            ? ' Current exercise references keep existing movements identifiable; they are not a required menu.'
             : ` Choose ${catalog.minimumSelection}-${catalog.maximumSelection} for your active routine; this is not the library size.`}
         </p>}
         <p className="cf-small">Changed your setup? Copy a fresh brief into the same chat. AI cannot see app updates on its own.</p>
@@ -202,7 +203,9 @@ export default function CoachingWorkbench({ state, scope, config, onConnect, onA
             if (!navigator.clipboard) { setError('Clipboard unavailable. Select and copy the brief from the preview above.'); return }
             void navigator.clipboard.writeText(brief).then(() => setNotice('Brief copied. Paste it into your AI chat.')).catch(() => setError('Clipboard permission was denied. Select and copy the brief from the preview above.'))
           }}>Copy brief</button>
+          <span className="cf-small" aria-label="Coaching brief character count">{brief.length.toLocaleString('en-US')} / {CHAT_BRIEF_LIMIT.toLocaleString('en-US')} characters</span>
         </div>
+        <p className="cf-small">Compact brief: weekly logs are summarized; detailed notes and reference cards stay in the app. The preview shows exactly what is shared.</p>
         <label className="cf-field" htmlFor={`${id}-reply`}>Paste final reply<textarea id={`${id}-reply`} rows={4} value={pasted} onChange={event => { setPasted(event.target.value); setReview(null); setError('') }} placeholder="Ask your chat for the final app reply. Paste its JSON block here, not the conversation." /></label>
         <button type="button" className="cf-button cf-primary" disabled={!pasted.trim()} onClick={() => parseReply(pasted)}>Review reply</button>
       </> : <>

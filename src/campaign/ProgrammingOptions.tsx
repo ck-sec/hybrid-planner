@@ -1,8 +1,7 @@
 import { useState } from 'react'
-import { CONTROLLED_TARGET_THROW_PROFILE } from '../../engine/constants.ts'
 import type { ConditioningModality, ProgramGoal } from '../../engine/types.ts'
 import { resourcesForEquipment } from './equipment.ts'
-import { enableTemplateProgramming, programGoalForKind, PROGRAM_GOAL_LABELS } from './programming.ts'
+import { enableTemplateProgramming, PROGRAM_GOAL_LABELS } from './programming.ts'
 import type { CampaignDraft } from './types.ts'
 
 export function ProgrammingChoice({ draft, onChange }: { draft: CampaignDraft; onChange: (draft: CampaignDraft) => void }) {
@@ -57,32 +56,5 @@ export function ConditioningOptions({ draft, onChange }: { draft: CampaignDraft;
       }}>Use this established routine</button>
     </> : <p className="cf-small">Select your cardio equipment before adding its routine.</p>}
     {issue && <p role="alert" className="cf-error">{issue}</p>}
-  </div></details>
-}
-
-export function PracticeBlockOptions({ draft, onChange, editable = false }: { draft: CampaignDraft; onChange: (draft: CampaignDraft) => void; editable?: boolean }) {
-  const [amount, setAmount] = useState('')
-  const [issue, setIssue] = useState('')
-  const count = draft.program?.comfortableThrowsPerPractice
-  const { minThrowsPerPractice: min, maxThrowsPerPractice: max } = CONTROLLED_TARGET_THROW_PROFILE
-  if (count !== undefined) return <div><p className="cf-small">Saved {draft.practiceProfile ? 'controlled throwing' : 'legacy practice'} ceiling: {count} throws per practice. Kept unchanged from your existing draft; not a new recommendation.</p>
-    {editable && draft.practiceProfile && <button type="button" className="cf-text-button" onClick={() => {
-      const next = { ...draft, confirmed: false, program: { ...draft.program!, goal: programGoalForKind(draft.goalKind) } }
-      delete next.practiceProfile
-      delete next.program.comfortableThrowsPerPractice
-      onChange(next)
-    }}>Remove practice ceiling</button>}
-  </div>
-  if (!editable || !draft.program || !draft.practiceDays.length) return null
-  return <details className="cf-details"><summary>Controlled throwing within club practice (optional)</summary><div className="cf-stack">
-    <p className="cf-small">Only for familiar, submaximal target throws in an existing court practice. This is not support for weighted-ball, maximal-power or unfamiliar throwing. Count all practice throws, not only drill throws.</p>
-    <label className="cf-field">Your established comfortable total throws per practice<input type="number" min={min} max={max} step="1" value={amount} onChange={event => setAmount(event.target.value)} /></label>
-    <p className="cf-small">This user-reported ceiling is not a validated injury threshold. Unknown counts must stay unknown; do not guess a number to enable drills.</p>
-    <button type="button" className="cf-button cf-secondary" onClick={() => {
-      const throws = Number(amount)
-      if (!amount.trim() || !Number.isInteger(throws) || throws < min || throws > max) { setIssue(`Enter your known whole-number practice total from ${min} to ${max}.`); return }
-      onChange({ ...draft, confirmed: false, practiceProfile: 'controlled_target_throw', program: { ...draft.program!, goal: 'dodgeball', comfortableThrowsPerPractice: throws } })
-    }}>Use my established practice ceiling</button>
-    {issue && <p role="alert">{issue}</p>}
   </div></details>
 }

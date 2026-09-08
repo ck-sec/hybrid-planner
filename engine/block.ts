@@ -4,7 +4,7 @@ import {
   NOVICE_RPE_MAX, POLICY_VERSION, PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY_VERSION,
   RECOMMENDATION_POLICY, TAPER_WEEKS_DEFAULT,
 } from './constants.ts'
-import { dayNumber, dayOfWeek, parseISODate } from './dates.ts'
+import { dayNumber, parseISODate } from './dates.ts'
 import type { AnchorAssignment, AthleteState, Block, ExerciseLibrary, Goal, Phase, PhaseKind, TargetRPE } from './types.ts'
 import { recommendProgram } from './program.ts'
 import { InputError, parseAthleteWithOptions, parseGoal, parseLibrary } from './validation.ts'
@@ -34,7 +34,6 @@ export function generateBlock(
   const goal = parseGoal(rawGoal)
   const library = parseLibrary(rawLibrary, athlete.program, options)
   parseISODate(startDate)
-  if (dayOfWeek(startDate) !== 0) throw new InputError(['Blocks must begin on a Monday (day 0).'])
   if (dayNumber(athlete.baseline.asOf) > dayNumber(startDate)) throw new InputError(['The baseline cannot be observed after the block begins.'])
   const totalWeeks = Math.floor((dayNumber(goal.peakDate) - dayNumber(startDate)) / 7) + 1
   if (totalWeeks < 1 || totalWeeks > LIMITS.maxWeeks) throw new InputError([`The goal must fall within ${LIMITS.maxWeeks} weeks of the block start.`])

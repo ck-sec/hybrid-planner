@@ -1,4 +1,4 @@
-import { addDays, parseISODate } from '../../engine/dates.ts'
+import { addDays, dateForWeekday, parseISODate } from '../../engine/dates.ts'
 import { AUTHORED_WEEK_POLICY } from '../../engine/authored-week.ts'
 import { AI_ADVISORY_CONDITIONING_RESOURCES, AI_ADVISORY_LIMITS, AI_ADVISORY_POLICY_VERSION, CONTROLLED_TARGET_THROW_PROFILE, SAFETY } from '../../engine/constants.ts'
 import { CUSTOM_EXERCISE_PROFILES } from '../../engine/custom-exercises.ts'
@@ -37,7 +37,7 @@ export function buildFullWeekHandoff(
     label: draft.goalKind === 'dodgeball' ? 'Dodgeball practice'
       : `${draft.goalKind === 'custom' ? 'Goal' : draft.goalKind[0]!.toUpperCase() + draft.goalKind.slice(1)} practice`,
     dayOfWeek: day,
-    date: addDays(targetWeekStart, day),
+    date: dateForWeekday(targetWeekStart, day),
     startTime: draft.practiceTime,
     durationMin: draft.practiceDuration,
     discipline: 'sport' as const,

@@ -1,5 +1,5 @@
 import { LIMITS, RECOMMENDATION_POLICY } from '../../engine/constants.ts'
-import { addDays, dayOfWeek } from '../../engine/dates.ts'
+import { addDays, parseISODate } from '../../engine/dates.ts'
 import type { CustomExerciseSpec } from '../../engine/types.ts'
 import { stageCustomExercises } from './custom-exercises.ts'
 import { CAMPAIGN_TEXT_LIMITS } from './draft-limits.ts'
@@ -83,7 +83,7 @@ export function validateOnboardingRoutine(draft: CampaignDraft): void {
     || (routine.liftsPerWeek > 0 && routine.liftDurationMin === 0)) {
     throw new Error('Choose an average duration for each activity you want to include. These preferences do not change your current training.')
   }
-  if (dayOfWeek(draft.startDate) !== 0) throw new Error('Choose a Monday for your block start in Availability & start date.')
+  parseISODate(draft.startDate)
   if (!draft.availableDays.length) throw new Error('Choose at least one training day in Availability & start date.')
   if (draft.practiceDays.length && (!positive(draft.practiceDuration, 240) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.practiceTime))) {
     throw new Error('Add the usual length and start time for your club training or fixed sessions.')

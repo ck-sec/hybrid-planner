@@ -6,6 +6,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
 import { AI_ADVISORY_POLICY_VERSION } from '../../engine/constants.ts'
+import { addDays } from '../../engine/dates.ts'
 import { DEFAULT_LIBRARY } from '../../engine/library.ts'
 import { buildCampaign, confirmSetupEquipment, emptyCampaign } from './model.ts'
 import { addOnboardingCustomExercise, advanceOnboarding, patchOnboardingDraft } from './onboarding.ts'
@@ -251,23 +252,43 @@ test('onboarding presents three sport-neutral stages with optional AI only at th
     })
     await t.test('invalid saved start dates show actionable guidance instead of crashing', () => {
       for (const startDate of ['', '2026-09', '2026-02-31']) {
-        assert.match(render({ ...routine, step: 1, draft: { ...routine.draft, startDate } }), /Choose a complete Monday start date/)
+        assert.match(render({ ...routine, step: 1, draft: { ...routine.draft, startDate } }), /Choose a complete start date/)
       }
     })
-    await t.test('legacy programming is an explicit upgrade and an existing practice ceiling is read-only', async () => {
-      const { ProgrammingChoice, PracticeBlockOptions } = await import('./ProgrammingOptions.tsx')
+    await t.test('the start picker preserves any chosen weekday and explains rolling weeks', () => {
+      for (let day = 0; day < 7; day++) {
+        const startDate = addDays('2026-09-07', day)
+        const state = { ...routine, draft: patchOnboardingDraft(routine.draft, { startDate }) }
+        const before = structuredClone(state)
+        const html = render(state)
+        assert.ok(html.includes(`Plan starts<input type="date" value="${startDate}"`))
+        assert.match(html, /Each week runs for seven days from your start date/)
+        assert.match(html, /Club sessions stay on their chosen weekdays/)
+        assert.doesNotMatch(html, /Block starts \(Monday\)|Choose a (?:complete )?Monday/)
+        assert.deepEqual(state, before)
+      }
+    })
+    await t.test('fresh and saved setup keep generic club options without exposing throwing controls', async () => {
+      const { ProgrammingChoice } = await import('./ProgrammingOptions.tsx')
       const old = { ...base.draft }
       const oldHtml = renderToStaticMarkup(createElement(ProgrammingChoice, { draft: old, onChange() { assert.fail('No hidden upgrade') } }))
       assert.match(oldHtml, /Upgrade this draft/)
       assert.match(oldHtml, /unless you choose to upgrade/)
-      assert.equal(renderToStaticMarkup(createElement(PracticeBlockOptions, { draft: old, onChange() {} })), '')
-      const saved = confirmSetupEquipment(routine, ['floor_space'])
+      const saved = confirmSetupEquipment(routine, ['floor_space', 'dodgeballs', 'court', 'safe_target'])
       saved.draft = { ...saved.draft, goalKind: 'dodgeball', practiceDays: [1], program: { ...saved.draft.program!, goal: 'dodgeball', comfortableThrowsPerPractice: 20 } }
-      const before = structuredClone(saved)
-      const html = renderToStaticMarkup(createElement(PracticeBlockOptions, { draft: saved.draft, onChange() { assert.fail('No hidden deletion') } }))
-      assert.match(html, /Saved legacy practice ceiling: 20 throws per practice/)
-      assert.doesNotMatch(html, /<input|<button|Dodgeball/i)
-      assert.deepEqual(saved, before)
+      for (const candidate of [routine, saved]) {
+        const before = structuredClone(candidate)
+        const html = render(candidate)
+        assert.match(html, /Club training &amp; fixed sessions/)
+        assert.match(html, /Club training or fixed activity days/)
+        assert.doesNotMatch(html, /Saved legacy practice ceiling|throws per practice|Practice throwing baseline|Target throw/i)
+        if (candidate.draft.practiceDays.length) {
+          assert.match(html, /Club session starts at<input type="time"/)
+          assert.match(html, /Club session duration/)
+        }
+        assert.deepEqual(candidate, before)
+      }
+      assert.equal(saved.draft.program!.comfortableThrowsPerPractice, 20)
     })
   } finally { hooks.deregister() }
 })

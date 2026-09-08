@@ -16,7 +16,7 @@ import WorkoutCards from './WorkoutCards.tsx'
 import { parseWorkoutCards } from './workout-cards.ts'
 import ExercisePoolEditor from './ExercisePoolEditor.tsx'
 import { programmingChoices, selectProgramExercises } from './programming.ts'
-import { PracticeBlockOptions, ProgrammingChoice } from './ProgrammingOptions.tsx'
+import { ProgrammingChoice } from './ProgrammingOptions.tsx'
 import { addOnboardingCustomExercise, advanceOnboarding, ONBOARDING_STEPS, onboardingGoalText, onboardingReviewDate, onboardingStep, patchOnboardingDraft, validateOnboardingRoutine } from './onboarding.ts'
 import './onboarding.css'
 import CurrentTrainingForm from './CurrentTrainingForm.tsx'
@@ -64,7 +64,7 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
   const library = draft.program ? resolveProgramLibrary(draft.program, AI_PLANNING_OPTIONS) : DEFAULT_LIBRARY
   const defaultReview = onboardingReviewDate(draft.startDate)
   const dateBounds = eventDateBounds(draft.startDate)
-  const dateIssue = dateBounds.issue ? 'Choose a complete Monday start date in Routine → Availability & start date.' : ''
+  const dateIssue = dateBounds.issue ? 'Choose a complete start date in Routine → Availability & start date.' : ''
   const preferences: TrainingPreferences = draft.trainingPreferences ?? {
     version: 1, runsPerWeek: draft.runsPerWeek, runDurationMin: setup.typicalRunMinutes,
     liftsPerWeek: draft.liftsPerWeek, liftDurationMin: draft.liftDurationMin,
@@ -172,11 +172,11 @@ export default function CampaignSetup({ state, update, onAI, connected, onDiscon
           <DayPicker label="Club training or fixed activity days" value={draft.practiceDays} onChange={practiceDays => patch({ practiceDays })} />
           {draft.practiceDays.length > 0 && <div className="cf-two"><label className="cf-field">Club session starts at<input type="time" value={draft.practiceTime} onChange={event => patch({ practiceTime: event.target.value })} /></label><NumberField label="Club session duration" value={draft.practiceDuration} min={1} max={240} suffix="min" required={false} onChange={practiceDuration => patch({ practiceDuration })} /></div>}
           {draft.practiceDays.length > 1 && <p className="cf-small">Selected days share this time and duration.</p>}
-          <PracticeBlockOptions draft={draft} onChange={saveDraft} editable />
         </div>
         <details className="cf-details"><summary>Availability &amp; start date (optional)</summary><div className="cf-stack">
           <p className="cf-small">Start: {draft.startDate || 'not set'}. By default, the planner can use any day and leaves room for rest.</p>
-          <label className="cf-field">Block starts (Monday)<input type="date" value={draft.startDate} onChange={event => patch({ startDate: event.target.value })} /></label>
+          <label className="cf-field">Plan starts<input type="date" value={draft.startDate} onChange={event => patch({ startDate: event.target.value })} /></label>
+          <p className="cf-small">Choose any date. Each week runs for seven days from your start date. Club sessions stay on their chosen weekdays.</p>
           <DayPicker label="Days you can train" value={draft.availableDays} onChange={availableDays => patch({ availableDays })} />
         </div></details>
       </section>}

@@ -11,7 +11,7 @@ import type { ResourceId } from './equipment.ts'
 import { confirmSetupEquipment, nextCampaignWeek, normalizeRecommendedDraft, stable } from './model.ts'
 import type { CampaignDraft, CampaignState } from './types.ts'
 import { programmingChoices, selectProgramExercises } from './programming.ts'
-import { ProgrammingChoice, PracticeBlockOptions } from './ProgrammingOptions.tsx'
+import { ProgrammingChoice } from './ProgrammingOptions.tsx'
 import EquipmentPicker from './EquipmentPicker.tsx'
 import ExercisePoolEditor from './ExercisePoolEditor.tsx'
 import CoachingWorkbench from './CoachingWorkbench.tsx'
@@ -110,7 +110,6 @@ export default function ProgrammingRevision({ state, config, onConnect, onApply,
             return updateDraft(ids.length < LIMITS.maxProgramExercises ? selectProgramExercises(next, [...ids, exercise.id]) : next)
           } catch (error) { setIssue(error instanceof Error ? error.message : 'The custom exercise could not be saved.'); return false }
         }} />
-      <PracticeBlockOptions draft={draft} onChange={updateDraft} />
       </>}
     </div></details>
       <button type="button" className="cf-text-button" disabled={changed} onClick={() => setShowAI(true)}>Review with AI (optional)</button>

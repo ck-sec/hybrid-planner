@@ -3,7 +3,7 @@ import {
   HARD_SESSION_SYSTEMIC_THRESHOLD, LIMITS, NOVICE_MONTHS_THRESHOLD, NOVICE_RPE_MAX,
   PROGRAM_POLICY, RECOMMENDATION_POLICY, SAFETY,
 } from './constants.ts'
-import { addDays, dayNumber, dayOfWeek, sessionStartMinutes } from './dates.ts'
+import { addDays, dateForWeekday, dayNumber, dayOfWeek, sessionStartMinutes } from './dates.ts'
 import { observedSessionWork, predictSessionLoad } from './load.ts'
 import { hasCleanBlockObservation, hasCleanThrowObservation, latestPerformance } from './observations.ts'
 import { exerciseMetadata, resolvedConditioningBaselines } from './program.ts'
@@ -123,7 +123,7 @@ export function checkSafety(
     for (const [index, fixed] of orderedFixed.entries()) {
       const sessionId = `fixed-${index + 1}-${weekStart}`
       fixedIds.add(sessionId)
-      const expectedDate = addDays(weekStart, (fixed.dayOfWeek - dayOfWeek(weekStart) + 7) % 7)
+      const expectedDate = dateForWeekday(weekStart, fixed.dayOfWeek)
       number(fixed.durationMin, 'fixed duration', true)
       number(fixed.estimatedLoad.systemic, 'fixed systemic AU')
       number(fixed.estimatedLoad.structural, 'fixed structural AU')

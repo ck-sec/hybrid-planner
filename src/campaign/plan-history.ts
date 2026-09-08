@@ -3,20 +3,20 @@ import { addDays } from '../../engine/dates.ts'
 import { emptyCampaign, MAX_PAST_PLANS, parseCampaign, prepareRecommendedSetup } from './model.ts'
 import type { CampaignState } from './types.ts'
 
-export function startNewPlan(state: CampaignState, startMonday: string): CampaignState {
+export function startNewPlan(state: CampaignState, startDate: string): CampaignState {
   const { pastPlans = [], ...previous } = parseCampaign(state)
   if (!previous.setupComplete) throw new Error('You already have a new plan in setup. Continue reviewing your goal and routine.')
   if (pastPlans.length >= MAX_PAST_PLANS) {
     throw new Error('Local plan history is full. Export a backup before moving your training to a new browser profile; no history has been removed.')
   }
-  const fresh = emptyCampaign(startMonday)
+  const fresh = emptyCampaign(startDate)
   const oldReviewDate = addDays(previous.draft.startDate, RECOMMENDATION_POLICY.classicReviewOffsetDays)
-  const eventDate = previous.draft.eventDate > startMonday && previous.draft.eventDate !== oldReviewDate
+  const eventDate = previous.draft.eventDate > startDate && previous.draft.eventDate !== oldReviewDate
     ? previous.draft.eventDate : fresh.draft.eventDate
   const next = prepareRecommendedSetup({
     ...fresh, step: 1,
     draft: previous.sample ? fresh.draft : {
-      ...structuredClone(previous.draft), startDate: startMonday, eventDate,
+      ...structuredClone(previous.draft), startDate, eventDate,
       confirmed: false, exercises: [],
     },
     ...(!previous.sample && previous.cards ? { cards: structuredClone(previous.cards) } : {}),

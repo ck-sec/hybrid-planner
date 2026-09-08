@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ENGINE_VERSION, LIBRARY_VERSION, POLICY_VERSION } from './constants.ts'
+import { addDays } from './dates.ts'
 import type { PlanWeekInput, Session, SessionLog } from './types.ts'
 import {
   InputError, parseAthlete, parseBlock, parseGoal, parseLibrary, parsePlanningContext,
@@ -338,14 +339,40 @@ test('log status rules distinguish skipped sessions from actual workouts', () =>
   rejects(parseSessionLog, { ...log(), painFlag: undefined }, /painFlag.*boolean/)
 })
 
-test('unsupported versions, malformed phases, non-Monday starts, and inconsistent peaks fail', () => {
+test('rolling starts retain whole-week history, requested-week boundaries and goal bounds', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const input = fixture()
+    const start = addDays('2026-09-07', offset)
+    input.block.startDate = start
+    input.block.goal.peakDate = addDays(start, input.block.totalWeeks * 7 - 1)
+    input.context = {
+      recentSessions: [], neighboringSessions: [], pinnedSessions: [],
+      completedWeeks: [{ weekStart: addDays(start, -7), runMinutes: 90, plannedDeload: false, disrupted: false }],
+    }
+    assert.equal(parsePlanWeekInput(input).block.startDate, start)
+    input.context.pinnedSessions = [lift('pin', addDays(start, 6), true)]
+    assert.doesNotThrow(() => parsePlanWeekInput(input))
+    input.context.pinnedSessions[0].date = addDays(start, 7)
+    assert.throws(() => parsePlanWeekInput(input), /inside the requested week/)
+    input.context.pinnedSessions = []
+    input.context.completedWeeks[0].weekStart = addDays(start, -6)
+    assert.throws(() => parsePlanWeekInput(input), /completed week before/)
+  }
+  const context = fixture().context
+  context.completedWeeks = [...context.completedWeeks, { ...context.completedWeeks[0], weekStart: '2026-08-26' }]
+  assert.throws(() => parsePlanningContext(context), /must not overlap/)
+  context.completedWeeks[1].weekStart = '2026-08-24'
+  assert.doesNotThrow(() => parsePlanningContext(context))
+})
+
+test('unsupported versions, malformed phases, invalid starts, and inconsistent peaks fail', () => {
   const mutations: readonly [string, unknown, RegExp][] = [
     ['block.engineVersion', '0.1.0', /engineVersion/],
     ['block.policyVersion', 'other', /policyVersion/],
     ['block.libraryVersion', 'other', /libraryVersion/],
     ['library.version', 'other', /library.version/],
     ['athlete.calibration.version', 2, /calibration.version/],
-    ['block.startDate', '2026-09-08', /Monday/],
+    ['block.startDate', '2026-02-30', /real calendar date/],
     ['block.goal.peakDate', '2026-09-06', /cannot precede/],
     ['block.goal.peakDate', '2026-10-05', /week containing/],
     ['block.totalWeeks', 53, /totalWeeks/],
@@ -401,7 +428,7 @@ test('history and baseline dates cannot leak information from the planned week',
     ['athlete.safetyHold', { reason: 'pain', since: '2026-09-08' }, /safetyHold.since/],
     ['context.recentSessions.1.session.date', '2026-09-07', /recent history must be before/],
     ['context.completedWeeks.0.weekStart', '2026-09-07', /completed week before/],
-    ['context.completedWeeks.0.weekStart', '2026-09-01', /Monday/],
+    ['context.completedWeeks.0.weekStart', '2026-09-01', /completed week before/],
     ['context.neighboringSessions.1.date', '2026-09-13', /outside the requested week/],
     ['context.neighboringSessions.1.date', '2026-09-21', /seven days/],
     ['context.neighboringSessions.0.date', '2026-08-30', /conflicting definitions|seven days/],

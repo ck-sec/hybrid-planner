@@ -2,7 +2,7 @@ import {
   AI_ADVISORY_CONDITIONING_RESOURCES, AI_ADVISORY_LIMITS, AI_ADVISORY_POLICY_VERSION, CONTROLLED_TARGET_THROW_PROFILE, ENGINE_VERSION, HARD_SESSION_STRUCTURAL_THRESHOLD, HARD_SESSION_SYSTEMIC_THRESHOLD,
   LIMITS, PROGRAM_LIBRARY_VERSION, PROGRAM_POLICY, SAFETY,
 } from './constants.ts'
-import { addDays, dayNumber, dayOfWeek, sessionStartMinutes } from './dates.ts'
+import { addDays, dateForWeekday, dayNumber, dayOfWeek, sessionStartMinutes } from './dates.ts'
 import { observedSessionWork, predictSessionLoad } from './load.ts'
 import { hasCleanBlockObservation, hasCleanThrowObservation, latestPerformance } from './observations.ts'
 import { availableSportDrills, exerciseMetadata, resolvedConditioningBaselines } from './program.ts'
@@ -309,7 +309,7 @@ function assemble(input: PlanWeekInput, proposal: AuthoredWeekProposal, options:
   const fixed = [...input.block.goal.fixedCommitments].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
     .map((commitment): Session => ({
       id: authoredCommitmentSessionId(input, commitment.id), kind: 'commitment',
-      date: addDays(proposal.weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+      date: dateForWeekday(proposal.weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
       durationMin: commitment.durationMin, discipline: commitment.discipline, modality: commitment.modality,
       label: commitment.label, predictedLoad: { ...commitment.estimatedLoad },
       reason: 'Established commitment; its time and workload are immutable.',

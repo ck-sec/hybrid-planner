@@ -2,7 +2,7 @@ import {
   AGGRESSIVENESS_VOLUME_FRACTION, ENGINE_VERSION, LIMITS, POLICY_VERSION, PROGRAM_POLICY,
   RECOMMENDATION_POLICY, SAFETY,
 } from './constants.ts'
-import { addDays, dayNumber } from './dates.ts'
+import { addDays, dateForWeekday } from './dates.ts'
 import { predictSessionLoad } from './load.ts'
 import {
   hasCleanBlockObservation, hasCleanThrowObservation, latestPerformance, sessionBlockOverrunCount,
@@ -192,7 +192,7 @@ export function fixedSessions(input: PlanWeekInput): Session[] {
     .map((commitment, index): Session => {
       const base = {
         id: `fixed-${index + 1}-${weekStart}`,
-        date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+        date: dateForWeekday(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
         durationMin: commitment.durationMin, predictedLoad: { ...commitment.estimatedLoad },
         label: commitment.label, pinned: true,
         reason: 'An established commitment. Its time and workload are not changed by the optimizer.',
@@ -213,7 +213,7 @@ export function fixedSessions(input: PlanWeekInput): Session[] {
       return {
         id: `fixed-${index + 1}-${weekStart}`,
         kind: 'commitment', discipline: commitment.discipline, modality: commitment.modality,
-        date: addDays(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
+        date: dateForWeekday(weekStart, commitment.dayOfWeek), startTime: commitment.startTime,
         durationMin: commitment.durationMin, predictedLoad: { ...commitment.estimatedLoad },
         label: commitment.label, pinned: true, isCalibration: false,
         reason: 'An established commitment. Its time and workload are not changed by the optimizer.',
@@ -279,8 +279,9 @@ export function planWeek(rawInput: PlanWeekInput): WeekPlan {
   const movable = requested.filter(session => !pinned.some(pin => pin.id === session.id))
   const mandatory: Session[] = [...fixed, ...pinned]
   const days = [...input.athlete.availableDays]
-    .filter(day => dayNumber(addDays(weekStart, day)) <= dayNumber(input.block.goal.peakDate))
-    .sort((a, b) => a - b)
+    .map(day => dateForWeekday(weekStart, day))
+    .filter(date => date <= input.block.goal.peakDate)
+    .sort()
   let candidatesScored = 0
   let rejectedBySafety = 0
   let exhausted = false
@@ -356,8 +357,7 @@ export function planWeek(rawInput: PlanWeekInput): WeekPlan {
         // rather than enumerating factorially many copies of the same week.
         const priorEquivalent = current.slice(mandatory.length).filter(previous =>
           samePrescription({ ...previous, id: session.id }, session)).at(-1)
-        for (const day of days) {
-          const date = addDays(weekStart, day)
+        for (const date of days) {
           if (optionalDays.has(date) || (priorEquivalent && date <= priorEquivalent.date)) continue
           optionalDays.add(date)
           current.push({ ...session, date })

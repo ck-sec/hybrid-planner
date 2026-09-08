@@ -3,15 +3,16 @@ import { test } from 'node:test'
 import { generateBlock } from './block.ts'
 import { adaptCalendarWeek, calendarSafety, followingCommitments, nextCalendarInput } from './calendar.ts'
 import type { CalendarWeek } from './calendar.ts'
+import { addDays, dateForWeekday, dayOfWeek } from './dates.ts'
 import { DEFAULT_LIBRARY } from './library.ts'
 import { planWeek } from './planner.ts'
-import type { AthleteState, PlanWeekInput, Session } from './types.ts'
+import type { AthleteState, Day, PlanWeekInput, Session } from './types.ts'
 
-function fixture(): CalendarWeek {
+function fixture(start = '2026-09-07', availableDays: Day[] = [0, 1, 2, 3, 4, 5, 6]): CalendarWeek {
   const athlete: AthleteState = {
     baseline: { asOf: '2026-09-07', weeklyRunMinutes: 90, longestRunMinutes: 30, runsPerWeek: 3, liftsPerWeek: 2, liftDurationMin: 45,
       exercises: [{ exerciseId: 'back-squat', date: '2026-09-01', weightKg: 40, sets: 5, reps: 5, actualRPE: 7, experienceMonths: 24 }] },
-    calibration: { version: 1, costMultiplier: 1, observationCount: 0 }, availableDays: [0, 1, 2, 3, 4, 5, 6],
+    calibration: { version: 1, costMultiplier: 1, observationCount: 0 }, availableDays,
     equipment: ['barbell'], weeklyTimeBudgetMin: 400, defaultStartTime: '07:00', aggressiveness: 'conservative',
     residual: { asOfDate: '2026-09-07', asOfTime: '00:00', load: { systemic: 0, structural: 0 } }, safetyHold: null,
   }
@@ -21,7 +22,7 @@ function fixture(): CalendarWeek {
       id: `practice-${index}`, label: 'Court practice', dayOfWeek: day as 1 | 3, durationMin: 90,
       startTime: '19:00', discipline: 'sport', modality: 'court_sport', estimatedLoad: { systemic: 360, structural: 270 },
     })),
-  }, '2026-09-07', DEFAULT_LIBRARY)
+  }, start, DEFAULT_LIBRARY)
   const input: PlanWeekInput = {
     athlete, block, weekIndex: 0, library: DEFAULT_LIBRARY,
     context: { recentSessions: [], completedWeeks: [], neighboringSessions: [], pinnedSessions: [] },
@@ -31,6 +32,39 @@ function fixture(): CalendarWeek {
 }
 const optionalMinutes = (sessions: readonly Session[]): number =>
   sessions.filter(session => session.kind !== 'commitment').reduce((sum, session) => sum + session.durationMin, 0)
+
+test('rolling calendar edits and following boundaries retain actual availability and fixed weekdays', () => {
+  for (let offset = 0; offset < 7; offset++) {
+    const start = addDays('2026-09-07', offset)
+    const week = fixture(start, [0, 1, 3, 5, 6])
+    assert.equal(week.plan.safety.passed, true)
+    const target = week.plan.sessions.find(session => session.kind === 'run')!
+    assert.ok(target)
+    const updated = adaptCalendarWeek(week, { type: 'skip', sessionId: target.id, reason: 'life' })
+    assert.ok(updated.plan.sessions.every(session => week.input.athlete.availableDays.includes(dayOfWeek(session.date))))
+    assert.deepEqual(updated.plan.sessions.filter(session => session.kind === 'commitment'),
+      week.plan.sessions.filter(session => session.kind === 'commitment'))
+    assert.equal(updated.plan.weekStart, start)
+    const movable = updated.plan.sessions.find(session => session.kind === 'run')!
+    assert.ok(movable)
+    const moved = adaptCalendarWeek(updated, {
+      type: 'move', sessionId: movable.id, date: movable.date, startTime: '08:00',
+    })
+    assert.equal(moved.plan.sessions.find(session => session.id === movable.id)?.pinned, true)
+    assert.equal(moved.plan.sessions.find(session => session.id === movable.id)?.date, movable.date)
+    assert.ok(moved.plan.sessions.every(session => week.input.athlete.availableDays.includes(dayOfWeek(session.date))))
+    assert.deepEqual(moved.logs, updated.logs)
+    for (const options of [{}, { policy: 'ai-advisory' as const }]) {
+      const following = followingCommitments(week.input, options)
+      assert.deepEqual(following.map(session => session.date), [1, 3].map(day => dateForWeekday(addDays(start, 7), day as Day)))
+    }
+    const next = nextCalendarInput([moved])
+    assert.equal(next.weekIndex, 1)
+    assert.equal(next.block.startDate, start)
+    assert.deepEqual(next.athlete.availableDays, week.input.athlete.availableDays)
+    assert.equal(planWeek(next).weekStart, addDays(start, 7))
+  }
+})
 
 test('calendar move is deterministic and immutable, preserving an exact new pin', () => {
   const week = fixture()

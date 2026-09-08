@@ -12,8 +12,7 @@ export function parseISODate(value: unknown): Date {
 }
 
 export function parseWeekStart(value: unknown): string {
-  const date = parseISODate(value)
-  if (date.getUTCDay() !== 1) throw new Error('A saved week must start on a Monday.')
+  parseISODate(value)
   return value as string
 }
 
@@ -27,16 +26,28 @@ export function daysBetween(first: string, second: string): number {
   return (parseISODate(second).getTime() - parseISODate(first).getTime()) / DAY_MS
 }
 
-export function currentMonday(now: Date = new Date()): string {
+export function currentDate(now: Date = new Date()): string {
   if (!Number.isFinite(now.getTime())) throw new Error('The current date is unavailable.')
   const localDate = `${String(now.getFullYear()).padStart(4, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-  const date = parseISODate(localDate)
+  return parseWeekStart(localDate)
+}
+
+export function currentMonday(now: Date = new Date()): string {
+  const date = parseISODate(currentDate(now))
   date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7))
   return parseWeekStart(date.toISOString().slice(0, 10))
 }
 
 const shortDate = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const longDate = new Intl.DateTimeFormat('en', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+const weekday = new Intl.DateTimeFormat('en', { weekday: 'long', timeZone: 'UTC' })
+
+export function calendarDays(weekStart: string): { date: string; day: string }[] {
+  return Array.from({ length: 7 }, (_, offset) => {
+    const date = dayOfWeekDate(weekStart, offset)
+    return { date: date.toISOString().slice(0, 10), day: weekday.format(date) }
+  })
+}
 
 export function formatDay(weekStart: string, day: number): string {
   return shortDate.format(dayOfWeekDate(weekStart, day))
