@@ -8,6 +8,9 @@ import {
   type WorkoutLog,
   type WorkoutLogMetrics,
   type WorkoutLogStep,
+  type WeeklyReview,
+  type WeeklyReviewMetric,
+  type WeeklyReviewMetricField,
 } from '../../domain/contracts.ts'
 import { parseStableIdentity } from '../../domain/identity.ts'
 import { addDaysToLocalDate, parseLocalDate } from '../../domain/local-date.ts'
@@ -85,25 +88,8 @@ export interface WorkoutReviewStepActualValues {
   readonly loadKg?: number
 }
 
-export interface ValidatedWeeklyMetric {
-  readonly id: string
-  readonly label: string
-  readonly planned?: string
-  readonly completed?: string
-  readonly note?: string
-}
-
-export interface ValidatedWeeklyReview {
-  readonly weekLabel?: string
-  readonly reflection?: string
-  readonly energy?: number
-  readonly recovery?: number
-  readonly wins?: string
-  readonly blockers?: string
-  readonly nextFocus?: string
-  readonly coachNotes?: string
-  readonly metrics: readonly ValidatedWeeklyMetric[]
-}
+export type ValidatedWeeklyMetric = WeeklyReviewMetric
+export type ValidatedWeeklyReview = WeeklyReview
 
 export interface WorkoutReviewLogDraft {
   readonly logId: string
@@ -164,7 +150,7 @@ export interface WeeklyReviewScreenAdapterProps extends WeeklyReviewScreenProps 
 }
 
 type WorkoutLogEditableField = Exclude<keyof WorkoutLogStepResultDraft, 'id' | 'title'>
-type WeeklyMetricField = Exclude<keyof WeeklyMetricDraft, 'id' | 'label'>
+type WeeklyMetricField = WeeklyReviewMetricField
 type WeeklyReviewField = keyof WeeklyReviewDraft
 
 export type WorkoutReviewAction =
@@ -481,8 +467,10 @@ function listWorkoutSteps(workout: Workout): readonly Workout['main'][number][] 
   return [...workout.warmup, ...workout.main, ...workout.cooldown]
 }
 
-function allocateWorkoutLogId(existingLogs: readonly WorkoutLog[], workoutId: string): string {
-  const base = parseStableIdentity(`log-${workoutId}`, 'generatedLogId')
+function allocateWorkoutLogId(existingLogs: readonly WorkoutLog[], weekPlanId: string, workoutId: string): string {
+  // The length prefix keeps hyphenated week/workout pairs unambiguous.
+  const scopedId = `log-${weekPlanId.length}-${weekPlanId}-${workoutId}`
+  const base = parseStableIdentity(scopedId.length <= 70 ? scopedId : `log-${globalThis.crypto.randomUUID()}`, 'generatedLogId')
   const used = new Set(existingLogs.map(log => log.id))
   if (!used.has(base)) return base
   let sequence = 2
@@ -539,15 +527,16 @@ function buildSummaryFromState(state: WorkoutReviewState): WorkoutReviewSummary 
 }
 
 function buildDefaultWeeklyReviewDraft(weekPlan: WeekPlan): WeeklyReviewDraft {
+  const review = weekPlan.review
   return {
-    weekLabel: `${weekPlan.weekStart} to ${addDaysToLocalDate(weekPlan.weekStart, 6)}`,
-    reflection: '',
-    energy: '',
-    recovery: '',
-    wins: '',
-    blockers: '',
-    nextFocus: '',
-    coachNotes: '',
+    weekLabel: review?.weekLabel ?? `${weekPlan.weekStart} to ${addDaysToLocalDate(weekPlan.weekStart, 6)}`,
+    reflection: review?.reflection ?? '',
+    energy: review?.energy === undefined ? '' : String(review.energy),
+    recovery: review?.recovery === undefined ? '' : String(review.recovery),
+    wins: review?.wins ?? '',
+    blockers: review?.blockers ?? '',
+    nextFocus: review?.nextFocus ?? '',
+    coachNotes: review?.coachNotes ?? '',
   }
 }
 
@@ -788,7 +777,7 @@ export function createWorkoutReviewState(input: CreateWorkoutReviewStateInput): 
       isLogged: hydrated.isLogged,
       draft: {
         ...hydrated.draft,
-        logId: hydrated.draft.logId || allocateWorkoutLogId(validatedLogs, workout.id),
+        logId: hydrated.draft.logId || allocateWorkoutLogId(validatedLogs, validatedWeekPlan.id, workout.id),
       },
       hydrationMessages: history.length > 1
         ? [
@@ -808,13 +797,38 @@ export function createWorkoutReviewState(input: CreateWorkoutReviewStateInput): 
       metrics: [],
     },
   }
-  return {
+  return refreshWeeklyReviewMetrics({
     ...state,
     weeklyReview: {
       ...state.weeklyReview,
-      metrics: buildDefaultWeeklyMetrics(buildSummaryFromState(state)),
+      metrics: validatedWeekPlan.review
+        ? validatedWeekPlan.review.metrics.map(metric => ({
+          id: metric.id, label: metric.label,
+          planned: metric.planned ?? '', completed: metric.completed ?? '', note: metric.note ?? '',
+        }))
+        : buildDefaultWeeklyMetrics(buildSummaryFromState(state)),
+      ...(validatedWeekPlan.review ? {
+        // Older reviews did not distinguish automatic values from intentional overrides.
+        editedMetricFields: Object.fromEntries(validatedWeekPlan.review.metrics.map(metric => [
+          metric.id, metric.overriddenFields ?? ['planned', 'completed', 'note'] as const,
+        ])),
+      } : {}),
     },
+  })
+}
+
+export function rebaseWorkoutReviewState(
+  current: WorkoutReviewState,
+  weekPlan: WeekPlan,
+  workoutLogs: readonly WorkoutLog[],
+): WorkoutReviewState {
+  if (current.weekPlan.id !== weekPlan.id || current.weekPlan.athleteId !== weekPlan.athleteId) {
+    throw reviewError('invalid-review', 'Review edits cannot be transferred to a different week or athlete.', 'weekPlan')
   }
+  return refreshWeeklyReviewMetrics({
+    ...createWorkoutReviewState({ weekPlan, workoutLogs }),
+    weeklyReview: current.weeklyReview,
+  })
 }
 
 function workoutReviewDraftsEqual(left: WorkoutReviewLogDraft, right: WorkoutReviewLogDraft): boolean {
@@ -845,6 +859,12 @@ export function getDirtyWorkoutReviewIds(state: WorkoutReviewState): readonly st
     const baseline = hydrateWorkoutDraft(workout.workout, latestLog, workout.changeHistory)
     return !workoutReviewDraftsEqual(workout.draft, baseline.draft)
   }).map(workout => workout.workout.id)
+}
+
+export function hasUnsavedWeeklyReview(state: WorkoutReviewState): boolean {
+  if (collectWeeklyReviewIssues(state).length) return true
+  const baseline = createWorkoutReviewState({ weekPlan: state.weekPlan, workoutLogs: state.sourceLogs, trackedChanges: state.trackedChanges })
+  return JSON.stringify(buildValidatedWeeklyReview(state)) !== JSON.stringify(buildValidatedWeeklyReview(baseline))
 }
 
 export function mergeSavedWorkoutReviewLogs(
@@ -1286,6 +1306,10 @@ function buildDomainWorkoutLog(workout: WorkoutReviewWorkoutState, weekPlan: Wee
   const metrics = parseWorkoutActualMetricsText(current.draft.actualSummary)
   const steps = current.draft.stepResults.map(step => {
     const actual = parseWorkoutStepActualText(step.actualResult)
+    const logged = current.logHistory[0]?.steps.find(saved => saved.stepId === step.id)
+    const planned = listWorkoutSteps(current.workout).find(plannedStep => plannedStep.id === step.id)?.target
+    // Existing records keep their original convention, including an unspecified legacy basis.
+    const conventions = logged ?? planned
     return {
       stepId: step.id,
       ...(actual?.sets === undefined ? {} : { completedSets: actual.sets }),
@@ -1295,6 +1319,8 @@ function buildDomainWorkoutLog(workout: WorkoutReviewWorkoutState, weekPlan: Wee
       ...(actual?.distanceMeters === undefined ? {} : { completedDistanceMeters: actual.distanceMeters }),
       ...(actual?.paceSecondsPerKm === undefined ? {} : { completedPaceSecondsPerKm: actual.paceSecondsPerKm }),
       ...(actual?.loadKg === undefined ? {} : { loadKg: actual.loadKg }),
+      ...(conventions?.loadBasis === undefined ? {} : { loadBasis: conventions.loadBasis }),
+      ...(conventions?.repBasis === undefined ? {} : { repBasis: conventions.repBasis }),
       notes: encodeStepReviewNotes(step.status, step.effort, step.notes),
     } satisfies WorkoutLogStep
   })
@@ -1341,7 +1367,7 @@ export function buildWorkoutReviewLogs(state: WorkoutReviewState): readonly Work
   return validateWorkoutLogsForWeekPlan(state.weekPlan, combined, 'WorkoutReviewPayload.workoutLogs')
 }
 
-function buildValidatedWeeklyReview(state: WorkoutReviewState): ValidatedWeeklyReview {
+export function buildValidatedWeeklyReview(state: WorkoutReviewState): ValidatedWeeklyReview {
   const validation = validateWorkoutReviewState(state)
   if (validation.weeklyReviewIssues.length) firstValidationError(validation.weeklyReviewIssues, 'weeklyReview')
   const draft = state.weeklyReview.draft
@@ -1360,6 +1386,8 @@ function buildValidatedWeeklyReview(state: WorkoutReviewState): ValidatedWeeklyR
       ...(normalizeOptionalText(metric.planned) ? { planned: normalizeOptionalText(metric.planned)! } : {}),
       ...(normalizeOptionalText(metric.completed) ? { completed: normalizeOptionalText(metric.completed)! } : {}),
       ...(normalizeOptionalText(metric.note) ? { note: normalizeOptionalText(metric.note)! } : {}),
+      overriddenFields: (['planned', 'completed', 'note'] as const)
+        .filter(field => state.weeklyReview.editedMetricFields?.[metric.id]?.includes(field)),
     })),
   }
 }
@@ -1404,9 +1432,10 @@ export function buildWorkoutReviewPayload(state: WorkoutReviewState): WorkoutRev
   const workoutLogs = buildWorkoutReviewLogs(state)
   const summary = buildSummaryFromState(state)
   const review = buildValidatedWeeklyReview(state)
-  const previousWeek = buildContinuationWeekContext(state.weekPlan, workoutLogs, state.trackedChanges)
+  const weekPlan = parseWeekPlan({ ...state.weekPlan, review })
+  const previousWeek = buildContinuationWeekContext(weekPlan, workoutLogs, state.trackedChanges)
   return {
-    weekPlan: state.weekPlan,
+    weekPlan,
     workoutLogs,
     trackedChanges: [...state.trackedChanges],
     summary,
@@ -1445,6 +1474,7 @@ export function createWorkoutLogScreenProps(
     actualSummary: workout.draft.actualSummary,
     notes: workout.draft.notes,
     stepResults: workout.draft.stepResults,
+    recordedSteps: workout.logHistory[0]?.steps,
     messages,
     onCompletionStatusChange: value => dispatch({ type: 'setWorkoutCompletionStatus', workoutId: workout.workout.id, value }),
     onSessionRpeChange: value => dispatch({ type: 'setWorkoutSessionRpe', workoutId: workout.workout.id, value }),

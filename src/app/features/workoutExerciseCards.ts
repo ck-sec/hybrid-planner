@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode, type SyntheticEvent } from 'react'
-import type { Workout, WorkoutStep, WorkoutStepTarget } from '../../domain/contracts.ts'
+import type { Workout, WorkoutLogStep, WorkoutStep, WorkoutStepTarget } from '../../domain/contracts.ts'
 import type { WorkoutLogStepResultDraft } from './models.ts'
 import {
   parseStructuredMetricText,
@@ -15,6 +15,7 @@ export interface WorkoutExerciseCardsProps {
   idPrefix: string
   workout?: Workout
   stepResults: readonly WorkoutLogStepResultDraft[]
+  recordedSteps?: readonly WorkoutLogStep[]
   unlogged?: boolean
   onStepResultChange: (stepId: string, field: ExerciseResultField, value: string) => void
 }
@@ -30,15 +31,35 @@ const metricLabels: Record<string, string> = {
   loadKg: 'Weight (kg)', minutes: 'Time (min)', seconds: 'Time (sec)',
   distanceMeters: 'Distance (m)', paceSecondsPerKm: 'Pace (min/km)',
 }
+const loadLabels = {
+  total: 'Weight (kg total)',
+  per_implement: 'Weight (kg each)',
+  added: 'Weight (added kg)',
+  assistance: 'Weight (assistance kg)',
+} as const
+const plannedLoadUnits = {
+  total: 'kg total',
+  per_implement: 'kg each',
+  added: 'kg added',
+  assistance: 'kg assistance',
+} as const
+
+type MeasurementConventions = Pick<WorkoutStepTarget, 'loadBasis' | 'repBasis'>
+
+function metricLabel(field: { key: string; label: string }, conventions: MeasurementConventions | undefined): string {
+  if (field.key === 'loadKg' && conventions?.loadBasis) return loadLabels[conventions.loadBasis]
+  if (field.key === 'reps' && conventions?.repBasis) return conventions.repBasis === 'per_side' ? 'Reps each side' : 'Reps (total)'
+  return metricLabels[field.key] ?? field.label
+}
 
 function plannedTargets(target: WorkoutStepTarget | undefined): string {
   if (!target) return ''
   return [
     target.sets !== undefined ? `${target.sets} sets` : '',
-    target.reps !== undefined ? `${target.reps} reps` : '',
-    target.loadKg !== undefined ? `${target.loadKg} kg` : '',
-    target.minutes !== undefined ? `${target.minutes} min` : '',
-    target.seconds !== undefined ? `${target.seconds} sec` : '',
+    target.reps !== undefined ? `${target.reps} reps${target.repBasis === 'per_side' ? ' each side' : target.repBasis === 'total' ? ' total' : ''}` : '',
+    target.loadKg !== undefined ? `${target.loadKg} ${target.loadBasis ? plannedLoadUnits[target.loadBasis] : 'kg'}` : '',
+    target.minutes !== undefined ? `${target.minutes} min work` : '',
+    target.seconds !== undefined ? `${target.seconds} sec work` : '',
     target.distanceMeters !== undefined ? `${target.distanceMeters} m` : '',
     target.effort,
   ].filter(Boolean).join(' \u00b7 ')
@@ -84,12 +105,13 @@ function renderExercise(props: WorkoutExerciseCardsProps, prescription: WorkoutS
   const result = props.stepResults.find(step => step.id === prescription.id)
   const id = `${props.idPrefix}-${section}-${prescription.id}`
   const guidanceOnly = section === 'warmup' || section === 'cooldown'
+  const conventions = props.recordedSteps?.find(step => step.stepId === prescription.id) ?? prescription.target
   const actuals = parseStructuredMetricText(result?.actualResult ?? '', workoutStepActualFields)
   const primary = primaryMetricKeys(props.workout, prescription)
   const secondaryFields = actuals.fields.filter(field => !primary.has(field.key))
   const update = (field: ExerciseResultField, value: string) => props.onStepResultChange(prescription.id, field, value)
   const metricField = (field: typeof actuals.fields[number]) => textInput({
-    id: `${id}-${field.key}`, label: metricLabels[field.key] ?? field.label,
+    id: `${id}-${field.key}`, label: metricLabel(field, conventions),
     value: field.value,
     inputMode: field.key === 'paceSecondsPerKm' ? 'text' : field.key === 'sets' || field.key === 'reps' ? 'numeric' : 'decimal',
     onChange: value => update('actualResult', updateStructuredMetricField(actuals, field.key, value)),
@@ -105,10 +127,13 @@ function renderExercise(props: WorkoutExerciseCardsProps, prescription: WorkoutS
       planned ? h('p', { key: 'planned', className: 'workout-exercise__planned' }, [
         h('span', { key: 'label' }, 'Planned'), planned,
       ]) : null,
+      prescription.estimatedTotalMin !== undefined ? h('p', { key: 'block-time', className: 'workout-exercise__block-time' }, [
+        h('strong', { key: 'label' }, 'Estimated block time: '), `${prescription.estimatedTotalMin} min`,
+      ]) : null,
     ]),
     prescription.detail ? h('p', { key: 'detail', className: 'workout-exercise__instructions' }, prescription.detail) : null,
     prescription.equipment?.length ? h('p', { key: 'equipment', className: 'app-hint' }, `Equipment: ${prescription.equipment.join(', ')}`) : null,
-    ...(guidanceOnly ? [recordedGuidance(result, actuals)] : [
+    ...(guidanceOnly ? [recordedGuidance(result, actuals, conventions)] : [
       h('div', { key: 'actuals', className: 'workout-exercise__actuals' }, [
         h('p', { key: 'label', className: 'workout-exercise__actualsLabel' }, 'You did'),
         h('div', { key: 'fields', className: 'feature-metric-grid' }, [...primary].flatMap(key => actuals.fields.filter(field => field.key === key)).map(metricField)),
@@ -142,9 +167,10 @@ function renderExercise(props: WorkoutExerciseCardsProps, prescription: WorkoutS
 function recordedGuidance(
   result: WorkoutLogStepResultDraft | undefined,
   actuals: ReturnType<typeof parseStructuredMetricText>,
+  conventions: MeasurementConventions | undefined,
 ) {
   const recorded = [
-    ...actuals.fields.filter(field => field.value.trim()).map(field => `${metricLabels[field.key] ?? field.label}: ${field.value}`),
+    ...actuals.fields.filter(field => field.value.trim()).map(field => `${metricLabel(field, conventions)}: ${field.value}`),
     actuals.advancedText,
     result?.effort ? `Effort (RPE): ${result.effort}` : '',
     result?.notes,

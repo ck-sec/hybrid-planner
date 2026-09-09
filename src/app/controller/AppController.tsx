@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type DragEvent, type ReactElement } from 'react'
 import { buildContinuationWeekPrompt, buildInitialWeekPrompt } from '../../ai/index.ts'
 import type { AthleteProfile, Workout, WorkoutLog } from '../../domain/contracts.ts'
-import { isFullySpecifiedClubSession } from '../../domain/contracts.ts'
 import { localDateDayOfWeek } from '../../domain/local-date.ts'
 import type { LocalDateString } from '../../domain/local-date.ts'
 import { createHybridCoachRepository, type HybridCoachRepository } from '../../storage/indexeddb-repository.ts'
@@ -25,6 +24,7 @@ import type { FormMessage, WorkoutCompletionStatus } from '../features/models.ts
 import { InlineWorkoutLog } from '../features/inlineWorkoutLog.ts'
 import { actionBar, h, sectionCard, selectInput, textArea, textInput } from '../features/ui.ts'
 import { writeTextToClipboard } from '../state/ai-clipboard.ts'
+import { buildPlanRevisionRequest, summarizeWeekTraining } from '../state/plan-quality.ts'
 import {
   buildInitialPromptInputFromAthleteProfile,
   previewAiWeekHandoff,
@@ -36,7 +36,6 @@ import {
 } from '../state/onboarding.ts'
 import {
   createPlannerStateFromWeekPlan,
-  deletePlannerWorkout,
   duplicatePlannerWorkout,
   addPlannerWorkout,
   movePlannerWorkout,
@@ -52,6 +51,7 @@ import {
   createWorkoutLogScreenProps,
   createWorkoutReviewState,
   getDirtyWorkoutReviewIds,
+  hasUnsavedWeeklyReview,
   startWorkoutReviewLog,
   validateWorkoutReviewState,
   type WorkoutReviewAction,
@@ -81,6 +81,9 @@ import {
   saveOnboardingDraftState,
   saveReviewWorkoutLog,
   savePendingReviewWorkoutLogs,
+  saveReviewWeek,
+  deleteRecordedPlannerWorkout,
+  refreshHandoffPrompt,
   startManualWeek,
 } from './effects.ts'
 import { createControllerId } from './ids.ts'
@@ -125,7 +128,13 @@ export function AppController({ repository: injectedRepository, now = () => new 
   const [moveTargetDate, setMoveTargetDate] = useState('')
   const [draggingLocalId, setDraggingLocalId] = useState<string | null>(null)
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const draftSaveInFlight = useRef<Promise<void> | undefined>(undefined)
+  const taskRunning = useRef(false)
   const dirtyWorkoutIds = useMemo(() => state.review ? getDirtyWorkoutReviewIds(state.review) : [], [state.review])
+  const dirtyWeeklyReview = useMemo(() => state.review ? hasUnsavedWeeklyReview(state.review) : false, [state.review])
+  const trainingSummary = useMemo(() => state.planner && state.athlete
+    ? summarizeWeekTraining(plannerStateToWeekPlan(state.planner), state.athlete)
+    : undefined, [state.planner, state.athlete])
 
   const today = todayLocalDate(now())
 
@@ -162,26 +171,39 @@ export function AppController({ repository: injectedRepository, now = () => new 
   }, [state.route, state.phase, state.editor?.localId, state.editor?.mode, state.onboarding?.currentStep])
 
   useEffect(() => {
-    if (!dirtyWorkoutIds.length) return
+    if (!dirtyWorkoutIds.length && !dirtyWeeklyReview) return
     const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
       event.preventDefault()
       event.returnValue = true
     }
     globalThis.addEventListener('beforeunload', warnBeforeLeaving)
     return () => globalThis.removeEventListener('beforeunload', warnBeforeLeaving)
-  }, [dirtyWorkoutIds.length])
+  }, [dirtyWorkoutIds.length, dirtyWeeklyReview])
+
+  useEffect(() => {
+    setPendingDeleteLocalId(null)
+    setDraggingLocalId(null)
+    setMoveTargetDate('')
+  }, [state.athlete?.id, state.planner?.present.week.id])
 
   const setStatus = (tone: FormMessage['tone'], text: string, id = 'app-status') => {
     dispatch({ type: 'status', message: message(id, tone, text) })
   }
 
   const runTask = async (fallback: string, task: () => Promise<void>) => {
+    if (taskRunning.current) {
+      setStatus('info', 'Wait for the current operation to finish, then try again.')
+      return
+    }
+    taskRunning.current = true
     dispatch({ type: 'busy', value: true })
     try {
       await task()
     } catch (error) {
       setStatus('error', errorText(error, fallback))
     } finally {
+      taskRunning.current = false
+      dispatch({ type: 'storageChanged' })
       dispatch({ type: 'busy', value: false })
     }
   }
@@ -189,16 +211,6 @@ export function AppController({ repository: injectedRepository, now = () => new 
   const navigate = (route: AppRoute) => dispatch({ type: 'navigate', route })
 
   const persistWeek = async (planner: PlannerState, successText: string) => {
-    if (!planner.present.week.workouts.length) {
-      dispatch({ type: 'setPlanner', planner, unsaved: true })
-      setStatus(
-        'error',
-        state.savedWeek
-          ? 'A week needs at least one workout to be saved. The previously saved week is unchanged until you add a session.'
-          : 'A week needs at least one workout before it can be saved in this browser.',
-      )
-      return
-    }
     try {
       const weekPlan = await persistPlannerWeek(repository, planner)
       dispatch({ type: 'weekPersisted', weekPlan })
@@ -208,8 +220,15 @@ export function AppController({ repository: injectedRepository, now = () => new 
     }
   }
 
-  const persistPendingLogs = async (review = state.review) => {
-    if (!review || !getDirtyWorkoutReviewIds(review).length) return
+  const persistPendingLogs = async (review = state.review, includeWeeklyReview = false) => {
+    if (!review) return
+    if (includeWeeklyReview && hasUnsavedWeeklyReview(review)) {
+      const result = await saveReviewWeek(repository, review)
+      dispatch({ type: 'reviewLogsSaved', submitted: review, ...result })
+      dispatch({ type: 'reviewWeekSaved', weekPlan: result.weekPlan })
+      return
+    }
+    if (!getDirtyWorkoutReviewIds(review).length) return
     const result = await savePendingReviewWorkoutLogs(repository, review)
     dispatch({ type: 'reviewLogsSaved', submitted: review, ...result })
   }
@@ -230,7 +249,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
 
   const handleManualStart = () => {
     void runTask('The blank week could not be created.', async () => {
-      await persistPendingLogs()
+      await persistPendingLogs(state.review, true)
       const result = await startManualWeek(repository, {
         today,
         weekStart: currentWeekStart(now()),
@@ -287,14 +306,18 @@ export function AppController({ repository: injectedRepository, now = () => new 
     if (!onboarding) return
     let active = true
     draftSaveTimer.current = setTimeout(() => {
-      void (async () => {
+      const saving = (async () => {
         try {
           const result = await saveOnboardingDraftState(repository, onboarding, today)
-          if (result.ok && active) dispatch({ type: 'status', message: message('draft-saved', 'success', 'Setup draft saved in this browser.') })
+          if (result.ok) {
+            dispatch({ type: 'storageChanged' })
+            if (active) dispatch({ type: 'status', message: message('draft-saved', 'success', 'Setup draft saved in this browser.') })
+          }
         } catch (error) {
-          dispatch({ type: 'status', message: message('draft-error', 'error', `The setup draft could not be saved: ${errorText(error, 'unknown storage failure')}`) })
+          if (active) dispatch({ type: 'status', message: message('draft-error', 'error', `The setup draft could not be saved: ${errorText(error, 'unknown storage failure')}`) })
         }
       })()
+      draftSaveInFlight.current = saving
     }, 900)
     return () => {
       active = false
@@ -306,8 +329,9 @@ export function AppController({ repository: injectedRepository, now = () => new 
     const onboarding = state.onboarding
     if (!onboarding) return
     void runTask('Guided setup could not be finished.', async () => {
-      await persistPendingLogs()
+      await persistPendingLogs(state.review, true)
       if (draftSaveTimer.current !== undefined) clearTimeout(draftSaveTimer.current)
+      await draftSaveInFlight.current
       const outcome = await finalizeGuidedOnboarding(repository, onboarding, today)
       if (!outcome.ok) {
         setStatus('error', outcome.issues[0]?.message ?? 'Guided setup is not complete yet.')
@@ -351,6 +375,10 @@ export function AppController({ repository: injectedRepository, now = () => new 
   }
 
   const handleSaveEditor = () => {
+    if (taskRunning.current) {
+      setStatus('info', 'Wait for the current save to finish before saving this edit.')
+      return
+    }
     const editor = state.editor
     if (!editor) return
     const result = buildWorkoutDefinition(editor.state, editor.existing ? { existing: editor.existing } : {})
@@ -400,9 +428,26 @@ export function AppController({ repository: injectedRepository, now = () => new 
 
   const handleConfirmDelete = () => {
     const localId = pendingDeleteLocalId
-    setPendingDeleteLocalId(null)
-    if (!localId) return
-    applyPlannerChange(planner => deletePlannerWorkout(planner, localId), 'Session deleted and the week was saved.')
+    const planner = state.planner
+    if (!localId || !planner) return
+    void runTask('The session could not be deleted. Your saved week is unchanged.', async () => {
+      const workoutId = entryByLocalId(localId)?.workout.id
+      if (!workoutId) throw new Error('The workout to delete no longer exists.')
+      // Discard only the confirmed card's draft; other cards must be saved before changing the week.
+      if (state.review) {
+        const review = {
+          ...state.review,
+          workouts: state.review.workouts.map(workout => workout.workout.id === workoutId
+            ? { ...workout, isLogged: false }
+            : workout),
+        }
+        await persistPendingLogs(review)
+      }
+      const result = await deleteRecordedPlannerWorkout(repository, planner, localId)
+      dispatch({ type: 'workoutDeleted', ...result })
+      setPendingDeleteLocalId(null)
+      setStatus('success', 'Session and its recorded logs deleted. The week is saved.')
+    })
   }
 
   const handleMove = (localId: string, scheduledDate: string) => {
@@ -477,7 +522,9 @@ export function AppController({ repository: injectedRepository, now = () => new 
     if (!review || !athlete) return
     void runTask('The weekly review could not be completed.', async () => {
       const payload = buildWorkoutReviewPayload(review)
-      await persistPendingLogs(review)
+      const saved = await saveReviewWeek(repository, review)
+      dispatch({ type: 'reviewLogsSaved', submitted: review, ...saved })
+      dispatch({ type: 'reviewWeekSaved', weekPlan: saved.weekPlan })
       const targetWeekStart = followingWeekStart(review.weekPlan.weekStart)
       const promptPackage = buildContinuationWeekPrompt({
         ...buildInitialPromptInputFromAthleteProfile(athlete, targetWeekStart),
@@ -494,10 +541,9 @@ export function AppController({ repository: injectedRepository, now = () => new 
     const athlete = state.athlete
     if (!athlete) return
     try {
-      const targetWeekStart = state.planner?.present.week.weekStart ?? currentWeekStart(now())
-      const promptPackage = buildInitialWeekPrompt(buildInitialPromptInputFromAthleteProfile(athlete, targetWeekStart))
-      dispatch({ type: 'setPrompt', kind: 'initial', targetWeekStart, promptText: promptPackage.prompt })
-      setStatus('success', `Prompt ready for ${formatWeekRange(targetWeekStart)}.`)
+      const prompt = refreshHandoffPrompt(athlete, state.handoff, state.planner?.present.week.weekStart ?? currentWeekStart(now()), state.review)
+      dispatch({ type: 'setPrompt', ...prompt })
+      setStatus('success', `Prompt ready for ${formatWeekRange(prompt.targetWeekStart)}.`)
     } catch (error) {
       setStatus('error', errorText(error, 'The prompt could not be generated.'))
     }
@@ -548,38 +594,57 @@ export function AppController({ repository: injectedRepository, now = () => new 
     const preview = state.handoff.preview
     if (!preview?.ok) return
     void runTask('The week could not be imported.', async () => {
-      await persistPendingLogs()
-      const result = await applyWeekImport(repository, preview.bundle)
+      await persistPendingLogs(state.review, true)
+      const result = await applyWeekImport(repository, preview.bundle, state.athlete)
       dispatch({
         type: 'weekImported',
         planner: createPlannerStateFromWeekPlan(result.weekPlan),
         weekPlan: result.weekPlan,
         logs: result.logs,
+        athleteProfile: result.athleteProfile,
       })
       dispatch({ type: 'clearHandoff' })
       setStatus('success', 'Your week is saved. Record weights and comments on the main exercises as you train.')
     })
   }
 
+  const handleCopyRevisionRequest = () => {
+    void runTask('The revision request could not be copied.', async () => {
+      const preview = state.handoff.preview
+      if (!state.athlete || !preview?.ok) throw new Error('Preview a valid plan before requesting a revision.')
+      const brief = state.handoff.promptText || refreshHandoffPrompt(
+        state.athlete,
+        { ...state.handoff, targetWeekStart: preview.bundle.weekPlan.weekStart },
+        preview.bundle.weekPlan.weekStart,
+        state.review,
+      ).promptText
+      const result = await writeTextToClipboard(buildPlanRevisionRequest(brief, state.handoff.jsonText, preview.issues))
+      setStatus(result.ok ? 'success' : 'error', result.message)
+    })
+  }
+
   useEffect(() => {
-    if (state.route !== 'settings' || !state.athlete) return
-    if (state.settings.backup && state.settings.profileDraft) return
+    if (state.route !== 'settings') return
+    if (state.settings.backup && (!state.athlete || state.settings.profileDraft)) return
+    let active = true
     void (async () => {
       try {
         const backup = await exportRepositoryBackup(repository)
+        if (!active) return
         dispatch({
           type: 'settings',
           patch: {
             backup,
-            ...(state.settings.profileDraft ? {} : { profileDraft: createAthleteProfileEditingDraft(state.athlete!) }),
+            ...(state.settings.profileDraft || !state.athlete ? {} : { profileDraft: createAthleteProfileEditingDraft(state.athlete) }),
             messages: createSettingsPrivacyMessages(),
           },
         })
       } catch (error) {
-        dispatch({ type: 'status', message: message('backup-error', 'error', `The local backup could not be read: ${errorText(error, 'unknown storage failure')}`) })
+        if (active) dispatch({ type: 'status', message: message('backup-error', 'error', `The local backup could not be read: ${errorText(error, 'unknown storage failure')}`) })
       }
     })()
-  }, [state.route, state.athlete, state.settings.backup, state.settings.profileDraft, repository])
+    return () => { active = false }
+  }, [state.route, state.athlete, state.settings.backup, state.settings.profileDraft, state.storageRevision, repository])
 
   const patchProfileDraft = (patch: Partial<SettingsAthleteProfileDraft>) => {
     const profileDraft = state.settings.profileDraft
@@ -633,7 +698,9 @@ export function AppController({ repository: injectedRepository, now = () => new 
     const preview = state.settings.restorePreview
     if (!preview) return
     void runTask('The backup could not be restored.', async () => {
-      const outcome = await applyPreviewedBackupRestore(repository, preview, state.settings.restoreConfirmation)
+      if (draftSaveTimer.current !== undefined) clearTimeout(draftSaveTimer.current)
+      await draftSaveInFlight.current
+      const outcome = await applyPreviewedBackupRestore(repository, preview, state.settings.restoreConfirmation, state.settings.restoreJson)
       const snapshot = await bootstrapApp(repository)
       dispatch({
         type: 'bootstrapped',
@@ -663,6 +730,8 @@ export function AppController({ repository: injectedRepository, now = () => new 
     const pendingReset = state.settings.pendingReset
     if (!pendingReset) return
     void runTask('Local data could not be reset.', async () => {
+      if (draftSaveTimer.current !== undefined) clearTimeout(draftSaveTimer.current)
+      await draftSaveInFlight.current
       const outcome = await applyConfirmedReset(repository, pendingReset, state.settings.resetConfirmation)
       dispatch({ type: 'bootstrapped', logs: [] })
       dispatch({
@@ -796,7 +865,9 @@ export function AppController({ repository: injectedRepository, now = () => new 
             {state.planner ? (
               <PlannerBoard
                 planner={state.planner}
-                clubs={state.athlete?.clubSessions.filter(session => !isFullySpecifiedClubSession(session)) ?? []}
+                clubs={trainingSummary?.reminders ?? []}
+                knownMinutes={trainingSummary?.knownMinutes}
+                unknownClubCount={trainingSummary?.unknownClubCount ?? 0}
                 logs={state.logs}
                 review={state.review}
                 dirtyWorkoutIds={dirtyWorkoutIds}
@@ -837,7 +908,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
         <ModalSurface
           open={pendingDeleteLocalId !== null}
           title="Delete this session?"
-          description="The session is removed from the week and the saved week is updated in this browser."
+          description="Delete this session and all its recorded logs from this browser? Other sessions and your weekly reflection are kept, even when the week is empty."
           dismissAction={{ label: 'Close', onClick: () => setPendingDeleteLocalId(null), tone: 'ghost' }}
           secondaryAction={{ label: 'Keep session', onClick: () => setPendingDeleteLocalId(null) }}
           primaryAction={{ label: 'Delete session', onClick: handleConfirmDelete }}
@@ -894,7 +965,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
       return renderScreen(
         <EmptyState
           title="No week to review"
-          message="Save a week with at least one session before closing it out."
+          message="Save a week before closing it out."
           action={{ label: 'Back to the week', onClick: () => navigate('planner') }}
         />,
       )
@@ -920,7 +991,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
           <div className="feature-actions">
             <ActionButton label={state.handoff.promptText ? 'Refresh brief' : 'Prepare my brief'} tone={state.handoff.promptText ? 'secondary' : 'primary'} onClick={handleBuildInitialPrompt} />
             {state.handoff.promptText && <ActionButton label="Copy brief" onClick={() => copyText(state.handoff.promptText, 'Prepare your brief first.')} />}
-            {state.planner?.present.week.workouts.length ? <ActionButton label="Use this week's feedback" tone="ghost" onClick={() => navigate('review')} /> : null}
+            {state.savedWeek ? <ActionButton label="Use this week's feedback" tone="ghost" onClick={() => navigate('review')} /> : null}
           </div>
           {state.handoff.promptText && <details className="feature-advanced"><summary>Read or copy your brief manually</summary>
             {textArea({ id: 'ai-prompt-text', label: `Brief for ${state.handoff.targetWeekStart ? formatWeekRange(state.handoff.targetWeekStart) : 'this week'}`, value: state.handoff.promptText, onChange: () => undefined, readOnly: true, rows: 8 })}
@@ -936,6 +1007,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
         onCopyTemplate={() => copyText(state.handoff.promptText, 'Generate a prompt first, then copy it.')}
         onPreviewImport={handlePreviewImport}
         onApplyImport={handleApplyImport}
+        onCopyRevisionRequest={preview?.ok ? handleCopyRevisionRequest : undefined}
         onClear={() => dispatch({ type: 'clearHandoff' })}
       />,
       <div className="app-screenActions app-screenActions--stack">
@@ -946,8 +1018,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
 
   const settingsPreview = state.settings.restorePreview
   const settingsMessages: readonly FormMessage[] = [
-    ...createSettingsPrivacyMessages(),
-    ...(settingsPreview?.messages ?? []),
+    ...(settingsPreview?.messages ?? createSettingsPrivacyMessages()),
     ...(state.settings.pendingReset ? [state.settings.pendingReset.warning] : []),
   ]
 
@@ -1010,7 +1081,7 @@ export function AppController({ repository: injectedRepository, now = () => new 
       issues={settingsPreview?.issues ?? []}
       resetActions={createSettingsResetActions()}
       messages={settingsMessages}
-      canApplyRestore={settingsPreview ? canApplyPreviewedBackupRestore(settingsPreview, state.settings.restoreConfirmation) : false}
+      canApplyRestore={settingsPreview ? canApplyPreviewedBackupRestore(settingsPreview, state.settings.restoreConfirmation, state.settings.restoreJson) : false}
       onCopyBackup={() => copyText(state.settings.backup?.backupJson ?? '', 'The backup is still loading.')}
       onRestoreJsonChange={value => dispatch({ type: 'settings', patch: { restoreJson: value } })}
       onPreviewRestore={handlePreviewRestore}
@@ -1094,6 +1165,8 @@ function StartShell({
 function PlannerBoard({
   planner,
   clubs,
+  knownMinutes,
+  unknownClubCount,
   logs,
   review,
   dirtyWorkoutIds,
@@ -1113,6 +1186,8 @@ function PlannerBoard({
 }: {
   planner: PlannerState
   clubs: AthleteProfile['clubSessions']
+  knownMinutes?: number
+  unknownClubCount: number
   logs: readonly WorkoutLog[]
   review?: WorkoutReviewState
   dirtyWorkoutIds: readonly string[]
@@ -1135,7 +1210,7 @@ function PlannerBoard({
   const reviewByWorkout = useMemo(() => new Map(review?.workouts.map(item => [item.workout.id, item]) ?? []), [review])
   const latestLog = (workoutId: string) => reviewByWorkout.get(workoutId)?.logHistory[0] ?? logs.find(log => log.workoutId === workoutId)
   const completed = week.workouts.filter(entry => latestLog(entry.workout.id)?.outcome === 'completed').length
-  const totalMinutes = week.workouts.reduce((sum, entry) => sum + entry.workout.expectedDurationMin, 0)
+  const totalMinutes = knownMinutes ?? week.workouts.reduce((sum, entry) => sum + entry.workout.expectedDurationMin, 0)
   return (
     <section className="hc-board app-board" aria-labelledby="planner-week-title">
       <div className="app-weekHeading">
@@ -1144,13 +1219,14 @@ function PlannerBoard({
           <h1 id="planner-week-title">{formatWeekRange(week.weekStart)}</h1>
           <p className="hc-bodyCopy">{week.goal}</p>
         </div>
-        <ActionButton label="Review week" onClick={onReview} tone="secondary" disabled={busy || !week.workouts.length} />
+        <ActionButton label="Review week" onClick={onReview} tone="secondary" disabled={busy || !review} />
       </div>
       <div className="app-weekStats" aria-label="Week summary">
-        <div><Icon name="week" /><strong>{week.workouts.length}</strong><span>sessions</span></div>
-        <div><Icon name="clock" /><strong>{totalMinutes}</strong><span>minutes planned</span></div>
-        <div><Icon name="check" /><strong>{completed}/{week.workouts.length}</strong><span>completed</span></div>
+        <div><Icon name="week" /><strong>{week.workouts.length + clubs.length}</strong><span>sessions</span></div>
+        <div><Icon name="clock" /><strong>{totalMinutes}</strong><span>{unknownClubCount ? 'known minutes planned' : 'minutes planned'}</span></div>
+        <div><Icon name="check" /><strong>{completed}/{week.workouts.length}</strong><span>workouts completed</span></div>
       </div>
+      {unknownClubCount > 0 && <p className="app-hint">{unknownClubCount} club session(s) have unknown duration and are not included in the time total.</p>}
       <nav className="app-dayNav" aria-label="Jump to a day">
         {listWeekDates(week.weekStart).map(date => <a href={`#planner-day-${date}`} key={date} aria-current={date === today ? 'date' : undefined}>{formatWeekday(date).slice(0, 3)}<strong>{Number(date.slice(-2))}</strong><span className={week.workouts.some(entry => entry.workout.scheduledDate === date) || clubs.some(club => club.dayOfWeek === localDateDayOfWeek(date)) ? 'has-session' : ''} /></a>)}
       </nav>
@@ -1161,18 +1237,21 @@ function PlannerBoard({
           const entries = week.workouts.filter(entry => entry.workout.scheduledDate === date)
           const dayClubs = clubs.filter(club => club.dayOfWeek === localDateDayOfWeek(date))
           const totalMinutes = entries.reduce((sum, entry) => sum + entry.workout.expectedDurationMin, 0)
+            + dayClubs.reduce((sum, club) => sum + (club.durationMin ?? 0), 0)
+          const sessionCount = entries.length + dayClubs.length
+          const unknownTime = dayClubs.some(club => club.durationMin === undefined)
           return (
             <DayColumn
               key={date}
               id={`planner-day-${date}`}
               label={formatWeekday(date)}
               dateLabel={formatDateShort(date)}
-              {...(entries.length ? { summary: `${entries.length} session${entries.length === 1 ? '' : 's'} · ${totalMinutes} min` } : {})}
+              {...(sessionCount ? { summary: `${sessionCount} session${sessionCount === 1 ? '' : 's'} · ${totalMinutes} ${unknownTime ? 'known min + unknown time' : 'min'}` } : {})}
             >
               {dayClubs.map(club => <article className="app-clubCommitment" key={club.id}>
                 <p className="hc-eyebrow">Club training</p>
                 <h3>{club.title}</h3>
-                <p className="hc-cardMeta">{club.startTime}</p>
+                <p className="hc-cardMeta">{club.startTime} · {club.durationMin === undefined ? 'Duration unknown' : `${club.durationMin} min`}</p>
                 {club.notes && <p className="hc-supportCopy">{club.notes}</p>}
               </article>)}
               <div

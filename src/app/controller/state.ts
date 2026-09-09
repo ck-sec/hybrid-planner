@@ -9,7 +9,7 @@ import {
   type GuidedOnboardingState,
 } from '../state/onboarding.ts'
 import type { PlannerState } from '../state/planner.ts'
-import { mergeSavedWorkoutReviewLogs, reduceInlineWorkoutReviewState, reduceWorkoutReviewState, type WorkoutReviewAction, type WorkoutReviewState } from '../state/review.ts'
+import { createWorkoutReviewState, mergeSavedWorkoutReviewLogs, rebaseWorkoutReviewState, reduceInlineWorkoutReviewState, reduceWorkoutReviewState, type WorkoutReviewAction, type WorkoutReviewState } from '../state/review.ts'
 import type {
   SettingsAthleteProfileDraft,
   SettingsBackupExportAdapter,
@@ -59,6 +59,7 @@ export interface AppState {
   readonly route: AppRoute
   readonly loadError?: string
   readonly busy: boolean
+  readonly storageRevision: number
   readonly status: FormMessage | null
   readonly athlete?: AthleteProfile
   readonly planner?: PlannerState
@@ -81,13 +82,16 @@ export type AppAction =
   | { readonly type: 'navigate'; readonly route: AppRoute }
   | { readonly type: 'status'; readonly message: FormMessage | null }
   | { readonly type: 'busy'; readonly value: boolean }
+  | { readonly type: 'storageChanged' }
   | { readonly type: 'startOnboarding'; readonly onboarding: GuidedOnboardingState }
   | { readonly type: 'onboarding'; readonly action: GuidedOnboardingAction }
   | { readonly type: 'onboardingFinished'; readonly athlete: AthleteProfile; readonly planner: PlannerState; readonly savedWeek?: WeekPlan }
   | { readonly type: 'setAthlete'; readonly athlete: AthleteProfile }
   | { readonly type: 'setPlanner'; readonly planner: PlannerState; readonly unsaved?: boolean }
   | { readonly type: 'weekPersisted'; readonly weekPlan: WeekPlan }
-  | { readonly type: 'weekImported'; readonly planner: PlannerState; readonly weekPlan: WeekPlan; readonly logs: readonly WorkoutLog[] }
+  | { readonly type: 'weekImported'; readonly planner: PlannerState; readonly weekPlan: WeekPlan; readonly logs: readonly WorkoutLog[]; readonly athleteProfile?: AthleteProfile }
+  | { readonly type: 'workoutDeleted'; readonly planner: PlannerState; readonly weekPlan: WeekPlan; readonly logs: readonly WorkoutLog[] }
+  | { readonly type: 'reviewWeekSaved'; readonly weekPlan: WeekPlan }
   | { readonly type: 'openEditor'; readonly editor: EditorSlice }
   | { readonly type: 'closeEditor' }
   | { readonly type: 'editorField'; readonly field: keyof WorkoutEditorDraft; readonly value: string }
@@ -117,6 +121,7 @@ export function createInitialAppState(): AppState {
     phase: 'loading',
     route: 'start',
     busy: false,
+    storageRevision: 0,
     status: null,
     unsavedWeek: false,
     logs: [],
@@ -159,9 +164,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'bootstrapped':
       return {
-        ...state,
+        ...createInitialAppState(),
         phase: 'ready',
-        loadError: undefined,
+        storageRevision: state.storageRevision + 1,
         athlete: action.athlete,
         planner: action.planner,
         savedWeek: action.savedWeek,
@@ -177,6 +182,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, status: action.message }
     case 'busy':
       return { ...state, busy: action.value }
+    case 'storageChanged':
+      return { ...state, storageRevision: state.storageRevision + 1, settings: { ...state.settings, backup: undefined } }
     case 'startOnboarding':
       return { ...state, onboarding: action.onboarding, route: 'onboarding', status: null }
     case 'onboarding':
@@ -185,7 +192,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         : state
     case 'onboardingFinished':
       return {
-        ...state,
+        ...createInitialAppState(),
+        phase: 'ready',
+        busy: state.busy,
+        storageRevision: state.storageRevision + 1,
         athlete: action.athlete,
         planner: action.planner,
         savedWeek: action.savedWeek,
@@ -197,20 +207,61 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         route: 'planner',
       }
     case 'setAthlete':
-      return { ...state, athlete: action.athlete }
-    case 'setPlanner':
-      return { ...state, planner: action.planner, unsavedWeek: action.unsaved ?? state.unsavedWeek, review: undefined }
+      return {
+        ...state, athlete: action.athlete, storageRevision: state.storageRevision + 1,
+        settings: { ...state.settings, backup: undefined, profileDraft: undefined },
+        handoff: { ...state.handoff, promptText: '', preview: null, messages: [] },
+      }
+    case 'setPlanner': {
+      const sameWeek = state.planner?.present.week.id === action.planner.present.week.id
+      return {
+        ...state, planner: action.planner, unsavedWeek: action.unsaved ?? state.unsavedWeek,
+        ...(sameWeek ? {} : {
+          review: undefined, savedWeek: undefined, logs: [], activeLogWorkoutId: undefined,
+          editor: undefined, movePickerLocalId: undefined, handoff: createInitialAppState().handoff,
+        }),
+      }
+    }
     case 'weekPersisted':
-      return { ...state, savedWeek: action.weekPlan, unsavedWeek: false }
+      return {
+        ...state, savedWeek: action.weekPlan, unsavedWeek: false,
+        storageRevision: state.storageRevision + 1, settings: { ...state.settings, backup: undefined },
+        review: state.review ? rebaseWorkoutReviewState(state.review, action.weekPlan, state.logs) : undefined,
+      }
     case 'weekImported':
       return {
         ...state,
+        ...(action.athleteProfile ? { athlete: action.athleteProfile } : {}),
         planner: action.planner,
         savedWeek: action.weekPlan,
         logs: action.logs,
         unsavedWeek: false,
         review: undefined,
+        editor: undefined,
+        activeLogWorkoutId: undefined,
+        movePickerLocalId: undefined,
+        onboarding: undefined,
+        handoff: createInitialAppState().handoff,
+        settings: { ...state.settings, backup: undefined, profileDraft: undefined },
+        storageRevision: state.storageRevision + 1,
         route: 'planner',
+      }
+    case 'workoutDeleted':
+      return {
+        ...state, planner: action.planner, savedWeek: action.weekPlan, logs: action.logs,
+        unsavedWeek: false, editor: undefined, activeLogWorkoutId: undefined, movePickerLocalId: undefined,
+        storageRevision: state.storageRevision + 1, settings: { ...state.settings, backup: undefined },
+        review: state.review
+          ? rebaseWorkoutReviewState(state.review, action.weekPlan, action.logs)
+          : createWorkoutReviewState({ weekPlan: action.weekPlan, workoutLogs: action.logs }),
+      }
+    case 'reviewWeekSaved':
+      if (state.planner?.present.week.id !== action.weekPlan.id) return state
+      return {
+        ...state, savedWeek: action.weekPlan,
+        planner: { ...state.planner, present: { week: { ...state.planner.present.week, review: action.weekPlan.review } } },
+        review: state.review ? { ...state.review, weekPlan: action.weekPlan } : undefined,
+        storageRevision: state.storageRevision + 1, settings: { ...state.settings, backup: undefined },
       }
     case 'openEditor':
       return { ...state, editor: action.editor }
@@ -253,6 +304,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           kind: action.kind,
           targetWeekStart: action.targetWeekStart,
           promptText: action.promptText,
+          preview: null,
+          messages: [],
         },
       }
     case 'handoffMessages':
@@ -266,13 +319,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'inlineReview':
       if (!state.review) throw new Error('Prepare the week before recording exercises.')
       return { ...state, review: reduceInlineWorkoutReviewState(state.review, action.action) }
-    case 'reviewLogsSaved':
+    case 'reviewLogsSaved': {
       if (!state.review || state.review.weekPlan.id !== action.submitted.weekPlan.id) return state
+      const review = mergeSavedWorkoutReviewLogs(state.review, action.submitted, action.logs, action.savedWorkoutIds)
       return {
         ...state,
-        logs: action.logs,
-        review: mergeSavedWorkoutReviewLogs(state.review, action.submitted, action.logs, action.savedWorkoutIds),
+        logs: review.sourceLogs,
+        review,
+        storageRevision: state.storageRevision + 1, settings: { ...state.settings, backup: undefined },
       }
+    }
     case 'openLog':
       return { ...state, activeLogWorkoutId: action.workoutId, route: 'log', status: null }
     case 'closeLog':
@@ -280,6 +336,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'setLogs':
       return { ...state, logs: action.logs }
     case 'settings':
-      return { ...state, settings: { ...state.settings, ...action.patch } }
+      return {
+        ...state,
+        settings: {
+          ...state.settings, ...action.patch,
+          ...(action.patch.restoreJson !== undefined && action.patch.restoreJson !== state.settings.restoreJson
+            ? { restorePreview: null, restoreConfirmation: '' }
+            : {}),
+        },
+      }
   }
 }

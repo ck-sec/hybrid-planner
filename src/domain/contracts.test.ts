@@ -11,6 +11,9 @@ import {
   parseWeekPlan,
   parseWorkout,
   parseWorkoutLog,
+  parsePlanningContext,
+  parseGoalAssessment,
+  parseWeeklyReview,
   weekPlanEnd,
   type FixedClubSession,
 } from './contracts.ts'
@@ -331,4 +334,75 @@ test('week imports and backups reject mismatched references', () => {
   const orphan = structuredClone(envelope)
   orphan.athleteProfiles = []
   assert.throws(() => parseBackupEnvelope(orphan), /saved athlete profile/i)
+})
+
+test('planning context preserves unknowns, validates identifiers and rejects invented fields', () => {
+  const context = parsePlanningContext({
+    asOf: '2026-09-09', recentTraining: { weeks: 4, strengthMinutes: 0 },
+    clubLoads: [{ sessionId: 'club-track', durationMin: 75, effortRating: 7 }],
+  })
+  assert.equal(context.recentTraining?.strengthMinutes, 0)
+  assert.equal(context.recentTraining?.aerobicMinutes, undefined)
+  assert.throws(() => parsePlanningContext({ ...context, equipment: ['sled'] }), /Unexpected field/)
+  assert.throws(() => parsePlanningContext({ ...context, recentTraining: { weeks: 4, aerobicMinutes: -1 } }), /aerobicMinutes/)
+  assert.throws(() => parsePlanningContext({ ...context, sessionLimits: [{ dayOfWeek: 1, maxMinutes: 30 }, { dayOfWeek: 1, maxMinutes: 45 }] }), /unique/)
+  assert.throws(() => parseAthleteProfile({ ...athlete, planningContext: { ...context, clubLoads: [{ sessionId: 'invented-club' }] } }), /existing club/)
+  assert.throws(() => parseGoalAssessment({ status: 'guaranteed', rationale: 'Win', unknowns: [], nextMilestone: 'Win' }), /status/)
+})
+
+test('context, assessment, review and load conventions round-trip through backups', () => {
+  const context = parsePlanningContext({ asOf: '2026-09-09', event: 'Foam club player', benchmarks: ['Recent working weights'], recentTraining: { weeks: 6, strengthMinutes: 35 } })
+  const assessment = parseGoalAssessment({ status: 'conditional', rationale: 'Support club training.', unknowns: ['Selection'], nextMilestone: 'Discuss trials with the coach.' })
+  const profile = parseAthleteProfile({ ...athlete, planningContext: context })
+  const week = parseWeekPlan({
+    ...weekPlan, planningContext: context, goalAssessment: assessment,
+    review: { reflection: 'Good week', energy: 3, recovery: 4, nextFocus: 'Keep club fresh', metrics: [] },
+    workouts: weekPlan.workouts.map(workout => ({
+      ...workout,
+      main: workout.main.map(step => ({ ...step, estimatedTotalMin: 35, target: { ...step.target, loadKg: 12, loadBasis: 'per_implement', repBasis: 'per_side' } })),
+    })),
+  })
+  const log = parseWorkoutLog({ ...workoutLog, steps: workoutLog.steps.map(step => ({ ...step, loadKg: 12, loadBasis: 'per_implement', repBasis: 'per_side' })) })
+  const backup = createBackupEnvelope({ athleteProfiles: [profile], weekPlans: [week], workoutLogs: [log] })
+  const restored = parseBackupEnvelope(JSON.parse(JSON.stringify(backup)))
+  assert.deepEqual(restored.athleteProfiles[0]?.planningContext, context)
+  assert.deepEqual(restored.weekPlans[0]?.goalAssessment, assessment)
+  assert.equal(restored.weekPlans[0]?.review?.reflection, 'Good week')
+  assert.equal(restored.weekPlans[0]?.workouts[0]?.main[0]?.estimatedTotalMin, 35)
+  assert.equal(restored.workoutLogs[0]?.steps[0]?.loadKg, 12)
+  assert.equal(restored.workoutLogs[0]?.steps[0]?.loadBasis, 'per_implement')
+  assert.equal(parseWeekImportBundle({ weekPlan: week, athleteProfile: profile }).athleteProfile?.id, profile.id)
+  assert.throws(() => parseWeekImportBundle({ weekPlan: week, athleteProfile: { ...profile, id: 'wrong-athlete' } }), /Profile must belong/)
+})
+
+test('draft-only backups and empty manual weeks remain valid without orphan logs', () => {
+  const backup = createBackupEnvelope({ onboardingDrafts: [parseOnboardingDraft(onboardingDraft)] })
+  assert.equal(parseBackupEnvelope(backup).onboardingDrafts.length, 1)
+  const empty = parseWeekPlan({ ...weekPlan, workouts: [] })
+  assert.equal(empty.workouts.length, 0)
+  assert.throws(() => parseWeekImportBundle({ weekPlan: empty, workoutLogs: [workoutLog] }), /same week plan/)
+  assert.equal(parseWorkout(weekPlan.workouts[1]).main[0]?.target?.loadBasis, undefined)
+  assert.throws(() => parseWeekPlan({ ...empty, review: { energy: 6, metrics: [] } }), /energy/)
+  assert.throws(() => parseWeekPlan({ ...empty, review: { metrics: [{ id: 'metric', label: 'Metric', planned: 'x'.repeat(121) }] } }), /planned/)
+})
+
+test('weekly metric override provenance is optional, validated, and survives backups', () => {
+  const metrics = [
+    { id: 'auto-count', label: 'Automatic', planned: '2', completed: '0', overriddenFields: [] },
+    { id: 'manual-count', label: 'Manual', planned: '8', overriddenFields: ['planned', 'note'] },
+    { id: 'legacy-count', label: 'Legacy', completed: '3' },
+  ]
+  const review = parseWeeklyReview({ metrics })
+  assert.deepEqual(review.metrics[0]?.overriddenFields, [])
+  assert.deepEqual(review.metrics[1]?.overriddenFields, ['planned', 'note'])
+  assert.equal(Object.hasOwn(review.metrics[2]!, 'overriddenFields'), false)
+  const backup = createBackupEnvelope({
+    athleteProfiles: [parseAthleteProfile(athlete)],
+    weekPlans: [parseWeekPlan({ ...weekPlan, review })],
+  })
+  const restored = parseBackupEnvelope(JSON.parse(JSON.stringify(backup)))
+  assert.deepEqual(restored.weekPlans[0]?.review, review)
+  for (const overriddenFields of [null, '', ['unknown'], [1], ['planned', 'planned'], ['planned', 'completed', 'note', 'planned']]) {
+    assert.throws(() => parseWeeklyReview({ metrics: [{ id: 'bad', label: 'Bad', overriddenFields }] }), /overriddenFields/)
+  }
 })

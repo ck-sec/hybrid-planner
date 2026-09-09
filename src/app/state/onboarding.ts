@@ -883,6 +883,18 @@ function encodeGuidedOnboardingMetadata(state: GuidedOnboardingState, options: {
   return `${NOTES_METADATA_PREFIX}${JSON.stringify(metadata)}`
 }
 
+export function readGuidedSessionCounts(notes: string | undefined): Partial<Record<WorkoutCategory, number>> {
+  const metadata = parseGuidedOnboardingMetadata(notes)
+  const counts: Partial<Record<WorkoutCategory, number>> = {}
+  if (metadata) {
+    for (const category of CATEGORY_ORDER) {
+      const parsed = parseCount(metadata.counts[category])
+      if (parsed.ok) counts[category] = parsed.value
+    }
+  }
+  return counts
+}
+
 function parseGuidedOnboardingMetadata(value: string | undefined): GuidedOnboardingMetadata | undefined {
   if (!value?.startsWith(NOTES_METADATA_PREFIX)) return undefined
   try {

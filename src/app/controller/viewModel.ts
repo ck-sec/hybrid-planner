@@ -41,7 +41,7 @@ export function describeSavedState(state: AppState): string {
   const weekLabel = state.planner ? formatWeekRange(state.planner.present.week.weekStart) : 'no week yet'
   const logged = state.logs.length
   const savedLabel = state.unsavedWeek ? 'not saved yet' : state.savedWeek ? 'saved locally' : 'not saved yet'
-  return `${state.athlete.name}: ${planned} planned session${planned === 1 ? '' : 's'} for ${weekLabel} (${savedLabel}), ${logged} saved log${logged === 1 ? '' : 's'}.`
+  return `${state.athlete.name}: ${planned} planned workout${planned === 1 ? '' : 's'} for ${weekLabel} (${savedLabel}), ${logged} saved log${logged === 1 ? '' : 's'}.`
 }
 
 export function buildNavItems(state: AppState, handlers: NavHandlers): readonly AppHeaderNavItem[] {
@@ -51,7 +51,7 @@ export function buildNavItems(state: AppState, handlers: NavHandlers): readonly 
     { route: 'start' },
     { route: 'planner', disabled: !hasPlanner },
     { route: 'ai', disabled: !hasAthlete },
-    { route: 'review', disabled: !hasPlanner || countPlannedWorkouts(state.planner) === 0 },
+    { route: 'review', disabled: !hasPlanner || !state.savedWeek },
     { route: 'settings', disabled: !hasAthlete },
   ]
 
@@ -77,7 +77,7 @@ export function buildProgressSteps(state: AppState): readonly ProgressStep[] {
     {
       id: 'progress-week',
       label: 'Week',
-      description: planned ? `${planned} planned session${planned === 1 ? '' : 's'}.` : 'Add the first session.',
+      description: planned ? `${planned} planned workout${planned === 1 ? '' : 's'}.` : 'Add the first workout.',
       status: planned ? 'complete' : state.planner ? 'current' : 'upcoming',
     },
     {
@@ -119,7 +119,7 @@ export function buildHeaderProps(
 export function buildStartScreenProps(state: AppState, handlers: StartHandlers): StartScreenProps {
   const planned = countPlannedWorkouts(state.planner)
   const continueSummary = state.planner
-    ? `Resume ${formatWeekRange(state.planner.present.week.weekStart)} with ${planned} planned session${planned === 1 ? '' : 's'}.`
+    ? `Resume ${formatWeekRange(state.planner.present.week.weekStart)} with ${planned} planned workout${planned === 1 ? '' : 's'}.`
     : state.resumableDraft
       ? 'Resume the saved guided setup draft.'
       : ''
@@ -127,7 +127,7 @@ export function buildStartScreenProps(state: AppState, handlers: StartHandlers):
   return {
     title: state.planner ? 'Your week. Your next step.' : 'Your training. Your way.',
     intro: 'Running, lifting, and everything in between. Build a week that fits your life, then make it your own.',
-    savedStateSummary: state.planner ? `${planned} session${planned === 1 ? '' : 's'} planned for ${formatWeekRange(state.planner.present.week.weekStart)}.` : undefined,
+    savedStateSummary: state.planner ? `${planned} workout${planned === 1 ? '' : 's'} planned for ${formatWeekRange(state.planner.present.week.weekStart)}.` : undefined,
     ...(state.planner || state.resumableDraft
       ? {
         continuePath: {

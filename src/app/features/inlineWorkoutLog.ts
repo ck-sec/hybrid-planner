@@ -23,6 +23,7 @@ export function InlineWorkoutLog(props: InlineWorkoutLogProps) {
     h(WorkoutExerciseCards, {
       key: 'exercises', idPrefix: prefix, workout: props.workout,
       stepResults: props.log?.stepResults ?? [], unlogged: !props.hasLog,
+      recordedSteps: props.log?.recordedSteps,
       onStepResultChange: (stepId, field, value) => props.log?.onStepResultChange(stepId, field, value),
     }),
     h('div', { key: 'summary', className: 'inline-workout-log__summary' }, [

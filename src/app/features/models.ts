@@ -1,3 +1,5 @@
+import type { GoalAssessment, LoadBasis, RepBasis } from '../../domain/contracts.ts'
+
 export type DayOfWeek =
   | 'monday'
   | 'tuesday'
@@ -81,10 +83,22 @@ export interface JsonPreviewGroup {
   items: readonly JsonPreviewItem[]
 }
 
+export interface PlanQualitySummary {
+  knownMinutes: number
+  clubMinutes: number
+  unknownClubCount: number
+  baselineMinutes?: number
+  baselineComplete: boolean
+  comparisons: readonly JsonPreviewItem[]
+  proposedFacts: readonly JsonPreviewItem[]
+  goal?: GoalAssessment
+}
+
 export interface JsonImportPreview {
   title: string
   summary: readonly string[]
   groups: readonly JsonPreviewGroup[]
+  quality?: PlanQualitySummary
 }
 
 export type WorkoutSectionId = 'warmup' | 'main' | 'cooldown'
@@ -110,6 +124,9 @@ export interface WorkoutStepDraft {
   duration: string
   rest: string
   notes: string
+  loadBasis?: '' | LoadBasis
+  repBasis?: '' | RepBasis
+  estimatedTotalMin?: string
 }
 
 export interface WorkoutSectionDraft {

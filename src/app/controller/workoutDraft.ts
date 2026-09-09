@@ -1,6 +1,7 @@
 import type { FormMessage, SelectOption, WorkoutEditorDraft, WorkoutSectionDraft, WorkoutSectionId, WorkoutStepDraft } from '../features/models.ts'
 import type { PlannerWorkoutDefinition, PlannerWorkoutStepDefinition } from '../state/planner.ts'
 import type { Workout, WorkoutCategory, WorkoutSource, WorkoutStep } from '../../domain/contracts.ts'
+import { parseLoadBasis, parseRepBasis } from '../../domain/planning-context.ts'
 import { parseClockTime, parseLocalDate, type LocalDateString } from '../../domain/local-date.ts'
 import { createControllerId } from './ids.ts'
 
@@ -58,6 +59,9 @@ function blankStep(): WorkoutStepDraft {
     duration: '',
     rest: '',
     notes: '',
+    loadBasis: '',
+    repBasis: '',
+    estimatedTotalMin: '',
   }
 }
 
@@ -125,6 +129,16 @@ function parseWholeMinutes(value: string): number | undefined {
   return Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= 720 ? minutes : undefined
 }
 
+function parseEstimatedTotalMinutes(value: string): number | undefined {
+  const normalized = value.trim()
+  if (!normalized) return undefined
+  const minutes = Number(normalized)
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized) || !Number.isFinite(minutes) || minutes < 0.1 || minutes > 1_440) {
+    throw new Error('Estimated block total must be a number of minutes between 0.1 and 1440.')
+  }
+  return minutes
+}
+
 function stepToDraft(step: WorkoutStep): WorkoutStepDraft {
   const values = splitDetail(step.detail)
   const minutes = step.target?.minutes
@@ -136,17 +150,39 @@ function stepToDraft(step: WorkoutStep): WorkoutStepDraft {
     duration: values.duration || (minutes === undefined ? '' : `${minutes} min`),
     rest: values.rest,
     notes: values.notes,
+    loadBasis: step.target?.loadBasis ?? '',
+    repBasis: step.target?.repBasis ?? '',
+    estimatedTotalMin: step.estimatedTotalMin === undefined ? '' : String(step.estimatedTotalMin),
   }
 }
 
-function draftToStep(step: WorkoutStepDraft): PlannerWorkoutStepDefinition {
-  const minutes = parseWholeMinutes(step.duration)
-  const detail = joinDetail(step, minutes === undefined)
+function draftToStep(step: WorkoutStepDraft, existing?: WorkoutStep): PlannerWorkoutStepDefinition {
+  const originalDraft = existing ? stepToDraft(existing) : undefined
+  const minutes = originalDraft?.duration === step.duration ? existing?.target?.minutes : parseWholeMinutes(step.duration)
+  const detailUnchanged = originalDraft && (['instructions', 'target', 'duration', 'rest', 'notes'] as const)
+    .every(field => step[field] === originalDraft[field])
+  const detail = detailUnchanged ? existing?.detail : joinDetail(step, minutes === undefined)
+  const loadBasis = step.loadBasis === undefined ? existing?.target?.loadBasis
+    : step.loadBasis === '' ? undefined : parseLoadBasis(step.loadBasis, 'Load basis')
+  const repBasis = step.repBasis === undefined ? existing?.target?.repBasis
+    : step.repBasis === '' ? undefined : parseRepBasis(step.repBasis, 'Rep basis')
+  const estimatedTotalMin = step.estimatedTotalMin === undefined ? existing?.estimatedTotalMin
+    : parseEstimatedTotalMinutes(step.estimatedTotalMin)
+  const { minutes: _originalMinutes, loadBasis: _originalLoadBasis, repBasis: _originalRepBasis, ...retainedTarget } = existing?.target ?? {}
+  const target = {
+    ...retainedTarget,
+    ...(minutes === undefined ? {} : { minutes }),
+    ...(loadBasis === undefined ? {} : { loadBasis }),
+    ...(repBasis === undefined ? {} : { repBasis }),
+  }
+  const { detail: _originalDetail, target: _originalTarget, estimatedTotalMin: _originalTotal, ...retainedStep } = existing ?? {}
   return {
+    ...retainedStep,
     id: step.id,
     title: step.title.trim(),
     ...(detail === undefined ? {} : { detail }),
-    ...(minutes === undefined ? {} : { target: { minutes } }),
+    ...(Object.keys(target).length ? { target } : {}),
+    ...(estimatedTotalMin === undefined ? {} : { estimatedTotalMin }),
   }
 }
 
@@ -230,10 +266,13 @@ export function buildWorkoutDefinition(
   const mainSteps = sectionSteps(state, 'main').filter(step => step.title.trim())
   if (!mainSteps.length) messages.push(errorMessage('workout-main', 'Add at least one main step with a title.'))
 
-  const untitledSteps = [...sectionSteps(state, 'warmup'), ...sectionSteps(state, 'cooldown')]
-    .filter(step => !step.title.trim() && (step.instructions.trim() || step.target.trim() || step.duration.trim()))
+  const untitledSteps = state.sections.flatMap(section => section.steps)
+    .filter(step => !step.title.trim() && [
+      step.instructions, step.target, step.duration, step.rest, step.notes,
+      step.loadBasis, step.repBasis, step.estimatedTotalMin,
+    ].some(value => value?.trim()))
   if (untitledSteps.length) {
-    messages.push(errorMessage('workout-step-title', 'Every warm-up or cool-down step with content needs a title.'))
+    messages.push(errorMessage('workout-step-title', 'Every step with content needs a title.'))
   }
 
   if (source === 'club' && !options.existing?.fixedClubSession) {
@@ -249,6 +288,26 @@ export function buildWorkoutDefinition(
     ))
   }
 
+  const originalSteps = new Map(
+    options.existing
+      ? [...options.existing.warmup, ...options.existing.main, ...options.existing.cooldown].map(step => [step.id, step])
+      : [],
+  )
+  const convertedSections = new Map<WorkoutSectionId, PlannerWorkoutStepDefinition[]>()
+  for (const section of state.sections) {
+    const steps: PlannerWorkoutStepDefinition[] = []
+    for (const step of section.steps.filter(step => step.title.trim())) {
+      try {
+        steps.push(draftToStep(step, originalSteps.get(step.id)))
+      } catch (error) {
+        messages.push(errorMessage(
+          `workout-${section.id}-${step.id}`,
+          `${section.label}: "${step.title}" - ${error instanceof Error ? error.message : 'Invalid step fields.'}`,
+        ))
+      }
+    }
+    convertedSections.set(section.id, steps)
+  }
   if (messages.length || scheduledDate === undefined || expectedDurationMin === undefined) {
     return { ok: false, messages }
   }
@@ -264,9 +323,9 @@ export function buildWorkoutDefinition(
       title,
       purpose: purpose.slice(0, 500),
       expectedDurationMin,
-      warmup: sectionSteps(state, 'warmup').filter(step => step.title.trim()).map(draftToStep),
-      main: mainSteps.map(draftToStep),
-      cooldown: sectionSteps(state, 'cooldown').filter(step => step.title.trim()).map(draftToStep),
+      warmup: convertedSections.get('warmup') ?? [],
+      main: convertedSections.get('main') ?? [],
+      cooldown: convertedSections.get('cooldown') ?? [],
       ...(options.existing?.fixedClubSession ? { fixedClubSession: options.existing.fixedClubSession } : {}),
       ...(writeNotes(state.draft.modality, state.draft.notes) === undefined
         ? {}

@@ -42,10 +42,14 @@ import {
   saveOnboardingDraftState,
   saveReviewWorkoutLog,
   savePendingReviewWorkoutLogs,
+  saveReviewWeek,
+  deleteRecordedPlannerWorkout,
+  refreshHandoffPrompt,
   startManualWeek,
 } from './effects.ts'
 import { createControllerId } from './ids.ts'
-import { appReducer, createInitialAppState, type AppState } from './state.ts'
+import { appReducer, createInitialAppState, type AppState, type AppAction } from './state.ts'
+import { createAthleteProfileEditingDraft, exportRepositoryBackup, previewRestoreBackupJson } from '../state/settings.ts'
 import { buildHeaderProps, buildNavItems, buildStartScreenProps, countPlannedWorkouts, describeSavedState } from './viewModel.ts'
 import {
   buildWorkoutDefinition,
@@ -129,14 +133,24 @@ function createFakeRepository(overrides: Partial<HybridCoachRepository> = {}): H
     async deleteOnboardingDraft(id) {
       drafts.delete(id)
     },
-    async importWeek(bundle: WeekImportBundle) {
+    async importWeek(bundle: WeekImportBundle, options = {}) {
       const validated = parseWeekImportBundle(bundle)
-      if (!athletes.has(validated.weekPlan.athleteId)) {
+      if (options.expectedAthleteProfile
+        && JSON.stringify(athletes.get(validated.weekPlan.athleteId)) !== JSON.stringify(parseAthleteProfile(options.expectedAthleteProfile))) {
+        throw new Error('The athlete profile changed after preview. Preview the week again before applying it.')
+      }
+      if (!athletes.has(validated.weekPlan.athleteId) && !validated.athleteProfile) {
         throw new Error(`Week import ${validated.weekPlan.id} requires an existing athlete profile.`)
       }
+      const deleted = new Set(options.deleteWorkoutIds ?? [])
+      const merged = new Map([...logs].filter(([, log]) => !(log.weekPlanId === validated.weekPlan.id && deleted.has(log.workoutId))))
+      for (const log of validated.workoutLogs) merged.set(log.id, log)
+      validateWorkoutLogsForWeekPlan(validated.weekPlan, [...merged.values()].filter(log => log.weekPlanId === validated.weekPlan.id), 'CombinedLogs')
+      if (validated.athleteProfile) athletes.set(validated.athleteProfile.id, validated.athleteProfile)
       weeks.set(validated.weekPlan.id, validated.weekPlan)
-      for (const log of validated.workoutLogs) logs.set(log.id, log)
-      return validated
+      logs.clear()
+      for (const [id, log] of merged) logs.set(id, log)
+      return { ...validated, workoutLogs: [...logs.values()].filter(log => log.weekPlanId === validated.weekPlan.id) }
     },
     async exportBackup(): Promise<BackupEnvelope> {
       return createBackupEnvelope({
@@ -386,12 +400,13 @@ test('bootstrap reads saved profile, week, logs, and drafts', async () => {
   assert.deepEqual(snapshot.logs, [])
 })
 
-test('manual start saves a profile and keeps the blank week unsaved until a workout exists', async () => {
+test('manual start saves a profile and creates an initially unsaved blank week that can be persisted', async () => {
   const repository = createFakeRepository()
   const started = await startManualWeek(repository, { today: TODAY, weekStart: WEEK_START })
   assert.equal((await repository.listAthleteProfiles()).length, 1)
   assert.equal(countPlannedWorkouts(started.planner), 0)
-  await assert.rejects(() => persistPlannerWeek(repository, started.planner), /At least one workout/)
+  assert.equal((await repository.listWeekPlans()).length, 0)
+  assert.equal((await persistPlannerWeek(repository, started.planner)).workouts.length, 0)
 
   const definition = buildWorkoutDefinition(filledEditorState(WEEK_START))
   if (!definition.ok) throw new Error('definition should be valid')
@@ -565,7 +580,7 @@ test('inline logs persist all pending exercise actuals before week-two context i
 
 test('pending log saves validate before writing and report storage failures', async () => {
   let writes = 0
-  const repository = createFakeRepository({ async saveWorkoutLog() { writes += 1; throw new Error('Storage unavailable') } })
+  const repository = createFakeRepository({ async importWeek() { writes += 1; throw new Error('Storage unavailable') } })
   const seeded = await seedPlannerWithWorkout(repository)
   const workout = seeded.weekPlan.workouts[0]!
   const weekPlan = parseWeekPlan({ ...seeded.weekPlan, workouts: [workout, { ...workout, id: 'second-workout' }] })
@@ -663,9 +678,9 @@ test('start screen and navigation reflect what is actually saved', async () => {
     onResumeDraft: () => undefined,
   })
   assert.ok(startProps.continuePath)
-  assert.match(startProps.savedStateSummary ?? '', /^1 session planned/)
+  assert.match(startProps.savedStateSummary ?? '', /^1 workout planned/)
   assert.equal(startProps.continuePath.action.label, 'Open my week')
-  assert.match(describeSavedState(state), /1 planned session/)
+  assert.match(describeSavedState(state), /1 planned workout/)
   assert.match(describeSavedState(state), /saved locally/)
 
   const unsaved = appReducer(state, { type: 'setPlanner', planner: seeded.planner, unsaved: true })
@@ -685,4 +700,248 @@ test('planner weeks convert back into valid domain week plans', async () => {
   const weekPlan = plannerStateToWeekPlan(seeded.planner)
   assert.doesNotThrow(() => parseWeekPlan(weekPlan))
   assert.equal(weekPlan.workouts[0]?.scheduledDate, WEEK_START)
+})
+
+test('title-only editor changes retain all original step metadata and removal/new steps stay independent', async () => {
+  const seeded = await seedPlannerWithWorkout(createFakeRepository())
+  const original = seeded.weekPlan.workouts[0]!
+  const step = {
+    id: 'loaded-step', title: 'Split squat', detail: 'Original instructions\nDuration: as needed',
+    equipment: ['Dumbbells'], estimatedTotalMin: 12,
+    target: { sets: 3, reps: 8, loadKg: 20, effort: 'steady' as const, minutes: 2, loadBasis: 'per_implement' as const, repBasis: 'per_side' as const },
+  }
+  const workout = parseWeekPlan({ ...seeded.weekPlan, workouts: [{ ...original, main: [step], warmup: [{ ...step, id: 'warm-step' }], cooldown: [{ ...step, id: 'cool-step' }] }] }).workouts[0]!
+  const editor = workoutToEditorState(workout)
+  const result = buildWorkoutDefinition({ ...editor, draft: { ...editor.draft, workoutTitle: 'New title only' } }, { existing: workout })
+  assert.ok(result.ok)
+  assert.deepEqual(result.definition.main, workout.main)
+  assert.deepEqual(result.definition.warmup, workout.warmup)
+  assert.deepEqual(result.definition.cooldown, workout.cooldown)
+
+  const changed = buildWorkoutDefinition({
+    ...editor,
+    sections: editor.sections.map(section => section.id === 'warmup' ? { ...section, steps: [] }
+      : section.id === 'main' ? { ...section, steps: [section.steps[0]!, { ...section.steps[0]!, id: 'new-step', title: 'New exercise', duration: '5 min' }] }
+        : section),
+  }, { existing: workout })
+  assert.ok(changed.ok)
+  assert.deepEqual(changed.definition.warmup, [])
+  assert.deepEqual(changed.definition.main[0], workout.main[0])
+  assert.deepEqual(changed.definition.main[1]!.target, { minutes: 5, loadBasis: 'per_implement', repBasis: 'per_side' })
+  assert.equal(changed.definition.main[1]!.equipment, undefined)
+  assert.equal(changed.definition.main[1]!.estimatedTotalMin, 12)
+})
+
+test('bootstrap after restore/reset clears all previous athlete transient state', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const backup = await exportRepositoryBackup(repository)
+  let state: AppState = {
+    ...createInitialAppState(), phase: 'ready', route: 'log',
+    athlete: seeded.athlete, planner: seeded.planner, savedWeek: seeded.weekPlan,
+    review: createWorkoutReviewState({ weekPlan: seeded.weekPlan }),
+    onboarding: completedOnboardingState(), activeLogWorkoutId: seeded.weekPlan.workouts[0]!.id,
+    editor: { mode: 'edit', existing: seeded.weekPlan.workouts[0]!, state: workoutToEditorState(seeded.weekPlan.workouts[0]!), messages: [] },
+    movePickerLocalId: seeded.planner.present.week.workouts[0]!.localId,
+    handoff: { kind: 'continuation', promptText: 'Private previous athlete feedback', jsonText: 'Private plan', preview: null, messages: [] },
+    settings: { ...createInitialAppState().settings, backup, profileDraft: createAthleteProfileEditingDraft(seeded.athlete), restoreJson: backup.backupJson, restorePreview: previewRestoreBackupJson(backup.backupJson), restoreConfirmation: 'RESTORE BACKUP' },
+  }
+  state = appReducer(state, { type: 'bootstrapped', logs: [] })
+  assert.equal(state.route, 'start')
+  for (const field of ['athlete', 'planner', 'savedWeek', 'review', 'editor', 'onboarding', 'activeLogWorkoutId', 'movePickerLocalId'] as const) assert.equal(state[field], undefined)
+  assert.deepEqual(state.settings, createInitialAppState().settings)
+  assert.deepEqual(state.handoff, createInitialAppState().handoff)
+})
+
+test('successful writes invalidate cached backups and changed restore input invalidates approval', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const backup = await exportRepositoryBackup(repository)
+  const initial = appReducer(createInitialAppState(), {
+    type: 'bootstrapped', athlete: seeded.athlete, planner: seeded.planner, savedWeek: seeded.weekPlan, logs: [],
+  })
+  const cached = appReducer(initial, { type: 'settings', patch: {
+    backup, restoreJson: backup.backupJson,
+  } })
+  const approved = appReducer(cached, { type: 'settings', patch: {
+    restorePreview: previewRestoreBackupJson(backup.backupJson), restoreConfirmation: 'RESTORE BACKUP',
+  } })
+  const changed = appReducer(approved, { type: 'settings', patch: { restoreJson: `${backup.backupJson} ` } })
+  assert.equal(changed.settings.restorePreview, null)
+  assert.equal(changed.settings.restoreConfirmation, '')
+  const actions: AppAction[] = [
+    { type: 'storageChanged' },
+    { type: 'weekPersisted', weekPlan: seeded.weekPlan },
+    { type: 'setAthlete', athlete: seeded.athlete },
+    { type: 'weekImported', planner: seeded.planner, weekPlan: seeded.weekPlan, logs: [] },
+  ]
+  for (const action of actions) {
+    const next = appReducer(cached, action)
+    assert.equal(next.settings.backup, undefined, action.type)
+    assert.ok(next.storageRevision > cached.storageRevision, action.type)
+  }
+})
+
+test('weekly review saves atomically and unrelated inline saves retain unsaved reflection', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const workout = seeded.weekPlan.workouts[0]!
+  let review = createWorkoutReviewState({ weekPlan: seeded.weekPlan })
+  review = reduceWorkoutReviewState(review, { type: 'setWeeklyReviewField', field: 'reflection', value: 'Persisted reflection' })
+  review = reduceWorkoutReviewState(review, { type: 'setWeeklyReviewField', field: 'energy', value: '4' })
+  const saved = await saveReviewWeek(repository, review)
+  const loadedWeek = (await repository.getWeekPlan(seeded.weekPlan.id))!
+  assert.equal(loadedWeek.review?.reflection, 'Persisted reflection')
+  assert.equal(loadedWeek.review?.energy, 4)
+  review = createWorkoutReviewState({ weekPlan: loadedWeek, workoutLogs: saved.logs })
+  review = reduceWorkoutReviewState(review, { type: 'setWeeklyReviewField', field: 'reflection', value: 'Unsaved next draft' })
+  review = reduceInlineWorkoutReviewState(review, { type: 'setWorkoutNotes', workoutId: workout.id, value: 'Exercise feedback' })
+  const savedLog = await saveReviewWorkoutLog(repository, review, workout.id)
+  const state = appReducer({ ...createInitialAppState(), review }, { type: 'reviewLogsSaved', submitted: review, logs: savedLog.logs, savedWorkoutIds: [workout.id] })
+  assert.equal(state.review?.weeklyReview.draft.reflection, 'Unsaved next draft')
+  assert.equal((await repository.getWeekPlan(seeded.weekPlan.id))!.review?.reflection, 'Persisted reflection')
+  await assert.rejects(saveReviewWeek({ ...repository, async importWeek() { throw new Error('Atomic save failed') } }, state.review!), /Atomic save failed/)
+  assert.equal((await repository.getWeekPlan(seeded.weekPlan.id))!.review?.reflection, 'Persisted reflection')
+})
+
+test('confirmed deletion removes recorded cards and their logs without an optimistic failing state', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const first = seeded.weekPlan.workouts[0]!
+  const weekPlan = parseWeekPlan({ ...seeded.weekPlan, review: { reflection: 'Keep this weekly reflection', metrics: [] }, workouts: [first, { ...first, id: 'second-card' }] })
+  await repository.saveWeekPlan(weekPlan)
+  const planner = createPlannerStateFromWeekPlan(weekPlan)
+  let review = createWorkoutReviewState({ weekPlan })
+  for (const workout of weekPlan.workouts) review = reduceInlineWorkoutReviewState(review, { type: 'setWorkoutNotes', workoutId: workout.id, value: `Recorded ${workout.id}` })
+  await savePendingReviewWorkoutLogs(repository, review)
+  const localId = planner.present.week.workouts[0]!.localId
+  await assert.rejects(deleteRecordedPlannerWorkout({
+    ...repository, async importWeek() { throw new Error('Delete failed') },
+  }, planner, localId), /Delete failed/)
+  assert.equal(planner.present.week.workouts.length, 2)
+  assert.equal((await repository.listWorkoutLogs()).length, 2)
+  const deleted = await deleteRecordedPlannerWorkout(repository, planner, localId)
+  assert.equal(deleted.weekPlan?.workouts.length, 1)
+  assert.deepEqual(deleted.logs.map(log => log.workoutId), ['second-card'])
+  const last = await deleteRecordedPlannerWorkout(repository, deleted.planner, deleted.planner.present.week.workouts[0]!.localId)
+  assert.equal(last.weekPlan.workouts.length, 0)
+  assert.equal(last.weekPlan.review?.reflection, 'Keep this weekly reflection')
+  assert.equal(last.planner.present.week.workouts.length, 0)
+  assert.equal((await repository.listWorkoutLogs()).length, 0)
+  assert.equal((await repository.getWeekPlan(weekPlan.id))!.workouts.length, 0)
+})
+
+test('refreshing a continuation brief preserves kind/date and includes the latest review', async () => {
+  const seeded = await seedPlannerWithWorkout(createFakeRepository())
+  let review = createWorkoutReviewState({ weekPlan: seeded.weekPlan })
+  review = reduceWorkoutReviewState(review, { type: 'setWeeklyReviewField', field: 'reflection', value: 'Latest recovery feedback' })
+  const targetWeekStart = '2026-09-14' as LocalDateString
+  const result = refreshHandoffPrompt(seeded.athlete, {
+    ...createInitialAppState().handoff, kind: 'continuation', targetWeekStart, promptText: 'Earlier brief',
+  }, WEEK_START, review)
+  assert.equal(result.kind, 'continuation')
+  assert.equal(result.targetWeekStart, targetWeekStart)
+  assert.match(result.promptText, /Latest recovery feedback/)
+  assert.match(result.promptText, /2026-09-14/)
+})
+
+test('import approval updates the stored and active matching athlete profile', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const athleteProfile = parseAthleteProfile({ ...seeded.athlete, planningContext: { asOf: TODAY, event: 'Race in November' } })
+  const result = await applyWeekImport(repository, { weekPlan: seeded.weekPlan, workoutLogs: [], athleteProfile })
+  const state = appReducer({ ...createInitialAppState(), athlete: seeded.athlete }, {
+    type: 'weekImported', ...result, planner: seeded.planner,
+  })
+  assert.deepEqual(state.athlete, athleteProfile)
+  assert.deepEqual(await repository.getAthleteProfile(athleteProfile.id), athleteProfile)
+})
+
+test('saving profile fields invalidates the brief and v2 preview and refuses its stale bundle at apply', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const prompt = buildInitialWeekPrompt(buildInitialPromptInputFromAthleteProfile(seeded.athlete, WEEK_START))
+  const json = JSON.stringify({ ...JSON.parse(prompt.exampleJson), athleteContext: { asOf: TODAY, benchmarks: ['A recorded baseline'] } })
+  const options = { athlete: seeded.athlete, targetWeekStart: WEEK_START, expectedWeekType: 'initial' as const, weekPlanId: 'previewed-week' }
+  const preview = previewAiWeekHandoff(json, options)
+  assert.ok(preview.ok)
+  assert.ok(preview.bundle.athleteProfile)
+  let state = appReducer(createInitialAppState(), { type: 'bootstrapped', ...seeded, savedWeek: seeded.weekPlan, logs: [] })
+  state = appReducer(state, { type: 'setHandoffJson', value: json })
+  state = appReducer(state, { type: 'setHandoffPreview', preview })
+  state = { ...state, handoff: { ...state.handoff, promptText: 'Earlier profile brief' } }
+  const savedProfile = await repository.saveAthleteProfile({
+    ...seeded.athlete, goal: 'My newly saved goal',
+    equipmentDetails: [{ id: 'new-dumbbells', label: 'New dumbbells', constraints: [] }],
+  })
+  state = appReducer(state, { type: 'setAthlete', athlete: savedProfile })
+  assert.equal(state.handoff.preview, null)
+  assert.equal(state.handoff.promptText, '')
+  assert.equal(state.handoff.jsonText, json)
+  await assert.rejects(applyWeekImport(repository, preview.bundle), /profile changed after preview/)
+  assert.equal(await repository.getWeekPlan('previewed-week'), undefined)
+  assert.deepEqual(await repository.getAthleteProfile(savedProfile.id), savedProfile)
+
+  const refreshed = previewAiWeekHandoff(json, { ...options, athlete: savedProfile })
+  assert.ok(refreshed.ok)
+  const applied = await applyWeekImport(repository, refreshed.bundle, savedProfile)
+  assert.equal(applied.athleteProfile?.goal, savedProfile.goal)
+  assert.deepEqual(applied.athleteProfile?.equipmentDetails, savedProfile.equipmentDetails)
+  assert.deepEqual(applied.athleteProfile?.planningContext?.benchmarks, ['A recorded baseline'])
+})
+
+test('apply boundary rejects a changed profile baseline and forwards the baseline transactionally', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const updated = await repository.saveAthleteProfile({
+    ...seeded.athlete, planningContext: { asOf: TODAY, benchmarks: ['Edited since preview'] },
+  })
+  const bundle = { weekPlan: seeded.weekPlan, workoutLogs: [], athleteProfile: {
+    ...seeded.athlete, planningContext: { asOf: TODAY, benchmarks: ['Old AI proposal'] },
+  } }
+  await assert.rejects(applyWeekImport(repository, bundle, seeded.athlete), /profile changed after preview/)
+  assert.deepEqual(await repository.getAthleteProfile(updated.id), updated)
+  let checked = false
+  await applyWeekImport({
+    ...repository,
+    async importWeek(imported, options) {
+      assert.deepEqual(options?.expectedAthleteProfile, updated)
+      checked = true
+      return repository.importWeek(imported, options)
+    },
+  }, bundle, updated)
+  assert.equal(checked, true)
+})
+
+test('saved review provenance keeps automatic counts live through log persistence and card deletion', async () => {
+  const repository = createFakeRepository()
+  const seeded = await seedPlannerWithWorkout(repository)
+  const first = seeded.weekPlan.workouts[0]!
+  const weekPlan = parseWeekPlan({ ...seeded.weekPlan, workouts: [first, { ...first, id: 'second-card' }] })
+  await repository.saveWeekPlan(weekPlan)
+  let review = createWorkoutReviewState({ weekPlan })
+  review = reduceWorkoutReviewState(review, { type: 'setWeeklyMetricField', metricId: 'total-workouts', field: 'planned', value: '5' })
+  const savedReview = await saveReviewWeek(repository, review)
+  review = createWorkoutReviewState({ weekPlan: savedReview.weekPlan })
+  for (const workout of weekPlan.workouts) {
+    review = reduceInlineWorkoutReviewState(review, { type: 'setWorkoutNotes', workoutId: workout.id, value: 'Recorded workout' })
+  }
+  const savedLogs = await savePendingReviewWorkoutLogs(repository, review)
+  const planner = createPlannerStateFromWeekPlan(savedReview.weekPlan)
+  let state = appReducer(createInitialAppState(), {
+    type: 'bootstrapped', athlete: seeded.athlete, planner, savedWeek: savedReview.weekPlan, logs: savedLogs.logs,
+  })
+  state = appReducer(state, { type: 'setReview', review: createWorkoutReviewState({ weekPlan: savedReview.weekPlan, workoutLogs: savedLogs.logs }) })
+  assert.equal(state.review?.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.completed, '2')
+  const deleted = await deleteRecordedPlannerWorkout(repository, planner, planner.present.week.workouts[0]!.localId)
+  state = appReducer(state, { type: 'workoutDeleted', ...deleted })
+  assert.equal(state.review?.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.planned, '5')
+  assert.equal(state.review?.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.completed, '1')
+  assert.equal(state.review?.weeklyReview.metrics.find(metric => metric.id === 'partial-workouts')?.completed, '1')
+  const reloaded = createWorkoutReviewState({
+    weekPlan: (await repository.getWeekPlan(weekPlan.id))!,
+    workoutLogs: await repository.listWorkoutLogs({ weekPlanId: weekPlan.id }),
+  })
+  assert.equal(reloaded.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.planned, '5')
+  assert.equal(reloaded.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.completed, '1')
 })

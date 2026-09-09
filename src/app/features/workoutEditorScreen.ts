@@ -10,6 +10,20 @@ import { actionBar, h, messageList, screenFrame, sectionCard, selectInput, textA
 
 type WorkoutMetadataField = keyof WorkoutEditorDraft
 
+const loadBasisOptions = [
+  { value: '', label: 'Unknown / not specified' },
+  { value: 'total', label: 'Weight (kg total)' },
+  { value: 'per_implement', label: 'Weight (kg each)' },
+  { value: 'added', label: 'Weight (added kg)' },
+  { value: 'assistance', label: 'Weight (assistance kg)' },
+] as const satisfies readonly SelectOption[]
+
+const repBasisOptions = [
+  { value: '', label: 'Unknown / not specified' },
+  { value: 'total', label: 'Reps (total)' },
+  { value: 'per_side', label: 'Reps each side' },
+] as const satisfies readonly SelectOption[]
+
 export interface WorkoutEditorScreenProps {
   draft: WorkoutEditorDraft
   sections: readonly WorkoutSectionDraft[]
@@ -155,10 +169,10 @@ export function WorkoutEditorScreen(props: WorkoutEditorScreenProps) {
                     }),
                     textInput({
                       id: `${step.id}-duration`,
-                      label: 'Duration',
+                      label: 'Work duration',
                       value: step.duration,
                       onChange: value => props.onStepChange(section.id, step.id, 'duration', value),
-                      placeholder: 'Example: 12 min or 5 rounds',
+                      placeholder: 'Example: 12 min or 45 sec',
                       className: 'workout-editor__field feature-metric-grid__field',
                     }),
                   ]),
@@ -170,8 +184,41 @@ export function WorkoutEditorScreen(props: WorkoutEditorScreenProps) {
                     rows: 3,
                     className: 'workout-editor__field',
                   }),
-                  h('details', { key: 'advanced', open: step.rest || step.notes ? true : undefined, className: 'feature-advanced workout-editor__advanced' }, [
+                  h('details', {
+                    key: 'advanced',
+                    open: step.rest || step.notes || step.loadBasis || step.repBasis || step.estimatedTotalMin ? true : undefined,
+                    className: 'feature-advanced workout-editor__advanced',
+                  }, [
                     h('summary', { key: 'summary', className: 'workout-editor__advanced-summary' }, 'Optional step details'),
+                    h('div', { key: 'conventions', className: 'feature-metric-grid' }, [
+                      selectInput({
+                        id: `${step.id}-load-basis`,
+                        label: 'Weight convention',
+                        value: step.loadBasis ?? '',
+                        options: loadBasisOptions,
+                        onChange: value => props.onStepChange(section.id, step.id, 'loadBasis', value),
+                        description: 'Labels the existing kg value; no weight conversion.',
+                        className: 'workout-editor__field feature-metric-grid__field',
+                      }),
+                      selectInput({
+                        id: `${step.id}-rep-basis`,
+                        label: 'Rep convention',
+                        value: step.repBasis ?? '',
+                        options: repBasisOptions,
+                        onChange: value => props.onStepChange(section.id, step.id, 'repBasis', value),
+                        className: 'workout-editor__field feature-metric-grid__field',
+                      }),
+                      textInput({
+                        id: `${step.id}-block-time`,
+                        label: 'Estimated block time (min)',
+                        value: step.estimatedTotalMin ?? '',
+                        inputMode: 'decimal',
+                        onChange: value => props.onStepChange(section.id, step.id, 'estimatedTotalMin', value),
+                        description: '0.1-1440 minutes, including rests and transitions; not just work duration.',
+                        placeholder: 'Example: 12.5',
+                        className: 'workout-editor__field feature-metric-grid__field',
+                      }),
+                    ]),
                     textInput({
                       id: `${step.id}-rest`,
                       label: 'Rest',

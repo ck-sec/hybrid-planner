@@ -1,5 +1,5 @@
 import type { FormMessage, WorkoutCompletionStatus, WorkoutLogStepResultDraft } from './models.ts'
-import type { Workout } from '../../domain/contracts.ts'
+import type { Workout, WorkoutLogStep } from '../../domain/contracts.ts'
 import { WorkoutExerciseCards } from './workoutExerciseCards.ts'
 import {
   parseStructuredMetricText,
@@ -36,6 +36,7 @@ export interface WorkoutLogScreenProps {
   actualSummary: string
   notes: string
   stepResults: readonly WorkoutLogStepResultDraft[]
+  recordedSteps?: readonly WorkoutLogStep[]
   messages?: readonly FormMessage[]
   onCompletionStatusChange: (status: WorkoutCompletionStatus) => void
   onSessionRpeChange: (value: string) => void
@@ -132,6 +133,7 @@ export function WorkoutLogScreen(props: WorkoutLogScreenProps) {
         h(WorkoutExerciseCards, {
           key: 'results', idPrefix: `log-${props.workout?.id ?? 'session'}`,
           workout: props.workout, stepResults: props.stepResults,
+          recordedSteps: props.recordedSteps,
           unlogged: props.hasLog === false, onStepResultChange: props.onStepResultChange,
         }),
       ], 'workout-log__card'),

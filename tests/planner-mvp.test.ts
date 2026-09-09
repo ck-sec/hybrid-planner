@@ -5,7 +5,6 @@ import { test, type TestContext } from 'node:test'
 
 import {
   AI_COPY_PASTE_FORMAT,
-  AI_COPY_PASTE_VERSION,
   buildContinuationWeekPrompt,
   type FixedClubSession as AiFixedClubSession,
   buildInitialWeekPrompt,
@@ -197,7 +196,7 @@ function buildRepresentativeAiWeek(profile: AthleteProfile, targetWeekStart: Ret
   const targetWeek = buildTargetWeek(targetWeekStart)
   return {
     format: AI_COPY_PASTE_FORMAT,
-    version: AI_COPY_PASTE_VERSION,
+    version: 1,
     weekType: 'initial',
     targetWeek,
     summary: 'Blend the fixed club anchors with flexible cycling, strength, and mobility support.',
@@ -604,7 +603,7 @@ test('guided onboarding flows through AI import repository planning review and c
     targetWeekStart,
     expectedWeekType: 'initial',
   })
-  assert.equal(preview.ok, true)
+  assert.equal(preview.ok, true, JSON.stringify(preview.issues))
   if (!preview.ok) return
   const converted = convertAiWeekContractToWeekImportBundle(contract, {
     athlete,
@@ -856,7 +855,7 @@ test('manual blank-week planning round-trips as a pure week plan and valid backu
     notes: 'Built from scratch without importing App.tsx.',
   })
 
-  assertPlannerError(() => plannerStateToWeekPlan(planner), 'week-workout-required', /At least one workout is required/)
+  assert.deepEqual(plannerStateToWeekPlan(planner).workouts, [])
 
   planner = addPlannerWorkout(planner, {
     scheduledDate: '2026-09-21',

@@ -51,3 +51,117 @@
   gap: 0.5rem 1rem;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
 }
+
+.json-handoff .json-handoff__quality {
+  gap: 0.85rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--hc-line);
+  border-radius: var(--hc-radius);
+  background: var(--hc-paper);
+  overflow-wrap: anywhere;
+}
+
+.json-handoff .json-handoff__approval button.is-secondary {
+  background: var(--hc-paper);
+  color: var(--hc-navy);
+  border-color: var(--hc-line-strong);
+}
+
+.json-handoff__quality h3 {
+  font-size: 0.9rem;
+}
+
+.json-handoff__quality p,
+.json-handoff__quality dl,
+.json-handoff__quality dd {
+  margin: 0;
+}
+
+.json-handoff__goal,
+.json-handoff__quality-metrics,
+.json-handoff__quality-pairs,
+.json-handoff__context-content {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.json-handoff__goal {
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.json-handoff__goal-status {
+  color: var(--hc-plum);
+  font-weight: 700;
+}
+
+.json-handoff__quality-metrics > div {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--hc-line);
+  border-radius: var(--hc-radius-sm);
+}
+
+.json-handoff__quality-metrics dt,
+.json-handoff__quality-pairs dt {
+  color: var(--hc-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.json-handoff__quality-metrics dd {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.json-handoff__quality-metrics .json-handoff__metric-note {
+  margin-top: 0.35rem;
+  color: var(--hc-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.json-handoff__quality-pairs {
+  padding-top: 0.6rem;
+  font-size: 0.85rem;
+}
+
+.json-handoff__quality-pairs > div {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.json-handoff__context {
+  border-top: 1px solid var(--hc-line);
+}
+
+.json-handoff__context summary {
+  min-height: 44px;
+  padding-block: 0.75rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.json-handoff__context-content .json-handoff__quality-pairs {
+  padding-top: 0;
+}
+
+.workout-exercise__heading .workout-exercise__block-time {
+  margin: 0;
+  color: var(--hc-muted);
+  font-size: 0.78rem;
+}
+
+@media (min-width: 600px) {
+  .json-handoff__quality-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .json-handoff__quality-pairs > div {
+    grid-template-columns: minmax(7rem, 1fr) minmax(0, 3fr);
+    gap: 0.75rem;
+  }
+}

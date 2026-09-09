@@ -1,5 +1,6 @@
 import {
   DOMAIN_VERSION,
+  parseAthleteProfile,
   parseWeekPlan,
   type AthleteProfile,
   type OnboardingDraft,
@@ -20,9 +21,13 @@ import {
   createBlankPlannerState,
   createPlannerStateFromWeekPlan,
   plannerStateToWeekPlan,
+  deletePlannerWorkout,
   type PlannerState,
 } from '../state/planner.ts'
-import { buildWorkoutReviewLog, getDirtyWorkoutReviewIds, type WorkoutReviewState } from '../state/review.ts'
+import { buildWorkoutReviewLog, buildWorkoutReviewPayload, getDirtyWorkoutReviewIds, type WorkoutReviewState } from '../state/review.ts'
+import { buildContinuationWeekPrompt, buildInitialWeekPrompt } from '../../ai/index.ts'
+import { buildInitialPromptInputFromAthleteProfile } from '../state/ai-handoff.ts'
+import type { HandoffSlice } from './state.ts'
 import { createControllerId } from './ids.ts'
 
 export interface BootstrapSnapshot {
@@ -173,13 +178,24 @@ export async function finalizeGuidedOnboarding(
 export async function applyWeekImport(
   repository: HybridCoachRepository,
   bundle: WeekImportBundle,
-): Promise<{ readonly weekPlan: WeekPlan; readonly logs: readonly WorkoutLog[] }> {
-  const imported = await repository.importWeek(bundle)
-  const logs = await repository.listWorkoutLogs({
-    athleteId: imported.weekPlan.athleteId,
-    weekPlanId: imported.weekPlan.id,
-  })
-  return { weekPlan: imported.weekPlan, logs }
+  expectedAthleteProfile?: AthleteProfile,
+): Promise<{ readonly weekPlan: WeekPlan; readonly logs: readonly WorkoutLog[]; readonly athleteProfile?: AthleteProfile }> {
+  const current = await repository.getAthleteProfile(bundle.weekPlan.athleteId)
+  if (!current) throw new Error('Create an athlete profile before applying a week.')
+  const currentProfile = parseAthleteProfile(current)
+  const expected = expectedAthleteProfile === undefined ? currentProfile : parseAthleteProfile(expectedAthleteProfile)
+  if (JSON.stringify(expected) !== JSON.stringify(currentProfile)) {
+    throw new Error('The athlete profile changed after preview. Preview the week again before applying it.')
+  }
+  if (bundle.athleteProfile) {
+    const { planningContext: _proposedContext, updatedOn: proposedUpdatedOn, ...proposedFields } = parseAthleteProfile(bundle.athleteProfile)
+    const { planningContext: _currentContext, updatedOn: currentUpdatedOn, ...currentFields } = currentProfile
+    if (JSON.stringify(proposedFields) !== JSON.stringify(currentFields) || proposedUpdatedOn < currentUpdatedOn) {
+      throw new Error('The athlete profile changed after preview. Preview the week again before applying it.')
+    }
+  }
+  const imported = await repository.importWeek(bundle, { expectedAthleteProfile: expected })
+  return { weekPlan: imported.weekPlan, logs: imported.workoutLogs, ...(imported.athleteProfile ? { athleteProfile: imported.athleteProfile } : {}) }
 }
 
 export async function saveReviewWorkoutLog(
@@ -199,7 +215,43 @@ export async function savePendingReviewWorkoutLogs(
 ): Promise<{ readonly logs: readonly WorkoutLog[]; readonly savedWorkoutIds: readonly string[] }> {
   const savedWorkoutIds = getDirtyWorkoutReviewIds(review)
   const pending = savedWorkoutIds.map(workoutId => buildWorkoutReviewLog(review, workoutId))
-  for (const log of pending) await repository.saveWorkoutLog(log)
+  if (pending.length) {
+    const weekPlan = await repository.getWeekPlan(review.weekPlan.id)
+    if (!weekPlan) throw new Error('Save the week before saving its workout logs.')
+    const imported = await repository.importWeek({ weekPlan, workoutLogs: pending })
+    return { logs: imported.workoutLogs, savedWorkoutIds }
+  }
   const logs = await repository.listWorkoutLogs({ athleteId: review.weekPlan.athleteId, weekPlanId: review.weekPlan.id })
   return { logs, savedWorkoutIds }
+}
+
+export async function saveReviewWeek(repository: HybridCoachRepository, review: WorkoutReviewState) {
+  const payload = buildWorkoutReviewPayload(review)
+  const imported = await repository.importWeek({ weekPlan: payload.weekPlan, workoutLogs: [...payload.workoutLogs] })
+  return { weekPlan: imported.weekPlan, logs: imported.workoutLogs, savedWorkoutIds: review.workouts.filter(workout => workout.isLogged).map(workout => workout.workout.id) }
+}
+
+export async function deleteRecordedPlannerWorkout(repository: HybridCoachRepository, planner: PlannerState, localId: string) {
+  const entry = planner.present.week.workouts.find(workout => workout.localId === localId)
+  if (!entry) throw new Error('The workout to delete no longer exists in this week.')
+  const next = deletePlannerWorkout(planner, localId)
+  const weekPlan = plannerStateToWeekPlan(next)
+  const imported = await repository.importWeek({ weekPlan, workoutLogs: [] }, { deleteWorkoutIds: [entry.workout.id] })
+  return { planner: next, weekPlan: imported.weekPlan, logs: imported.workoutLogs }
+}
+
+export function refreshHandoffPrompt(
+  athlete: AthleteProfile,
+  handoff: HandoffSlice,
+  defaultWeekStart: LocalDateString,
+  review?: WorkoutReviewState,
+) {
+  const targetWeekStart = handoff.targetWeekStart ?? defaultWeekStart
+  const input = buildInitialPromptInputFromAthleteProfile(athlete, targetWeekStart)
+  if (handoff.kind === 'continuation') {
+    if (!review) throw new Error('Open the previous week review before refreshing its continuation brief.')
+    const payload = buildWorkoutReviewPayload(review)
+    return { kind: handoff.kind, targetWeekStart, promptText: buildContinuationWeekPrompt({ ...input, previousWeek: payload.previousWeek }).prompt }
+  }
+  return { kind: handoff.kind, targetWeekStart, promptText: buildInitialWeekPrompt(input).prompt }
 }

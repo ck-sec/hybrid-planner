@@ -51,6 +51,7 @@ export interface PlannerWorkoutStepDefinition {
   readonly detail?: string
   readonly equipment?: readonly string[]
   readonly target?: WorkoutStepTarget
+  readonly estimatedTotalMin?: number
 }
 
 export interface PlannerWorkoutDefinition {
@@ -133,7 +134,7 @@ export interface PlannerWorkoutEntry {
   readonly workout: Workout
 }
 
-export interface PlannerWeekDraft {
+export interface PlannerWeekDraft extends Readonly<Pick<WeekPlan, 'planningContext' | 'goalAssessment' | 'review'>> {
   readonly version: 1
   readonly id: string
   readonly athleteId: string
@@ -155,7 +156,7 @@ export interface PlannerState {
   readonly nextGeneratedId: number
 }
 
-interface MutablePlannerWeek {
+interface MutablePlannerWeek extends Pick<WeekPlan, 'planningContext' | 'goalAssessment' | 'review'> {
   version: 1
   id: string
   athleteId: string
@@ -218,6 +219,14 @@ function cloneValue<T>(value: T): T {
   return structuredClone(value)
 }
 
+function weekMetadata(week: Pick<WeekPlan, 'planningContext' | 'goalAssessment' | 'review'>) {
+  return {
+    ...(week.planningContext === undefined ? {} : { planningContext: cloneValue(week.planningContext) }),
+    ...(week.goalAssessment === undefined ? {} : { goalAssessment: cloneValue(week.goalAssessment) }),
+    ...(week.review === undefined ? {} : { review: cloneValue(week.review) }),
+  }
+}
+
 function deepFreeze<T>(value: T): T {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
   Object.freeze(value)
@@ -240,6 +249,7 @@ function makeMutableWeek(week: PlannerWeekDraft): MutablePlannerWeek {
     title: week.title,
     goal: week.goal,
     notes: week.notes,
+    ...weekMetadata(week),
     workouts: week.workouts.map(entry => ({
       localId: entry.localId,
       workout: cloneValue(entry.workout),
@@ -287,6 +297,7 @@ function normalizeWorkoutSteps(
     detail: step.detail,
     equipment: step.equipment === undefined ? undefined : [...step.equipment],
     target: step.target === undefined ? undefined : cloneValue(step.target),
+    ...(step.estimatedTotalMin === undefined ? {} : { estimatedTotalMin: step.estimatedTotalMin }),
   }))
 }
 
@@ -461,17 +472,17 @@ function duplicateWorkout(
     ...cloneValue(workout),
     id: allocator.allocate('workout'),
     warmup: normalizeWorkoutSteps(
-      workout.warmup.map(step => ({ title: step.title, detail: step.detail, equipment: step.equipment, target: step.target })),
+      workout.warmup.map(step => ({ ...step, id: undefined })),
       'Workout.warmup',
       allocator,
     ),
     main: normalizeWorkoutSteps(
-      workout.main.map(step => ({ title: step.title, detail: step.detail, equipment: step.equipment, target: step.target })),
+      workout.main.map(step => ({ ...step, id: undefined })),
       'Workout.main',
       allocator,
     ),
     cooldown: normalizeWorkoutSteps(
-      workout.cooldown.map(step => ({ title: step.title, detail: step.detail, equipment: step.equipment, target: step.target })),
+      workout.cooldown.map(step => ({ ...step, id: undefined })),
       'Workout.cooldown',
       allocator,
     ),
@@ -508,9 +519,8 @@ function validatePlannerWeekDraft(week: PlannerWeekDraft): PlannerWeekDraft {
       workout: cloneValue(entry.workout),
     }))),
     notes: normalizeOptionalText(week.notes, 'WeekPlan.notes', 2_000, 'invalid-week'),
+    ...weekMetadata(week),
   }
-
-  if (!normalized.workouts.length) return normalized
 
   try {
     const validatedWeek = parseWeekPlan({
@@ -522,6 +532,7 @@ function validatePlannerWeekDraft(week: PlannerWeekDraft): PlannerWeekDraft {
       goal: normalized.goal,
       workouts: normalized.workouts.map(entry => entry.workout),
       notes: normalized.notes,
+      ...weekMetadata(normalized),
     })
 
     return {
@@ -536,6 +547,7 @@ function validatePlannerWeekDraft(week: PlannerWeekDraft): PlannerWeekDraft {
         workout,
       })),
       notes: validatedWeek.notes,
+      ...weekMetadata(validatedWeek),
     }
   } catch (error) {
     throw asPlannerError('invalid-week', 'WeekPlan', error)
@@ -663,6 +675,7 @@ export function createPlannerStateFromWeekPlan(weekPlan: WeekPlan): PlannerState
       title: validated.title,
       goal: validated.goal,
       notes: validated.notes,
+      ...weekMetadata(validated),
       workouts: validated.workouts.map(workout => ({
         localId: createPlannerLocalId(workout.id),
         workout: cloneValue(workout),
@@ -674,13 +687,6 @@ export function createPlannerStateFromWeekPlan(weekPlan: WeekPlan): PlannerState
 
 export function plannerStateToWeekPlan(state: PlannerState): WeekPlan {
   const week = state.present.week
-  if (!week.workouts.length) {
-    throw plannerError(
-      'week-workout-required',
-      'At least one workout is required before converting the planner state into a week plan.',
-      'WeekPlan.workouts',
-    )
-  }
   try {
     return parseWeekPlan({
       version: DOMAIN_VERSION,
@@ -691,6 +697,7 @@ export function plannerStateToWeekPlan(state: PlannerState): WeekPlan {
       goal: week.goal,
       workouts: week.workouts.map(entry => cloneValue(entry.workout)),
       notes: week.notes,
+      ...weekMetadata(week),
     })
   } catch (error) {
     throw asPlannerError('invalid-week', 'WeekPlan', error)

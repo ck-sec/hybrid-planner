@@ -428,3 +428,26 @@ test('athlete profile editing adapter rejects invalid numeric edits explicitly',
     /AthleteProfileDraft\.clubSessions\[0\]\.durationMin: Expected a whole number\./,
   )
 })
+
+test('changing pasted backup text requires a new preview and confirmation', async () => {
+  const repository = new StubRepository()
+  const json = JSON.stringify(buildBackup())
+  const preview = previewRestoreBackupJson(json)
+  assert.equal(canApplyPreviewedBackupRestore(preview, 'RESTORE BACKUP', `${json} `), false)
+  await assert.rejects(
+    applyPreviewedBackupRestore(repository, preview, 'RESTORE BACKUP', `${json} `),
+    error => error instanceof SettingsAdapterError && error.code === 'restore-preview-required',
+  )
+  assert.equal(repository.restored.length, 0)
+})
+
+test('ordinary profile edits preserve optional planning context without reinterpreting it', () => {
+  const profile = parseAthleteProfile({
+    ...athleteProfile,
+    planningContext: { asOf: '2026-09-09', benchmarks: ['Recent easy run: 30 minutes'], recentTraining: { weeks: 4, aerobicMinutes: 90 } },
+  })
+  const draft = createAthleteProfileEditingDraft(profile)
+  const edited = parseAthleteProfileEditingDraft({ ...draft, name: 'Updated name' })
+  assert.deepEqual(edited.planningContext, profile.planningContext)
+  assert.notStrictEqual(draft.planningContext, profile.planningContext)
+})

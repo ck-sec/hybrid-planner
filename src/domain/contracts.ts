@@ -17,6 +17,59 @@ export type WorkoutEffort = 'recovery' | 'easy' | 'steady' | 'tempo' | 'hard' | 
 export type WorkoutSource = 'manual' | 'ai' | 'club'
 export type WorkoutLogOutcome = 'completed' | 'partial' | 'skipped'
 export type StrengthPreference = 'full_body' | 'upper_lower' | 'push_pull_legs' | 'mixed'
+export type LoadBasis = 'total' | 'per_implement' | 'added' | 'assistance'
+export type RepBasis = 'total' | 'per_side'
+
+export interface PlanningContext {
+  asOf: string
+  event?: string
+  benchmarks?: string[]
+  limitations?: string[]
+  recentTraining?: {
+    weeks: number
+    aerobicMinutes?: number
+    strengthMinutes?: number
+    mobilityMinutes?: number
+    clubMinutes?: number
+    aerobicSessions?: number
+    strengthSessions?: number
+    summary?: string
+  }
+  sessionLimits?: { dayOfWeek: number; maxMinutes: number }[]
+  weeklyTimeLimitMin?: number
+  clubLoads?: { sessionId: string; durationMin?: number; effortRating?: number }[]
+}
+
+export interface GoalAssessment {
+  status: 'unassessed' | 'conditional' | 'not_supported'
+  rationale: string
+  unknowns: string[]
+  nextMilestone: string
+}
+
+export type WeeklyReviewMetricField = 'planned' | 'completed' | 'note'
+
+export interface WeeklyReviewMetric {
+  readonly id: string
+  readonly label: string
+  readonly planned?: string
+  readonly completed?: string
+  readonly note?: string
+  // Empty means automatic; absence denotes legacy data with unknown edit provenance.
+  readonly overriddenFields?: readonly WeeklyReviewMetricField[]
+}
+
+export interface WeeklyReview {
+  readonly weekLabel?: string
+  readonly reflection?: string
+  readonly energy?: number
+  readonly recovery?: number
+  readonly wins?: string
+  readonly blockers?: string
+  readonly nextFocus?: string
+  readonly coachNotes?: string
+  readonly metrics: readonly WeeklyReviewMetric[]
+}
 
 export interface PreferredTrainingDay {
   dayOfWeek: number
@@ -69,6 +122,7 @@ export interface AthleteProfile {
   constraints: string[]
   clubSessions: RecurringClubSession[]
   notes?: string
+  planningContext?: PlanningContext
 }
 
 export interface WorkoutStepTarget {
@@ -79,6 +133,8 @@ export interface WorkoutStepTarget {
   distanceMeters?: number
   loadKg?: number
   effort?: WorkoutEffort
+  loadBasis?: LoadBasis
+  repBasis?: RepBasis
 }
 
 export interface WorkoutStep {
@@ -87,6 +143,7 @@ export interface WorkoutStep {
   detail?: string
   equipment?: string[]
   target?: WorkoutStepTarget
+  estimatedTotalMin?: number
 }
 
 export interface FixedClubSession {
@@ -127,6 +184,9 @@ export interface WeekPlan {
   goal: string
   workouts: Workout[]
   notes?: string
+  planningContext?: PlanningContext
+  goalAssessment?: GoalAssessment
+  review?: WeeklyReview
 }
 
 export interface WorkoutLogMetrics {
@@ -148,6 +208,8 @@ export interface WorkoutLogStep {
   completedPaceSecondsPerKm?: number
   loadKg?: number
   notes?: string
+  loadBasis?: LoadBasis
+  repBasis?: RepBasis
 }
 
 export interface WorkoutLog {
@@ -195,6 +257,7 @@ export interface BackupEnvelope {
 export interface WeekImportBundle {
   weekPlan: WeekPlan
   workoutLogs: WorkoutLog[]
+  athleteProfile?: AthleteProfile
 }
 
 const workoutCategories = new Set<WorkoutCategory>(['aerobic', 'strength', 'mobility'])
@@ -268,6 +331,125 @@ function versionedRecord(value: unknown, path: string, keys: readonly string[]):
   expectExactKeys(record, keys, path)
   if (record.version !== DOMAIN_VERSION) fail(`${path}.version`, `Expected version ${DOMAIN_VERSION}.`)
   return record
+}
+
+export function parseLoadBasis(value: unknown, path = 'loadBasis'): LoadBasis {
+  if (value !== 'total' && value !== 'per_implement' && value !== 'added' && value !== 'assistance') {
+    fail(path, 'Expected total, per_implement, added, or assistance.')
+  }
+  return value
+}
+
+export function parseRepBasis(value: unknown, path = 'repBasis'): RepBasis {
+  if (value !== 'total' && value !== 'per_side') fail(path, 'Expected total or per_side.')
+  return value
+}
+
+export function parsePlanningContext(value: unknown, path = 'PlanningContext'): PlanningContext {
+  const record = asObject(value, path)
+  expectExactKeys(record, ['asOf', 'event', 'benchmarks', 'limitations', 'recentTraining', 'sessionLimits', 'weeklyTimeLimitMin', 'clubLoads'], path)
+  const context: PlanningContext = { asOf: parseLocalDate(record.asOf, `${path}.asOf`) }
+  if (record.event !== undefined) context.event = text(record.event, `${path}.event`, 1, 500)
+  if (record.benchmarks !== undefined) context.benchmarks = textList(record.benchmarks, `${path}.benchmarks`, 0, 12, 500)
+  if (record.limitations !== undefined) context.limitations = textList(record.limitations, `${path}.limitations`, 0, 12, 500)
+  if (record.weeklyTimeLimitMin !== undefined) context.weeklyTimeLimitMin = integer(record.weeklyTimeLimitMin, `${path}.weeklyTimeLimitMin`, 1, 10_080)
+  if (record.recentTraining !== undefined) {
+    const recent = asObject(record.recentTraining, `${path}.recentTraining`)
+    expectExactKeys(recent, ['weeks', 'aerobicMinutes', 'strengthMinutes', 'mobilityMinutes', 'clubMinutes', 'aerobicSessions', 'strengthSessions', 'summary'], `${path}.recentTraining`)
+    context.recentTraining = { weeks: integer(recent.weeks, `${path}.recentTraining.weeks`, 1, 12) }
+    for (const key of ['aerobicMinutes', 'strengthMinutes', 'mobilityMinutes', 'clubMinutes'] as const) {
+      if (recent[key] !== undefined) context.recentTraining[key] = integer(recent[key], `${path}.recentTraining.${key}`, 0, 10_080)
+    }
+    const knownMinutes = (context.recentTraining.aerobicMinutes ?? 0) + (context.recentTraining.strengthMinutes ?? 0)
+      + (context.recentTraining.mobilityMinutes ?? 0) + (context.recentTraining.clubMinutes ?? 0)
+    if (knownMinutes > 10_080) fail(`${path}.recentTraining`, 'Non-overlapping training time cannot exceed the minutes in a week.')
+    for (const key of ['aerobicSessions', 'strengthSessions'] as const) {
+      if (recent[key] !== undefined) context.recentTraining[key] = integer(recent[key], `${path}.recentTraining.${key}`, 0, 28)
+    }
+    if (recent.summary !== undefined) context.recentTraining.summary = text(recent.summary, `${path}.recentTraining.summary`, 1, 1_000)
+  }
+  if (record.sessionLimits !== undefined) {
+    if (!Array.isArray(record.sessionLimits) || record.sessionLimits.length > 7) fail(`${path}.sessionLimits`, 'Expected up to seven daily session limits.')
+    context.sessionLimits = record.sessionLimits.map((entry, index) => {
+      const limit = asObject(entry, `${path}.sessionLimits[${index}]`)
+      expectExactKeys(limit, ['dayOfWeek', 'maxMinutes'], `${path}.sessionLimits[${index}]`)
+      return {
+        dayOfWeek: integer(limit.dayOfWeek, `${path}.sessionLimits[${index}].dayOfWeek`, 0, 6),
+        maxMinutes: integer(limit.maxMinutes, `${path}.sessionLimits[${index}].maxMinutes`, 1, 1_440),
+      }
+    })
+    if (new Set(context.sessionLimits.map(limit => limit.dayOfWeek)).size !== context.sessionLimits.length) fail(`${path}.sessionLimits`, 'Days must be unique.')
+  }
+  if (record.clubLoads !== undefined) {
+    if (!Array.isArray(record.clubLoads) || record.clubLoads.length > 14) fail(`${path}.clubLoads`, 'Expected up to fourteen club loads.')
+    context.clubLoads = record.clubLoads.map((entry, index) => {
+      const load = asObject(entry, `${path}.clubLoads[${index}]`)
+      expectExactKeys(load, ['sessionId', 'durationMin', 'effortRating'], `${path}.clubLoads[${index}]`)
+      return {
+        sessionId: parseStableIdentity(load.sessionId, `${path}.clubLoads[${index}].sessionId`),
+        ...(load.durationMin === undefined ? {} : { durationMin: integer(load.durationMin, `${path}.clubLoads[${index}].durationMin`, 1, 1_440) }),
+        ...(load.effortRating === undefined ? {} : { effortRating: integer(load.effortRating, `${path}.clubLoads[${index}].effortRating`, 1, 10) }),
+      }
+    })
+    assertUniqueStableIdentities(context.clubLoads.map(load => load.sessionId), `${path}.clubLoads`)
+  }
+  return context
+}
+
+export function parseGoalAssessment(value: unknown, path = 'GoalAssessment'): GoalAssessment {
+  const record = asObject(value, path)
+  expectExactKeys(record, ['status', 'rationale', 'unknowns', 'nextMilestone'], path)
+  if (record.status !== 'unassessed' && record.status !== 'conditional' && record.status !== 'not_supported') fail(`${path}.status`, 'Expected unassessed, conditional, or not_supported.')
+  return {
+    status: record.status,
+    rationale: text(record.rationale, `${path}.rationale`, 1, 1_000),
+    unknowns: textList(record.unknowns, `${path}.unknowns`, 0, 12, 500),
+    nextMilestone: text(record.nextMilestone, `${path}.nextMilestone`, 1, 500),
+  }
+}
+
+function parseWeeklyReviewMetricOverrides(value: unknown, path: string): WeeklyReviewMetricField[] {
+  if (!Array.isArray(value) || value.length > 3) fail(path, 'Expected up to three overridden metric fields.')
+  const fields = value.map(field => {
+    if (field !== 'planned' && field !== 'completed' && field !== 'note') {
+      fail(path, 'Expected planned, completed, or note.')
+    }
+    return field
+  })
+  if (new Set(fields).size !== fields.length) fail(path, 'Overridden metric fields must be unique.')
+  return fields
+}
+
+export function parseWeeklyReview(value: unknown, path = 'WeeklyReview'): WeeklyReview {
+  const record = asObject(value, path)
+  expectExactKeys(record, ['weekLabel', 'reflection', 'energy', 'recovery', 'wins', 'blockers', 'nextFocus', 'coachNotes', 'metrics'], path)
+  if (!Array.isArray(record.metrics) || record.metrics.length > 32) fail(`${path}.metrics`, 'Expected up to 32 review metrics.')
+  const metrics = record.metrics.map((entry, index) => {
+    const metric = asObject(entry, `${path}.metrics[${index}]`)
+    expectExactKeys(metric, ['id', 'label', 'planned', 'completed', 'note', 'overriddenFields'], `${path}.metrics[${index}]`)
+    return {
+      id: parseStableIdentity(metric.id, `${path}.metrics[${index}].id`),
+      label: text(metric.label, `${path}.metrics[${index}].label`, 1, 120),
+      planned: optionalText(metric.planned, `${path}.metrics[${index}].planned`, 120),
+      completed: optionalText(metric.completed, `${path}.metrics[${index}].completed`, 120),
+      note: optionalText(metric.note, `${path}.metrics[${index}].note`, 2_000),
+      ...(metric.overriddenFields === undefined ? {} : {
+        overriddenFields: parseWeeklyReviewMetricOverrides(metric.overriddenFields, `${path}.metrics[${index}].overriddenFields`),
+      }),
+    }
+  })
+  assertUniqueStableIdentities(metrics.map(metric => metric.id), `${path}.metrics`)
+  return {
+    weekLabel: optionalText(record.weekLabel, `${path}.weekLabel`, 120),
+    reflection: optionalText(record.reflection, `${path}.reflection`, 2_000),
+    energy: record.energy === undefined ? undefined : integer(record.energy, `${path}.energy`, 1, 5),
+    recovery: record.recovery === undefined ? undefined : integer(record.recovery, `${path}.recovery`, 1, 5),
+    wins: optionalText(record.wins, `${path}.wins`, 2_000),
+    blockers: optionalText(record.blockers, `${path}.blockers`, 2_000),
+    nextFocus: optionalText(record.nextFocus, `${path}.nextFocus`, 2_000),
+    coachNotes: optionalText(record.coachNotes, `${path}.coachNotes`, 2_000),
+    metrics,
+  }
 }
 
 function parseWorkoutCategory(value: unknown, path: string): WorkoutCategory {
@@ -359,7 +541,7 @@ function parseRecurringClubSessions(value: unknown, path: string): RecurringClub
 
 function parseWorkoutStepTarget(value: unknown, path: string): WorkoutStepTarget {
   const record = asObject(value, path)
-  expectExactKeys(record, ['sets', 'reps', 'seconds', 'minutes', 'distanceMeters', 'loadKg', 'effort'], path)
+  expectExactKeys(record, ['sets', 'reps', 'seconds', 'minutes', 'distanceMeters', 'loadKg', 'effort', 'loadBasis', 'repBasis'], path)
   const target: WorkoutStepTarget = {}
   if (record.sets !== undefined) target.sets = integer(record.sets, `${path}.sets`, 1, 100)
   if (record.reps !== undefined) target.reps = integer(record.reps, `${path}.reps`, 1, 1_000)
@@ -367,6 +549,8 @@ function parseWorkoutStepTarget(value: unknown, path: string): WorkoutStepTarget
   if (record.minutes !== undefined) target.minutes = integer(record.minutes, `${path}.minutes`, 1, 720)
   if (record.distanceMeters !== undefined) target.distanceMeters = integer(record.distanceMeters, `${path}.distanceMeters`, 1, 500_000)
   if (record.loadKg !== undefined) target.loadKg = numeric(record.loadKg, `${path}.loadKg`, 0, 1_000)
+  if (record.loadBasis !== undefined) target.loadBasis = parseLoadBasis(record.loadBasis, `${path}.loadBasis`)
+  if (record.repBasis !== undefined) target.repBasis = parseRepBasis(record.repBasis, `${path}.repBasis`)
   if (record.effort !== undefined) {
     if (typeof record.effort !== 'string' || !workoutEfforts.has(record.effort as WorkoutEffort)) {
       fail(`${path}.effort`, 'Expected a supported effort.')
@@ -379,13 +563,14 @@ function parseWorkoutStepTarget(value: unknown, path: string): WorkoutStepTarget
 
 function parseWorkoutStep(value: unknown, path: string): WorkoutStep {
   const record = asObject(value, path)
-  expectExactKeys(record, ['id', 'title', 'detail', 'equipment', 'target'], path)
+  expectExactKeys(record, ['id', 'title', 'detail', 'equipment', 'target', 'estimatedTotalMin'], path)
   return {
     id: parseStableIdentity(record.id, `${path}.id`),
     title: text(record.title, `${path}.title`, 1, 120),
     detail: optionalText(record.detail, `${path}.detail`, 2_000),
     equipment: record.equipment === undefined ? undefined : textList(record.equipment, `${path}.equipment`, 0, 16, 80),
     target: record.target === undefined ? undefined : parseWorkoutStepTarget(record.target, `${path}.target`),
+    ...(record.estimatedTotalMin === undefined ? {} : { estimatedTotalMin: numeric(record.estimatedTotalMin, `${path}.estimatedTotalMin`, 0.1, 1_440) }),
   }
 }
 
@@ -474,7 +659,7 @@ function parseWorkoutLogMetrics(value: unknown, path: string): WorkoutLogMetrics
 
 function parseWorkoutLogStep(value: unknown, path: string): WorkoutLogStep {
   const record = asObject(value, path)
-  expectExactKeys(record, ['stepId', 'completedSets', 'completedReps', 'completedSeconds', 'completedMinutes', 'completedDistanceMeters', 'completedPaceSecondsPerKm', 'loadKg', 'notes'], path)
+  expectExactKeys(record, ['stepId', 'completedSets', 'completedReps', 'completedSeconds', 'completedMinutes', 'completedDistanceMeters', 'completedPaceSecondsPerKm', 'loadKg', 'notes', 'loadBasis', 'repBasis'], path)
   const step: WorkoutLogStep = {
     stepId: parseStableIdentity(record.stepId, `${path}.stepId`),
     notes: optionalText(record.notes, `${path}.notes`, 2_000),
@@ -490,6 +675,8 @@ function parseWorkoutLogStep(value: unknown, path: string): WorkoutLogStep {
     step.completedPaceSecondsPerKm = integer(record.completedPaceSecondsPerKm, `${path}.completedPaceSecondsPerKm`, 60, 7_200)
   }
   if (record.loadKg !== undefined) step.loadKg = numeric(record.loadKg, `${path}.loadKg`, 0, 1_000)
+  if (record.loadBasis !== undefined) step.loadBasis = parseLoadBasis(record.loadBasis, `${path}.loadBasis`)
+  if (record.repBasis !== undefined) step.repBasis = parseRepBasis(record.repBasis, `${path}.repBasis`)
   if (Object.keys(step).length === 1 && step.notes === undefined) {
     fail(path, 'Each log step needs actual values or notes.')
   }
@@ -548,7 +735,7 @@ export function parseAthleteProfile(value: unknown): AthleteProfile {
   const record = versionedRecord(
     value,
     'AthleteProfile',
-    ['version', 'id', 'createdOn', 'updatedOn', 'name', 'goal', 'goalDate', 'sports', 'preferredWeeklyStructure', 'strengthPreference', 'equipmentDetails', 'constraints', 'clubSessions', 'notes'],
+    ['version', 'id', 'createdOn', 'updatedOn', 'name', 'goal', 'goalDate', 'sports', 'preferredWeeklyStructure', 'strengthPreference', 'equipmentDetails', 'constraints', 'clubSessions', 'notes', 'planningContext'],
   )
   const athlete: AthleteProfile = {
     version: DOMAIN_VERSION,
@@ -565,12 +752,20 @@ export function parseAthleteProfile(value: unknown): AthleteProfile {
     constraints: textList(record.constraints, 'AthleteProfile.constraints', 0, 24, 120),
     clubSessions: parseRecurringClubSessions(record.clubSessions, 'AthleteProfile.clubSessions'),
     notes: optionalText(record.notes, 'AthleteProfile.notes', 2_000),
+    ...(record.planningContext === undefined ? {} : { planningContext: parsePlanningContext(record.planningContext, 'AthleteProfile.planningContext') }),
   }
   if (!athlete.preferredWeeklyStructure.length && !athlete.clubSessions.length) {
     fail('AthleteProfile.preferredWeeklyStructure', 'Add at least one preferred training day or recurring club session.')
   }
   if (compareLocalDates(athlete.createdOn, athlete.updatedOn) < 0) {
     fail('AthleteProfile.updatedOn', 'updatedOn cannot be earlier than createdOn.')
+  }
+  for (const load of athlete.planningContext?.clubLoads ?? []) {
+    const session = athlete.clubSessions.find(session => session.id === load.sessionId)
+    if (!session) fail('AthleteProfile.planningContext.clubLoads', 'Club loads must reference existing club sessions.')
+    if (session.durationMin !== undefined && load.durationMin !== undefined && load.durationMin !== session.durationMin) {
+      fail('AthleteProfile.planningContext.clubLoads', 'A context update cannot change an explicitly scheduled club duration.')
+    }
   }
   return athlete
 }
@@ -583,9 +778,9 @@ export function parseWeekPlan(value: unknown): WeekPlan {
   const record = versionedRecord(
     value,
     'WeekPlan',
-    ['version', 'id', 'athleteId', 'weekStart', 'title', 'goal', 'workouts', 'notes'],
+    ['version', 'id', 'athleteId', 'weekStart', 'title', 'goal', 'workouts', 'notes', 'planningContext', 'goalAssessment', 'review'],
   )
-  if (!Array.isArray(record.workouts) || !record.workouts.length) fail('WeekPlan.workouts', 'At least one workout is required.')
+  if (!Array.isArray(record.workouts)) fail('WeekPlan.workouts', 'Expected an array of workouts.')
   const weekPlan: WeekPlan = {
     version: DOMAIN_VERSION,
     id: parseStableIdentity(record.id, 'WeekPlan.id'),
@@ -595,6 +790,9 @@ export function parseWeekPlan(value: unknown): WeekPlan {
     goal: text(record.goal, 'WeekPlan.goal', 1, 500),
     workouts: record.workouts.map((entry, index) => parseWorkoutInternal(entry, `WeekPlan.workouts[${index}]`)),
     notes: optionalText(record.notes, 'WeekPlan.notes', 2_000),
+    ...(record.planningContext === undefined ? {} : { planningContext: parsePlanningContext(record.planningContext, 'WeekPlan.planningContext') }),
+    ...(record.goalAssessment === undefined ? {} : { goalAssessment: parseGoalAssessment(record.goalAssessment, 'WeekPlan.goalAssessment') }),
+    ...(record.review === undefined ? {} : { review: parseWeeklyReview(record.review, 'WeekPlan.review') }),
   }
   if (weekPlan.workouts.length > 28) fail('WeekPlan.workouts', 'Expected at most 28 workouts per week.')
   return validateWeekPlanRelationships(weekPlan, 'WeekPlan')
@@ -661,7 +859,7 @@ export function parseOnboardingDraft(value: unknown): OnboardingDraft {
   return draft
 }
 
-export function parseWeekImportBundle(input: { weekPlan: unknown; workoutLogs?: unknown }): WeekImportBundle {
+export function parseWeekImportBundle(input: { weekPlan: unknown; workoutLogs?: unknown; athleteProfile?: unknown }): WeekImportBundle {
   const weekPlan = parseWeekPlan(input.weekPlan)
   const workoutLogs = input.workoutLogs === undefined
     ? []
@@ -669,7 +867,9 @@ export function parseWeekImportBundle(input: { weekPlan: unknown; workoutLogs?: 
       ? input.workoutLogs.map(log => parseWorkoutLog(log))
       : fail('WeekImportBundle.workoutLogs', 'Expected an array.')
   validateWorkoutLogsForWeekPlan(weekPlan, workoutLogs, 'WeekImportBundle.workoutLogs')
-  return { weekPlan, workoutLogs }
+  const athleteProfile = input.athleteProfile === undefined ? undefined : parseAthleteProfile(input.athleteProfile)
+  if (athleteProfile && athleteProfile.id !== weekPlan.athleteId) fail('WeekImportBundle.athleteProfile', 'Profile must belong to the imported week.')
+  return { weekPlan, workoutLogs, ...(athleteProfile ? { athleteProfile } : {}) }
 }
 
 export function parseBackupEnvelope(value: unknown): BackupEnvelope {
@@ -701,9 +901,6 @@ export function parseBackupEnvelope(value: unknown): BackupEnvelope {
 
   for (const [index, plan] of weekPlans.entries()) {
     if (!athletes.has(plan.athleteId)) fail(`BackupEnvelope.weekPlans[${index}].athleteId`, 'Week plans must reference a saved athlete profile.')
-  }
-  for (const [index, draft] of onboardingDrafts.entries()) {
-    if (!athletes.has(draft.athleteId)) fail(`BackupEnvelope.onboardingDrafts[${index}].athleteId`, 'Drafts must reference a saved athlete profile.')
   }
   for (const [index, log] of workoutLogs.entries()) {
     const week = weeks.get(log.weekPlanId)

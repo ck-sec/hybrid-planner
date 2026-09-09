@@ -1,3 +1,5 @@
+import type { GoalAssessment, LoadBasis, PlanningContext, RepBasis, WeeklyReview } from '../domain/planning-context.ts'
+
 export type WeekPromptKind = 'initial' | 'continuation'
 
 export type WorkoutCategory = 'aerobic' | 'strength' | 'mobility'
@@ -61,8 +63,13 @@ export interface WorkoutStepContract {
   sets?: number
   reps?: number
   loadKg?: number
+  loadBasis?: LoadBasis
+  repBasis?: RepBasis
   distanceMeters?: number
+  /** In v2, work minutes per set when sets is supplied; otherwise work minutes for the step. */
   durationMin?: number
+  /** Total block estimate including all sets, rest, and transitions; not a logged duration. */
+  estimatedTotalMin?: number
   pace?: string
   effort?: string
   restSeconds?: number
@@ -104,6 +111,8 @@ export interface LoggedWorkoutStep {
   completedDurationMin?: number
   completedDistanceMeters?: number
   loadKg?: number
+  loadBasis?: LoadBasis
+  repBasis?: RepBasis
   note?: string
 }
 
@@ -132,6 +141,7 @@ export interface PreviousWeekContext {
   weekEnd: string
   summary?: string
   workouts: readonly PreviousWorkoutContext[]
+  review?: WeeklyReview
 }
 
 export interface ContinuationWeekPromptInput extends BaseWeekPromptInput {
@@ -144,25 +154,36 @@ export interface TargetWeek {
   dates: readonly string[]
 }
 
-export interface AiWeekCopyPasteContract {
+interface AiWeekCopyPasteContractBase {
   format: 'hybrid-coach-week'
-  version: 1
   weekType: WeekPromptKind
   targetWeek: TargetWeek
   summary: string
   workouts: readonly PlannedWorkout[]
 }
 
+export interface AiWeekCopyPasteContractV1 extends AiWeekCopyPasteContractBase {
+  version: 1
+}
+
+export interface AiWeekCopyPasteContractV2 extends AiWeekCopyPasteContractBase {
+  version: 2
+  athleteContext?: PlanningContext
+  goalAssessment: GoalAssessment
+}
+
+export type AiWeekCopyPasteContract = AiWeekCopyPasteContractV1 | AiWeekCopyPasteContractV2
+
 export interface AiPromptPackage {
   kind: WeekPromptKind
   targetWeek: TargetWeek
   contract: Readonly<{
     format: 'hybrid-coach-week'
-    version: 1
+    version: 2
     categories: readonly WorkoutCategory[]
     requiresStructuredWarmupSteps: true
   }>
-  example: AiWeekCopyPasteContract
+  example: AiWeekCopyPasteContractV2
   contractJson: string
   exampleJson: string
   messages: readonly [

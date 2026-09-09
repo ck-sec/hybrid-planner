@@ -120,6 +120,7 @@ export interface SettingsAthleteProfileDraft {
   readonly constraints: readonly string[]
   readonly clubSessions: readonly SettingsRecurringClubSessionDraft[]
   readonly notes: string
+  readonly planningContext?: AthleteProfile['planningContext']
 }
 
 export interface SettingsPreferredTrainingDayDraft {
@@ -493,8 +494,9 @@ export async function applyPreviewedBackupRestore(
   repository: Pick<HybridCoachRepository, 'restoreBackup'>,
   preview: SettingsRestorePreviewState,
   confirmationInput: string,
+  currentJson: string = preview.restoreJson,
 ): Promise<SettingsRestoreOutcome> {
-  if (!preview.ok || !preview.backup || !preview.confirmationRequirement) {
+  if (!preview.ok || !preview.backup || !preview.confirmationRequirement || currentJson !== preview.restoreJson) {
     throw new SettingsAdapterError(
       'restore-preview-required',
       'Preview a valid backup before applying the restore.',
@@ -517,8 +519,8 @@ export async function applyPreviewedBackupRestore(
   }
 }
 
-export function canApplyPreviewedBackupRestore(preview: SettingsRestorePreviewState, confirmationInput: string): boolean {
-  return preview.ok && !!preview.confirmationRequirement && isSettingsConfirmationSatisfied(confirmationInput, preview.confirmationRequirement)
+export function canApplyPreviewedBackupRestore(preview: SettingsRestorePreviewState, confirmationInput: string, currentJson: string = preview.restoreJson): boolean {
+  return currentJson === preview.restoreJson && preview.ok && !!preview.confirmationRequirement && isSettingsConfirmationSatisfied(confirmationInput, preview.confirmationRequirement)
 }
 
 export function requestResetConfirmation(actionId: string): SettingsResetRequest {
@@ -601,6 +603,7 @@ export function createAthleteProfileEditingDraft(profile: AthleteProfile): Setti
     constraints: [...validated.constraints],
     clubSessions: validated.clubSessions.map(createRecurringClubSessionDraft),
     notes: validated.notes ?? '',
+    ...(validated.planningContext === undefined ? {} : { planningContext: structuredClone(validated.planningContext) }),
   }
 }
 
@@ -701,6 +704,7 @@ export function parseAthleteProfileEditingDraft(draft: SettingsAthleteProfileDra
       }
     }),
     ...(normalizeOptionalText(draft.notes) ? { notes: normalizeOptionalText(draft.notes)! } : {}),
+    ...(draft.planningContext === undefined ? {} : { planningContext: draft.planningContext }),
   }
 
   return parseAthleteProfile(projected)

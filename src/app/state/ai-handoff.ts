@@ -26,7 +26,6 @@ import {
   type FixedClubSession,
   type FullySpecifiedRecurringClubSession,
   type PreferredTrainingDay,
-  type RecurringClubSession,
   type WeekImportBundle,
   type WeekPlan,
   type Workout,
@@ -40,6 +39,8 @@ import {
 import { parseStableIdentity } from '../../domain/identity.ts'
 import { addDaysToLocalDate, localDateDayOfWeek, parseLocalDate, type LocalDateString } from '../../domain/local-date.ts'
 import type { ImportIssue, JsonImportPreview, JsonPreviewGroup } from '../features/models.ts'
+import { reviewPlanQuality } from './plan-quality.ts'
+import { readGuidedSessionCounts } from './onboarding.ts'
 
 const MAX_WORKOUT_TITLE_LENGTH = 120
 const MAX_WORKOUT_PURPOSE_LENGTH = 500
@@ -219,6 +220,8 @@ function toLoggedWorkoutStep(step: WorkoutLogStep): LoggedWorkoutStep {
       : { completedDurationMin: step.completedMinutes ?? step.completedSeconds! / 60 }),
     ...(step.completedDistanceMeters === undefined ? {} : { completedDistanceMeters: step.completedDistanceMeters }),
     ...(step.loadKg === undefined ? {} : { loadKg: step.loadKg }),
+    ...(step.loadBasis === undefined ? {} : { loadBasis: step.loadBasis }),
+    ...(step.repBasis === undefined ? {} : { repBasis: step.repBasis }),
     ...(buildStepResultNotes(step) ? { note: buildStepResultNotes(step)! } : {}),
   }
 }
@@ -245,6 +248,9 @@ function toPromptStep(step: WorkoutStep): WorkoutStepContract {
     ...(step.target?.sets === undefined ? {} : { sets: step.target.sets }),
     ...(step.target?.reps === undefined ? {} : { reps: step.target.reps }),
     ...(step.target?.loadKg === undefined ? {} : { loadKg: step.target.loadKg }),
+    ...(step.target?.loadBasis === undefined ? {} : { loadBasis: step.target.loadBasis }),
+    ...(step.target?.repBasis === undefined ? {} : { repBasis: step.target.repBasis }),
+    ...(step.estimatedTotalMin === undefined ? {} : { estimatedTotalMin: step.estimatedTotalMin }),
     ...(step.target?.distanceMeters === undefined ? {} : { distanceMeters: step.target.distanceMeters }),
     ...(step.target?.minutes === undefined ? {} : { durationMin: step.target.minutes }),
     ...(step.target?.effort === undefined ? {} : { effort: step.target.effort }),
@@ -443,6 +449,8 @@ function buildStepTarget(step: WorkoutStepContract): WorkoutStepTarget | undefin
   if (step.sets !== undefined) target.sets = step.sets
   if (step.reps !== undefined) target.reps = step.reps
   if (step.loadKg !== undefined) target.loadKg = step.loadKg
+  if (step.loadBasis !== undefined) target.loadBasis = step.loadBasis
+  if (step.repBasis !== undefined) target.repBasis = step.repBasis
   if (step.distanceMeters !== undefined) target.distanceMeters = step.distanceMeters
   if (step.durationMin !== undefined) target.minutes = step.durationMin
   if (effort.normalized !== undefined) target.effort = effort.normalized
@@ -456,6 +464,7 @@ function convertStep(step: WorkoutStepContract, path: string): WorkoutStep {
     title: titleAndDetail.title,
     ...(titleAndDetail.detail ? { detail: titleAndDetail.detail } : {}),
     ...(buildStepTarget(step) ? { target: buildStepTarget(step)! } : {}),
+    ...(step.estimatedTotalMin === undefined ? {} : { estimatedTotalMin: step.estimatedTotalMin }),
   }
 }
 
@@ -538,11 +547,12 @@ function buildWeekPlanNotes(contract: AiWeekCopyPasteContract): string | undefin
   return notes
 }
 
-function buildWorkoutNotes(workout: PlannedWorkout, recurringSession: RecurringClubSession | undefined): string | undefined {
+function buildWorkoutNotes(workout: PlannedWorkout, recurringSession: FullySpecifiedRecurringClubSession | undefined): string | undefined {
+  const clubNotes = recurringSession ? buildFixedClubSessionNotes(recurringSession) : undefined
   const metadata = [
     ...(sanitizeText(workout.modality) ? [`Modality: ${sanitizeText(workout.modality)!}`] : []),
-    ...(workout.source.kind === 'fixed_club' && sanitizeText(workout.source.fixedClub.notes)
-      ? [`Fixed club notes: ${sanitizeText(workout.source.fixedClub.notes)!}`]
+    ...(workout.source.kind === 'fixed_club' && clubNotes
+      ? [`Fixed club notes: ${clubNotes}`]
       : []),
     ...(workout.source.kind === 'fixed_club' && recurringSession ? [`Fixed club scope: ${recurringSession.scope}`] : []),
   ]
@@ -662,6 +672,13 @@ function safeConvertAiWeekContractToBundle(contract: AiWeekCopyPasteContract, op
   if (fixedClubIssues.length) return { ok: false, issues: fixedClubIssues }
   const weekPlanId = buildWeekPlanId(athlete.id, targetWeekStart, options.weekPlanId)
   try {
+    const proposedContext = contract.version === 2 ? contract.athleteContext : undefined
+    const planningContext = proposedContext ?? athlete.planningContext
+    const athleteProfile = proposedContext ? parseAthleteProfile({
+      ...athlete,
+      updatedOn: proposedContext.asOf > athlete.updatedOn ? proposedContext.asOf : athlete.updatedOn,
+      planningContext: proposedContext,
+    }) : undefined
     const weekPlan = {
       version: 1 as const,
       id: weekPlanId,
@@ -671,12 +688,15 @@ function safeConvertAiWeekContractToBundle(contract: AiWeekCopyPasteContract, op
       goal: athlete.goal,
       workouts: contract.workouts.map((workout, index) => convertWorkoutFromContract(workout, index, athlete, weekPlanId, targetWeekStart)),
       ...(buildWeekPlanNotes(contract) ? { notes: buildWeekPlanNotes(contract)! } : {}),
+      ...(planningContext ? { planningContext } : {}),
+      ...(contract.version === 2 ? { goalAssessment: contract.goalAssessment } : {}),
     }
     return {
       ok: true,
       bundle: parseWeekImportBundle({
         weekPlan,
         workoutLogs: [],
+        ...(athleteProfile ? { athleteProfile } : {}),
       }),
     }
   } catch (error) {
@@ -705,6 +725,7 @@ export function buildInitialPromptInputFromAthleteProfile(
       ...(validatedAthlete.goalDate ? { goalDate: validatedAthlete.goalDate } : {}),
       sports: [...validatedAthlete.sports],
       constraints: [...validatedAthlete.constraints],
+      ...(validatedAthlete.planningContext ? { planningContext: validatedAthlete.planningContext } : {}),
       ...(sanitizeText(validatedAthlete.notes) ? { notes: sanitizeText(validatedAthlete.notes)! } : {}),
     },
     equipment: {
@@ -716,6 +737,7 @@ export function buildInitialPromptInputFromAthleteProfile(
       })),
     },
     preferences: {
+      sessionCounts: readGuidedSessionCounts(validatedAthlete.notes),
       preferredWeeklyStructure: sortTrainingDays(validatedAthlete.preferredWeeklyStructure).map(day => ({
         dayOfWeek: day.dayOfWeek,
         modalities: [...day.modalities],
@@ -784,6 +806,7 @@ export function buildContinuationWeekContext(
     weekStart: validatedWeekPlan.weekStart,
     weekEnd: addDaysToLocalDate(validatedWeekPlan.weekStart, 6),
     summary: buildPreviousWeekSummary(workouts),
+    ...(validatedWeekPlan.review ? { review: validatedWeekPlan.review } : {}),
     workouts,
   }
 }
@@ -836,12 +859,13 @@ export function previewAiWeekHandoff(jsonText: string, options: WeekImportBuildO
       issues: mapValidationIssuesToImportIssues(result.issues),
     }
   }
+  const review = reviewPlanQuality(result.data.bundle.weekPlan, athlete, result.contract.version === 2 ? result.contract.athleteContext : undefined)
   return {
     ok: true,
     canApply: true,
     contract: result.contract,
     bundle: result.data.bundle,
-    preview: buildPreview(result.data.bundle, result.contract, athlete),
-    issues: [],
+    preview: { ...buildPreview(result.data.bundle, result.contract, athlete), quality: review.quality },
+    issues: review.issues,
   }
 }

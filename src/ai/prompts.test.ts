@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { AI_COPY_PASTE_FORMAT, AI_COPY_PASTE_VERSION, buildInitialWeekPrompt, buildContinuationWeekPrompt } from './index.ts'
+import { AI_COPY_PASTE_FORMAT, AI_COPY_PASTE_VERSION, buildInitialWeekPrompt, buildContinuationWeekPrompt, buildWeekContractExample } from './index.ts'
 
 test('initial-week prompt includes profile, equipment, preferences, fixed club sessions, exact dates, aerobic categories, and fixed-club contract rules', () => {
   const prompt = buildInitialWeekPrompt({
@@ -25,9 +25,11 @@ test('initial-week prompt includes profile, equipment, preferences, fixed club s
   assert.equal(prompt.kind, 'initial')
   assert.equal(prompt.contract.format, AI_COPY_PASTE_FORMAT)
   assert.equal(prompt.contract.version, AI_COPY_PASTE_VERSION)
+  assert.equal(prompt.contract.version, 2)
   assert.deepEqual(prompt.contract.categories, ['aerobic', 'strength', 'mobility'])
   assert.match(prompt.messages[0].content, /Workout category must be exactly one of: aerobic, strength, mobility\./)
   assert.match(prompt.messages[0].content, /Aerobic modality is a separate flexible field\./)
+  assert.match(prompt.messages[0].content, /workouts array must contain at least one workout/)
   assert.match(prompt.messages[0].content, /source\.kind:"fixed_club"/)
   assert.match(prompt.messages[0].content, /2026-09-14 through 2026-09-20/)
   assert.match(prompt.messages[1].content, /"profile":/)
@@ -149,4 +151,147 @@ test('continuation-week prompt carries original prescriptions, actual logs, comp
   assert.match(prompt.messages[1].content, /"pull-up bar"/)
   assert.equal(prompt.example.targetWeek.startDate, '2026-09-21')
   assert.equal(prompt.example.weekType, 'continuation')
+})
+
+test('prompts use confirmed context, bounded clarification, and coach-led recommendations before final assessment', () => {
+  const planningContext = {
+    asOf: '2026-09-09',
+    event: 'HYROX doubles open',
+    benchmarks: ['No recent timed run.'],
+    recentTraining: { weeks: 4, aerobicMinutes: 90, strengthMinutes: 70, clubMinutes: 60 },
+    weeklyTimeLimitMin: 300,
+    sessionLimits: [{ dayOfWeek: 1, maxMinutes: 45 }],
+    clubLoads: [{ sessionId: 'club-social', durationMin: 60, effortRating: 5 }],
+  }
+  const prompt = buildInitialWeekPrompt({
+    profile: { goal: 'Complete a first HYROX event.', planningContext },
+    equipment: ['dumbbells', 'running shoes'],
+    preferences: {},
+    fixedClubSessions: [],
+    targetWeekStartDate: '2026-09-14',
+  })
+  const context = JSON.parse(prompt.messages[1].content.split('\n').slice(1, -1).join('\n'))
+  const system = prompt.messages[0].content
+  assert.deepEqual(context.profile.planningContext, planningContext)
+  assert.match(system, /Use supplied confirmed context, including profile\.planningContext, before asking questions/)
+  assert.match(system, /Clarify only missing current actual training by category, relevant benchmarks, event format\/division\/level, available training time, club load, and relevant limitations/)
+  assert.match(system, /Do not repeat answered questions or invent athlete facts/)
+  assert.match(system, /Check stale baselines with the athlete before treating them as current/)
+  assert.match(system, /Do not silently redate old training or performance facts/)
+  assert.match(system, /Preserve the original dates of benchmarks in their text/)
+  assert.match(system, /update asOf or recentTraining only when the athlete confirms the updated snapshot and reporting window/)
+  assert.match(system, /Unknown benchmarks are allowed/)
+  assert.match(system, /conservative initial calibration week and reassessment instead of an endless questionnaire/)
+  assert.match(system, /do not force the athlete to choose or design their own program/)
+  assert.match(system, /Before final JSON, discuss the goal assessment, its rationale, relevant unknowns, and the next measurable milestone/)
+  assert.match(system, /complete updated snapshot of athlete-confirmed facts, not a patch/)
+  assert.match(system, /Carry forward still-current confirmed facts from profile\.planningContext/)
+  assert.match(system, /omit unknown fields instead of creating empty defaults/)
+  assert.match(system, /Do not change the profile goal, equipment, preferences, or club timetable/)
+  assert.equal(Object.hasOwn(prompt.example, 'athleteContext'), false)
+  assert.equal(prompt.example.goalAssessment.status, 'unassessed')
+  assert.ok(JSON.parse(prompt.contractJson).goalAssessment.nextMilestone)
+})
+
+test('prompts distinguish workload estimates, units, equipment substitutions, and unsupported safety guarantees', () => {
+  const prompt = buildInitialWeekPrompt({
+    profile: { goal: 'Improve team dodgeball results.' },
+    equipment: ['dumbbells'],
+    preferences: {},
+    fixedClubSessions: [],
+    targetWeekStartDate: '2026-09-14',
+  })
+  const system = prompt.messages[0].content
+  for (const pattern of [
+    /caps are ceilings, not fill targets/,
+    /warmups, cooldowns, rests, transitions, and known club commitments/,
+    /Review current workload by category: aerobic, strength, mobility, and club work/,
+    /without counting club work twice/,
+    /weekly averages over recentTraining\.weeks ending asOf/,
+    /minute buckets are mutually exclusive/,
+    /aerobicMinutes, strengthMinutes, and mobilityMinutes cover supplementary\/non-club work only/,
+    /clubMinutes includes all club sessions regardless of modality/,
+    /Omitted values are unknown, not zero/,
+    /baseline is unknown, say so instead of inventing a percentage increase/,
+    /Do not present a universal 10 percent rule/,
+    /ACWR/,
+    /Do not certify injury safety/,
+    /Team outcomes are not guaranteed by individual conditioning/,
+    /Use only explicitly listed equipment and respect its stated constraints/,
+    /Distinguish HYROX conditioning substitutions from actual station practice/,
+    /only sessionId values from supplied club sessions\/commitments/,
+    /cannot override an explicitly scheduled duration/,
+    /estimatedTotalMin is a positive number estimating the whole block/,
+    /including all sets\/repeats, work, rest, equipment changes, and transitions/,
+    /separate from durationMin, which is the work-duration target/,
+    /durationMin is work duration per set when sets is supplied, otherwise work duration for the step/,
+    /estimatedTotalMin must cover durationMin \* sets \(or durationMin without sets\), plus all rests and transitions/,
+    /Sum these estimates into expectedDuration, rounded up to whole minutes/,
+    /estimates are planning assumptions, not empirical or logged durations/,
+    /Whenever loadKg is prescribed, loadBasis is required/,
+    /"per_implement" for each dumbbell/,
+    /"total" for a barbell including the bar/,
+    /repBasis:"per_side"/,
+    /repBasis:"total"/,
+    /CR\/LF line breaks are allowed in prose notes, instructions, purposes, summaries, and context\/assessment descriptions/,
+    /encode them as JSON escapes/,
+    /Keep identifiers, dates, times, and enum values single-line/,
+  ]) assert.match(system, pattern)
+})
+
+test('continuation context carries weekly review and unambiguous logged exercise units without inventing actuals', () => {
+  const previous = buildWeekContractExample('initial', '2026-09-14')
+  const review = {
+    reflection: 'The club session left more fatigue than expected.',
+    energy: 2,
+    recovery: 3,
+    blockers: 'Late work night.',
+    metrics: [{ id: 'run-minutes', label: 'Running minutes', planned: '40', completed: 'Unknown', note: 'No complete log.' }],
+  }
+  const steps = [{ stepId: 'strength-1-main', loadKg: 12, loadBasis: 'per_implement' as const, completedReps: 8, repBasis: 'per_side' as const }]
+  const prompt = buildContinuationWeekPrompt({
+    profile: { goal: 'Build consistency.' },
+    equipment: ['dumbbells'],
+    preferences: {},
+    fixedClubSessions: [],
+    targetWeekStartDate: '2026-09-21',
+    previousWeek: {
+      weekStart: previous.targetWeek.startDate,
+      weekEnd: previous.targetWeek.endDate,
+      review,
+      workouts: [{ original: previous.workouts[1]!, actualLog: { completionStatus: 'partial', steps } }],
+    },
+  })
+  const context = JSON.parse(prompt.messages[1].content.split('\n').slice(1, -1).join('\n'))
+  assert.deepEqual(context.previousWeek.review, review)
+  assert.deepEqual(context.previousWeek.workouts[0].actualLog.steps, steps)
+  assert.match(prompt.messages[0].content, /Use previousWeek\.review when supplied/)
+  assert.match(prompt.messages[0].content, /Separate what was planned, completed, and still unknown/)
+  assert.match(prompt.messages[0].content, /Preserve loadBasis and repBasis when interpreting previous logs/)
+  assert.match(prompt.messages[0].content, /Blank values and unrecorded step statuses are unknown, not completed or skipped work/)
+})
+
+test('explicit session counts take precedence over allowed days, and legacy counts stay unknown', () => {
+  const preferredWeeklyStructure = [{ dayOfWeek: 1, modalities: ['strength'], preferredStartTime: '18:00' }]
+  for (const sessionCounts of [{ strength: 2, aerobic: 0 }, {}]) {
+    const prompt = buildInitialWeekPrompt({
+      profile: { goal: 'Build consistency.' },
+      equipment: ['dumbbells'],
+      preferences: { sessionCounts, preferredWeeklyStructure },
+      fixedClubSessions: [],
+      targetWeekStartDate: '2026-09-14',
+    })
+    const context = JSON.parse(prompt.messages[1].content.split('\n').slice(1, -1).join('\n'))
+    assert.deepEqual(context.preferences, { sessionCounts, preferredWeeklyStructure })
+    for (const pattern of [
+      /Use explicit preferences\.sessionCounts as the requested weekly frequency/,
+      /preferredWeeklyStructure describes allowed days and modalities, not one session per day/,
+      /Multiple sessions may share an allowed day/,
+      /do not infer frequency from the number of preferred days/,
+      /An omitted session count is unknown, not zero/,
+      /If a count is unknown, ask the athlete briefly and offer a coach-led recommendation/,
+      /Preserve explicitly supplied counts, including zero/,
+      /discuss any recommended change instead of silently overriding them/,
+    ]) assert.match(prompt.messages[0].content, pattern)
+  }
 })

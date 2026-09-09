@@ -1,5 +1,5 @@
 import type {
-  AiWeekCopyPasteContract,
+  AiWeekCopyPasteContractV2,
   FixedClubSession,
   NormalizedFixedClubSession,
   WorkoutCategory,
@@ -7,7 +7,7 @@ import type {
 } from './types.ts'
 
 export const AI_COPY_PASTE_FORMAT = 'hybrid-coach-week'
-export const AI_COPY_PASTE_VERSION = 1
+export const AI_COPY_PASTE_VERSION = 2
 export const WORKOUT_CATEGORIES = ['aerobic', 'strength', 'mobility'] as const satisfies readonly WorkoutCategory[]
 export const DEFAULT_WARMUP_REQUIREMENT = 'Make every warm-up specific to the session and the available equipment.'
 
@@ -65,7 +65,7 @@ export function buildWeekContractExample(
   kind: WeekPromptKind,
   targetWeekStartDate: string,
   fixedClubSessions: readonly FixedClubSession[] = [],
-): AiWeekCopyPasteContract {
+): AiWeekCopyPasteContractV2 {
   const targetWeek = buildTargetWeek(targetWeekStartDate)
   const fixedClub = normalizeFixedClubSessions(fixedClubSessions)
   const fixedWorkouts = fixedClub.map((session, index) => ({
@@ -81,6 +81,7 @@ export function buildWeekContractExample(
     main: [{
       id: `fixed-club-workout-${index + 1}-main`,
       instruction: 'Attend the fixed club session as scheduled.',
+      estimatedTotalMin: session.durationMin,
       ...(session.modality === undefined ? {} : { modality: session.modality }),
     }],
     cooldown: [],
@@ -99,6 +100,12 @@ export function buildWeekContractExample(
     summary: kind === 'initial'
       ? 'Builds a balanced first week around the fixed club sessions.'
       : 'Carries forward what worked, adjusts what did not, and preserves the fixed club sessions.',
+    goalAssessment: {
+      status: 'unassessed',
+      rationale: 'This is a format example, not an assessment of this athlete or a training prescription.',
+      unknowns: ['Current training, relevant benchmarks, and event demands have not been assessed in this example.'],
+      nextMilestone: 'Use confirmed context and a conservative calibration week to establish a reviewable starting point.',
+    },
     workouts: [
       ...fixedWorkouts,
       {
@@ -114,12 +121,14 @@ export function buildWeekContractExample(
           id: 'aerobic-1-warmup',
           instruction: 'Walk or jog easily to prepare for the session.',
           durationMin: 8,
+          estimatedTotalMin: 8,
           modality: 'running',
         }],
         main: [{
           id: 'aerobic-1-main',
           instruction: 'Run at conversational effort.',
           durationMin: 28,
+          estimatedTotalMin: 28,
           effort: 'easy',
           modality: 'running',
         }],
@@ -127,6 +136,7 @@ export function buildWeekContractExample(
           id: 'aerobic-1-cooldown',
           instruction: 'Walk until breathing settles.',
           durationMin: 4,
+          estimatedTotalMin: 4,
           modality: 'running',
         }],
         source: { kind: 'ai' },
@@ -143,6 +153,7 @@ export function buildWeekContractExample(
           id: 'strength-1-warmup',
           instruction: 'Do a short dynamic warm-up and one easy preparation set.',
           durationMin: 10,
+          estimatedTotalMin: 10,
         }],
         main: [{
           id: 'strength-1-main',
@@ -151,11 +162,13 @@ export function buildWeekContractExample(
           reps: 5,
           effort: 'steady',
           restSeconds: 120,
+          estimatedTotalMin: 35,
         }],
         cooldown: [{
           id: 'strength-1-cooldown',
           instruction: 'Walk and loosen up after the lifting work.',
           durationMin: 5,
+          estimatedTotalMin: 5,
         }],
         source: { kind: 'ai' },
       },
@@ -171,16 +184,19 @@ export function buildWeekContractExample(
           id: 'mobility-1-warmup',
           instruction: 'Start with gentle movement before deeper mobility work.',
           durationMin: 5,
+          estimatedTotalMin: 5,
         }],
         main: [{
           id: 'mobility-1-main',
           instruction: 'Move through smooth controlled mobility drills.',
           durationMin: 12,
+          estimatedTotalMin: 12,
         }],
         cooldown: [{
           id: 'mobility-1-cooldown',
           instruction: 'Finish with easy breathing and relaxed positions.',
           durationMin: 3,
+          estimatedTotalMin: 3,
         }],
         source: { kind: 'ai' },
       },

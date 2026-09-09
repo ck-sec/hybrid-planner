@@ -119,6 +119,7 @@ class FakeTransaction {
   onabort: (() => void) | null = null
   error: Error | null = null
   operations: Array<() => void> = []
+  aborted = false
   readonly database: FakeIndexedDb
   readonly storeNames: string[]
 
@@ -133,10 +134,12 @@ class FakeTransaction {
   }
 
   abort() {
+    this.aborted = true
     queueMicrotask(() => this.onabort?.())
   }
 
   complete() {
+    if (this.aborted) return
     for (const operation of this.operations) operation()
     this.oncomplete?.()
   }
@@ -269,6 +272,12 @@ const onboardingDraft = parseOnboardingDraft({
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 
+async function commit<T>(fake: FakeIndexedDb, operation: Promise<T>): Promise<T> {
+  await tick()
+  fake.latestTransaction().complete()
+  return operation
+}
+
 function installFakeIndexedDb(t: TestContext) {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB')
   const fake = new FakeIndexedDb()
@@ -294,6 +303,84 @@ test('draft persistence commits only after the IndexedDB transaction completes',
   assert.equal((await saving).id, 'draft-amy')
   assert.equal(resolved, true)
   assert.deepEqual(fake.store('onboardingDrafts'), [onboardingDraft])
+})
+
+test('log upserts cannot move an existing ID to another week or workout', async t => {
+  const fake = installFakeIndexedDb(t)
+  const repository = createHybridCoachRepository('test-log-identity')
+  const nextWeek = parseWeekPlan({
+    ...laterWeekPlan,
+    workouts: [{ ...laterWeekPlan.workouts[0]!, id: workoutLog.workoutId }],
+  })
+  await commit(fake, repository.restoreBackup(createBackupEnvelope({
+    athleteProfiles: [athlete], weekPlans: [weekPlan, nextWeek], workoutLogs: [workoutLog], onboardingDrafts: [],
+  })))
+  const collision = parseWorkoutLog({
+    ...workoutLog, weekPlanId: nextWeek.id, loggedOn: nextWeek.workouts[0]!.scheduledDate,
+  })
+  await assert.rejects(repository.saveWorkoutLog(collision), /already belongs to a different/)
+  await assert.rejects(repository.saveWorkoutLog({ ...workoutLog, workoutId: 'another-workout' }), /already belongs to a different/)
+  await assert.rejects(repository.importWeek({
+    weekPlan: nextWeek, workoutLogs: [collision], athleteProfile: { ...athlete, name: 'Must not be saved' },
+  }), /already belongs to a different/)
+  assert.deepEqual(fake.store('athleteProfiles'), [athlete])
+  assert.deepEqual(fake.store('workoutLogs'), [workoutLog])
+  const replacement = { ...workoutLog, notes: 'Same identity remains editable' }
+  await commit(fake, repository.saveWorkoutLog(replacement))
+  assert.deepEqual(fake.store('workoutLogs'), [replacement])
+})
+
+test('week import commits optional matching profile context with week and logs or none of them', async t => {
+  const fake = installFakeIndexedDb(t)
+  const repository = createHybridCoachRepository('test-profile-import')
+  const profile = parseAthleteProfile({ ...athlete, planningContext: { asOf: '2026-09-08', event: 'First hybrid race' } })
+  const failed = repository.importWeek({ athleteProfile: profile, weekPlan, workoutLogs: [workoutLog] })
+  const rejection = assert.rejects(failed, /write failed/)
+  await tick()
+  const transaction = fake.latestTransaction()
+  assert.deepEqual(transaction.storeNames, ['athleteProfiles', 'weekPlans', 'workoutLogs'])
+  assert.deepEqual(fake.store('athleteProfiles'), [])
+  transaction.error = new Error('write failed')
+  transaction.abort()
+  await rejection
+  transaction.complete()
+  assert.deepEqual(fake.store('athleteProfiles'), [])
+  assert.deepEqual(fake.store('weekPlans'), [])
+  assert.deepEqual(fake.store('workoutLogs'), [])
+
+  await assert.rejects(repository.importWeek({
+    athleteProfile: { ...profile, id: 'athlete-other' }, weekPlan, workoutLogs: [workoutLog],
+  }), /athlete/i)
+  await commit(fake, repository.importWeek({ athleteProfile: profile, weekPlan, workoutLogs: [workoutLog] }))
+  assert.deepEqual(fake.store('athleteProfiles'), [profile])
+  assert.deepEqual(fake.store('weekPlans'), [weekPlan])
+  assert.deepEqual(fake.store('workoutLogs'), [workoutLog])
+})
+
+test('confirmed workout deletion atomically removes only that workout logs and rolls back on failure', async t => {
+  const fake = installFakeIndexedDb(t)
+  const repository = createHybridCoachRepository('test-delete-workout')
+  const twoWorkouts = parseWeekPlan({
+    ...weekPlan, workouts: [...weekPlan.workouts, { ...weekPlan.workouts[0]!, id: 'second-workout' }],
+  })
+  const secondLog = parseWorkoutLog({ ...workoutLog, id: 'second-log', workoutId: 'second-workout' })
+  const oldHistory = parseWorkoutLog({ ...workoutLog, id: 'older-log' })
+  await commit(fake, repository.importWeek({
+    athleteProfile: athlete, weekPlan: twoWorkouts, workoutLogs: [workoutLog, oldHistory, secondLog],
+  }))
+  const reducedWeek = parseWeekPlan({ ...twoWorkouts, workouts: [twoWorkouts.workouts[1]!] })
+  const deleting = repository.importWeek({ weekPlan: reducedWeek, workoutLogs: [] }, { deleteWorkoutIds: [workoutLog.workoutId] })
+  const failure = assert.rejects(deleting, /delete failed/)
+  await tick()
+  fake.latestTransaction().error = new Error('delete failed')
+  fake.latestTransaction().abort()
+  await failure
+  assert.deepEqual(fake.store('weekPlans'), [twoWorkouts])
+  assert.deepEqual(fake.store('workoutLogs'), [workoutLog, oldHistory, secondLog])
+  const deleted = await commit(fake, repository.importWeek({ weekPlan: reducedWeek, workoutLogs: [] }, { deleteWorkoutIds: [workoutLog.workoutId] }))
+  assert.deepEqual(deleted.workoutLogs, [secondLog])
+  assert.deepEqual(fake.store('weekPlans'), [reducedWeek])
+  assert.deepEqual(fake.store('workoutLogs'), [secondLog])
 })
 
 test('week plans require an existing athlete profile and failed writes stay atomic', async t => {
@@ -365,6 +452,46 @@ test('saving a week refuses to orphan existing logs that no longer match the wor
   fake.latestTransaction().complete()
   await saving
 
+  assert.deepEqual(fake.store('weekPlans'), [weekPlan])
+  assert.deepEqual(fake.store('workoutLogs'), [workoutLog])
+})
+
+test('AI replacement refuses orphaned workout or step logs without changing the profile, week, or logs', async t => {
+  const fake = installFakeIndexedDb(t)
+  const repository = createHybridCoachRepository('test-import-orphan-refusal')
+  await commit(fake, repository.importWeek({ athleteProfile: athlete, weekPlan, workoutLogs: [workoutLog] }))
+  const original = weekPlan.workouts[0]!
+  const replacements = [
+    { ...original, id: 'replacement-workout' },
+    { ...original, main: [{ id: 'replacement-step', title: 'Replacement exercise' }] },
+  ]
+  for (const replacement of replacements) {
+    let approved = false
+    const importing = repository.importWeek({
+      athleteProfile: { ...athlete, name: 'Must not replace the saved profile' },
+      weekPlan: parseWeekPlan({ ...weekPlan, workouts: [replacement] }),
+      workoutLogs: [],
+    }).then(result => { approved = true; return result })
+    await assert.rejects(importing, /workout/i)
+    fake.latestTransaction().complete()
+    assert.equal(approved, false)
+    assert.deepEqual(fake.store('athleteProfiles'), [athlete])
+    assert.deepEqual(fake.store('weekPlans'), [weekPlan])
+    assert.deepEqual(fake.store('workoutLogs'), [workoutLog])
+  }
+})
+
+test('profile compare-and-swap refuses stale approval without writing a profile, week, or logs', async t => {
+  const fake = installFakeIndexedDb(t)
+  const repository = createHybridCoachRepository('test-profile-preview-conflict')
+  await commit(fake, repository.importWeek({ athleteProfile: athlete, weekPlan, workoutLogs: [workoutLog] }))
+  const updated = parseAthleteProfile({ ...athlete, goal: 'New saved goal', planningContext: { asOf: '2026-09-09', benchmarks: ['New baseline'] } })
+  await commit(fake, repository.saveAthleteProfile(updated))
+  const proposed = parseAthleteProfile({ ...athlete, planningContext: { asOf: '2026-09-09', benchmarks: ['Stale proposal'] } })
+  await assert.rejects(repository.importWeek({
+    athleteProfile: proposed, weekPlan: { ...weekPlan, title: 'Must not be saved' }, workoutLogs: [{ ...workoutLog, notes: 'Must not be saved' }],
+  }, { expectedAthleteProfile: athlete }), /profile changed after preview/)
+  assert.deepEqual(fake.store('athleteProfiles'), [updated])
   assert.deepEqual(fake.store('weekPlans'), [weekPlan])
   assert.deepEqual(fake.store('workoutLogs'), [workoutLog])
 })

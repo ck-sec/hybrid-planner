@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildInitialWeekPrompt, buildWeekContractExample } from '../../ai/index.ts'
+import { buildInitialWeekPrompt, buildWeekContractExample, buildTargetWeek } from '../../ai/index.ts'
 import {
   parseAthleteProfile,
   parseWeekPlan,
@@ -304,7 +304,8 @@ test('continuation prompt input carries previous workouts, logs, and tracked mov
 test('handoff preview converts the AI contract into a week import bundle and preserves unsupported metadata explicitly', () => {
   const athlete = createAthlete()
   const fixedClubSessions = buildExpectedFixedClubSessions(athlete, parseLocalDate('2026-09-21'))
-  const contract = buildWeekContractExample('continuation', '2026-09-21', fixedClubSessions).workouts.map(workout =>
+  const example = buildWeekContractExample('continuation', '2026-09-21', fixedClubSessions)
+  const contract = example.workouts.map(workout =>
     workout.id === 'aerobic-1'
       ? {
         ...workout,
@@ -321,10 +322,7 @@ test('handoff preview converts the AI contract into a week import bundle and pre
       }
       : workout)
   const preview = previewAiWeekHandoff(JSON.stringify({
-    format: 'hybrid-coach-week',
-    version: 1,
-    weekType: 'continuation',
-    targetWeek: buildWeekContractExample('continuation', '2026-09-21', fixedClubSessions).targetWeek,
+    ...example,
     summary: 'Keep the rhythm from last week but trim the intensity after the track session.',
     workouts: contract,
   }), {
@@ -381,8 +379,7 @@ test('handoff preview rejects fixed club cards when deterministic category metad
 
   assert.equal(preview.ok, false)
   if (preview.ok) return
-  assert.match(preview.issues[0]?.path ?? '', /source\.fixedClub\.category/)
-  assert.match(preview.issues[0]?.message ?? '', /must carry source\.fixedClub\.category "aerobic"/)
+  assert.ok(preview.issues.some(issue => /club-track.*category/.test(issue.message)), JSON.stringify(preview.issues))
 })
 
 test('clipboard helper reports both success and rejection explicitly', async () => {
@@ -402,4 +399,84 @@ test('clipboard helper reports both success and rejection explicitly', async () 
   })
   assert.equal(rejected.ok, false)
   assert.match(rejected.message, /Clipboard access was rejected/)
+})
+
+function v2Fixture() {
+  return {
+    format: 'hybrid-coach-week', version: 2, weekType: 'initial', targetWeek: buildTargetWeek('2026-09-14'),
+    summary: 'A conservative supporting week.',
+    athleteContext: {
+      asOf: '2026-09-09', event: 'Club athlete preparing for trials',
+      recentTraining: { weeks: 6, aerobicMinutes: 25, strengthMinutes: 35, mobilityMinutes: 0, clubMinutes: 0 },
+      sessionLimits: [{ dayOfWeek: 1, maxMinutes: 45 }],
+    },
+    goalAssessment: { status: 'conditional', rationale: 'Selection depends on more than conditioning.', unknowns: ['Trial date'], nextMilestone: 'Speak with the club coach.' },
+    workouts: [{
+      id: 'strength-1', date: '2026-09-14', startTime: '18:00', category: 'strength', title: 'Strength A',
+      purpose: 'General preparation', expectedDuration: 30,
+      warmup: [{ id: 'warm', instruction: 'Prepare gently', durationMin: 5, estimatedTotalMin: 5 }],
+      main: [{ id: 'main', instruction: 'Dumbbell bench press', sets: 2, reps: 8, loadKg: 12, loadBasis: 'per_implement', repBasis: 'total', estimatedTotalMin: 20 }],
+      cooldown: [{ id: 'cool', instruction: 'Walk easily', durationMin: 5, estimatedTotalMin: 5 }],
+      source: { kind: 'ai' },
+    }],
+  }
+}
+
+test('v2 preview proposes context without mutation and carries units, assessment and review into continuation', () => {
+  const athlete = parseAthleteProfile({ ...createAthlete(), clubSessions: [] })
+  const json = v2Fixture()
+  const result = previewAiWeekHandoff(JSON.stringify(json), { athlete, targetWeekStart: parseLocalDate('2026-09-14'), expectedWeekType: 'initial' })
+  assert.equal(result.ok, true, JSON.stringify(result.issues))
+  if (!result.ok) return
+  assert.equal(athlete.planningContext, undefined)
+  assert.deepEqual(result.bundle.athleteProfile?.planningContext, json.athleteContext)
+  assert.equal(result.preview.quality?.knownMinutes, 30)
+  assert.ok(result.preview.quality?.proposedFacts.some(item => item.value === json.athleteContext.event))
+  assert.equal(result.bundle.weekPlan.workouts[0]?.main[0]?.target?.loadBasis, 'per_implement')
+  assert.equal(result.bundle.weekPlan.workouts[0]?.main[0]?.estimatedTotalMin, 20)
+  const week = parseWeekPlan({ ...result.bundle.weekPlan, review: { reflection: 'Felt manageable', nextFocus: 'Retain this load', metrics: [] } })
+  const log = parseWorkoutLog({
+    version: 1, id: 'first-log', athleteId: athlete.id, weekPlanId: week.id, workoutId: 'strength-1',
+    loggedOn: '2026-09-14', outcome: 'completed',
+    steps: [{ stepId: 'main', loadKg: 12, loadBasis: 'per_implement', repBasis: 'total', completedSets: 2, completedReps: 8, notes: '12 kg each felt good' }],
+  })
+  const continuation = buildContinuationPromptInputFromAthleteProfile(result.bundle.athleteProfile!, parseLocalDate('2026-09-21'), week, [log])
+  assert.deepEqual(continuation.profile.planningContext, json.athleteContext)
+  assert.equal(continuation.previousWeek.review?.reflection, 'Felt manageable')
+  assert.equal(continuation.previousWeek.workouts[0]?.original.main[0]?.loadBasis, 'per_implement')
+  assert.equal(continuation.previousWeek.workouts[0]?.actualLog?.steps?.[0]?.loadKg, 12)
+  assert.equal(continuation.previousWeek.workouts[0]?.actualLog?.steps?.[0]?.loadBasis, 'per_implement')
+})
+
+test('legacy v1 plans remain readable with unchanged, unspecified weight conventions', () => {
+  const current = v2Fixture()
+  const json = {
+    ...current, version: 1, athleteContext: undefined, goalAssessment: undefined,
+    workouts: current.workouts.map(workout => ({
+      ...workout,
+      warmup: [{ id: 'warm', instruction: 'Prepare gently', durationMin: 5 }],
+      main: [{ id: 'main', instruction: 'Dumbbell bench press', sets: 2, reps: 8, loadKg: 24 }],
+      cooldown: [{ id: 'cool', instruction: 'Walk easily', durationMin: 5 }],
+    })),
+  }
+  const result = previewAiWeekHandoff(JSON.stringify(json), {
+    athlete: parseAthleteProfile({ ...createAthlete(), clubSessions: [] }),
+    targetWeekStart: parseLocalDate('2026-09-14'), expectedWeekType: 'initial',
+  })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.bundle.weekPlan.workouts[0]?.main[0]?.target?.loadKg, 24)
+  assert.equal(result.bundle.weekPlan.workouts[0]?.main[0]?.target?.loadBasis, undefined)
+  assert.ok(result.issues.some(issue => issue.id === 'load-basis-unknown'))
+})
+
+test('AI context cannot add clubs or overwrite existing scheduled club duration', () => {
+  const athlete = createAthlete()
+  for (const clubLoads of [[{ sessionId: 'invented', durationMin: 90 }], [{ sessionId: 'club-track', durationMin: 90 }]]) {
+    const json = buildWeekContractExample('initial', '2026-09-14', buildExpectedFixedClubSessions(athlete, parseLocalDate('2026-09-14')))
+    const result = previewAiWeekHandoff(JSON.stringify({ ...json, athleteContext: { asOf: '2026-09-09', clubLoads } }), {
+      athlete, targetWeekStart: parseLocalDate('2026-09-14'), expectedWeekType: 'initial',
+    })
+    assert.equal(result.ok, false)
+  }
 })

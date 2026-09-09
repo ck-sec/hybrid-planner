@@ -66,7 +66,7 @@ test('blank weeks accept multiple daily sessions and map into WeekBoard props', 
     notes: 'Keep one full rest day.',
   })
 
-  assertPlannerError(() => plannerStateToWeekPlan(blank), 'week-workout-required', /At least one workout is required/)
+  assert.deepEqual(plannerStateToWeekPlan(blank).workouts, [])
 
   const withRun = addPlannerWorkout(blank, buildWorkout('Easy run', '2026-09-08', 'aerobic', { expectedDurationMin: 40, startTime: '06:30' }))
   const withTwoSessions = addPlannerWorkout(withRun, buildWorkout('Lower body', '2026-09-08', 'strength', {
@@ -266,4 +266,29 @@ test('validation failures surface explicit planner errors', () => {
     'missing-workout',
     /was not found/,
   )
+})
+
+test('week context and review survive edits, duplication, undo and deleting the last card', () => {
+  const initial = addPlannerWorkout(createBlankPlannerState({ athleteId: 'athlete-amy', weekStart: '2026-09-07' }), {
+    ...buildWorkout('Press', '2026-09-07', 'strength'),
+    main: [{ title: 'Dumbbell press', estimatedTotalMin: 12, target: { sets: 2, reps: 8, loadKg: 12, loadBasis: 'per_implement', repBasis: 'total' } }],
+  })
+  const original = plannerStateToWeekPlan(initial)
+  original.planningContext = { asOf: '2026-09-07', benchmarks: ['12 kg per dumbbell'] }
+  original.goalAssessment = { status: 'conditional', rationale: 'Progress gradually.', unknowns: [], nextMilestone: 'Review next week.' }
+  original.review = { reflection: 'Good session', metrics: [] }
+  const loaded = createPlannerStateFromWeekPlan(original)
+  const id = loaded.present.week.workouts[0]!.localId
+  const changed = updatePlannerWorkout(loaded, { localId: id, changes: { title: 'Renamed press' } })
+  const copied = duplicatePlannerWorkout(changed, { localId: id })
+  const saved = plannerStateToWeekPlan(copied)
+  assert.deepEqual(saved.planningContext, original.planningContext)
+  assert.deepEqual(saved.goalAssessment, original.goalAssessment)
+  assert.deepEqual(saved.review, plannerStateToWeekPlan(loaded).review)
+  assert.equal(saved.workouts[1]?.main[0]?.estimatedTotalMin, 12)
+  assert.equal(saved.workouts[1]?.main[0]?.target?.loadBasis, 'per_implement')
+  const undone = undoPlannerState(copied)
+  const empty = plannerStateToWeekPlan(deletePlannerWorkout(undone, id))
+  assert.equal(empty.workouts.length, 0)
+  assert.equal(empty.review?.reflection, 'Good session')
 })

@@ -39,6 +39,12 @@ export interface WorkoutLogListQuery {
   workoutId?: string
 }
 
+export interface WeekImportOptions {
+  readonly deleteWorkoutIds?: readonly string[]
+  // Checked inside the write transaction so approval cannot overwrite a newer profile.
+  readonly expectedAthleteProfile?: AthleteProfile
+}
+
 function openDatabase(name = HYBRID_COACH_DB_NAME): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
@@ -100,6 +106,16 @@ function parseLogs(values: unknown[]): WorkoutLog[] {
   return values.map(value => parseWorkoutLog(value))
 }
 
+function assertLogIdentity(existing: WorkoutLog | undefined, incoming: WorkoutLog): void {
+  if (existing && (
+    existing.athleteId !== incoming.athleteId
+    || existing.weekPlanId !== incoming.weekPlanId
+    || existing.workoutId !== incoming.workoutId
+  )) {
+    throw new Error(`Workout log ${incoming.id} already belongs to a different athlete, week, or workout.`)
+  }
+}
+
 function asError(error: unknown, fallback: string): Error {
   return error instanceof Error ? error : new Error(fallback)
 }
@@ -120,7 +136,7 @@ export interface HybridCoachRepository {
   getOnboardingDraft(id: string): Promise<OnboardingDraft | undefined>
   listOnboardingDrafts(athleteId?: string): Promise<OnboardingDraft[]>
   deleteOnboardingDraft(id: string): Promise<void>
-  importWeek(bundle: WeekImportBundle): Promise<WeekImportBundle>
+  importWeek(bundle: WeekImportBundle, options?: WeekImportOptions): Promise<WeekImportBundle>
   exportBackup(): Promise<BackupEnvelope>
   restoreBackup(backup: BackupEnvelope): Promise<BackupEnvelope>
   reset(): Promise<void>
@@ -313,10 +329,15 @@ export function createHybridCoachRepository(name = HYBRID_COACH_DB_NAME): Hybrid
       return new Promise((resolve, reject) => {
         const transaction = database.transaction([STORE_WEEKS, STORE_LOGS], 'readwrite')
         const weekRequest = transaction.objectStore(STORE_WEEKS).get(validated.weekPlanId)
+        const logRequest = transaction.objectStore(STORE_LOGS).get(validated.id)
         let failure: Error | undefined
-        weekRequest.onsuccess = () => {
+        let weekReady = false
+        let logReady = false
+        const attemptSave = () => {
+          if (!weekReady || !logReady) return
           try {
             if (weekRequest.result === undefined) throw new Error(`Workout log ${validated.id} requires an existing week plan.`)
+            assertLogIdentity(logRequest.result === undefined ? undefined : parseWorkoutLog(logRequest.result), validated)
             validateWorkoutLogsForWeekPlan(parseWeekPlan(weekRequest.result), [validated], 'WorkoutLog')
             transaction.objectStore(STORE_LOGS).put(validated)
           } catch (error) {
@@ -324,6 +345,8 @@ export function createHybridCoachRepository(name = HYBRID_COACH_DB_NAME): Hybrid
             transaction.abort()
           }
         }
+        weekRequest.onsuccess = () => { weekReady = true; attemptSave() }
+        logRequest.onsuccess = () => { logReady = true; attemptSave() }
         transaction.oncomplete = () => {
           database.close()
           resolve(validated)
@@ -453,30 +476,52 @@ export function createHybridCoachRepository(name = HYBRID_COACH_DB_NAME): Hybrid
       })
     },
 
-    async importWeek(bundle) {
+    async importWeek(bundle, options = {}) {
       const validated = parseWeekImportBundle(bundle)
+      const expectedAthlete = options.expectedAthleteProfile === undefined ? undefined : parseAthleteProfile(options.expectedAthleteProfile)
+      if (expectedAthlete && expectedAthlete.id !== validated.weekPlan.athleteId) {
+        throw new Error('The previewed athlete must match the imported week.')
+      }
+      const deletedWorkoutIds = new Set(options.deleteWorkoutIds ?? [])
+      if (validated.weekPlan.workouts.some(workout => deletedWorkoutIds.has(workout.id))) {
+        throw new Error('Deleted workouts must not remain in the imported week.')
+      }
       const database = await openDatabase(name)
       return new Promise((resolve, reject) => {
         const transaction = database.transaction([STORE_ATHLETES, STORE_WEEKS, STORE_LOGS], 'readwrite')
         const athleteRequest = transaction.objectStore(STORE_ATHLETES).get(validated.weekPlan.athleteId)
         const logsRequest = transaction.objectStore(STORE_LOGS).getAll()
         let failure: Error | undefined
+        let imported = validated
         let athleteReady = false
         let logsReady = false
         const attemptImport = () => {
           if (!athleteReady || !logsReady) return
           try {
-            if (athleteRequest.result === undefined) {
+            if (athleteRequest.result === undefined && !validated.athleteProfile) {
               throw new Error(`Week import ${validated.weekPlan.id} requires an existing athlete profile.`)
             }
+            if (expectedAthlete && (
+              athleteRequest.result === undefined
+              || JSON.stringify(parseAthleteProfile(athleteRequest.result)) !== JSON.stringify(expectedAthlete)
+            )) {
+              throw new Error('The athlete profile changed after preview. Preview the week again before applying it.')
+            }
             const existingLogs = parseLogs(logsRequest.result ?? [])
-            validateWorkoutLogsForWeekPlan(
+            const existingById = new Map(existingLogs.map(log => [log.id, log]))
+            for (const log of validated.workoutLogs) assertLogIdentity(existingById.get(log.id), log)
+            const isDeletedLog = (log: WorkoutLog) =>
+              log.weekPlanId === validated.weekPlan.id && deletedWorkoutIds.has(log.workoutId)
+            const combinedLogs = validateWorkoutLogsForWeekPlan(
               validated.weekPlan,
-              combineLogs(existingLogs, validated.workoutLogs, validated.weekPlan.id),
+              combineLogs(existingLogs.filter(log => !isDeletedLog(log)), validated.workoutLogs, validated.weekPlan.id),
               'WeekImportBundle.combinedLogs',
             )
+            imported = { ...validated, workoutLogs: combinedLogs }
+            if (validated.athleteProfile) transaction.objectStore(STORE_ATHLETES).put(validated.athleteProfile)
             transaction.objectStore(STORE_WEEKS).put(validated.weekPlan)
             const logStore = transaction.objectStore(STORE_LOGS)
+            for (const log of existingLogs) if (isDeletedLog(log)) logStore.delete(log.id)
             for (const log of validated.workoutLogs) logStore.put(log)
           } catch (error) {
             failure = asError(error, 'Could not validate the week import.')
@@ -493,7 +538,7 @@ export function createHybridCoachRepository(name = HYBRID_COACH_DB_NAME): Hybrid
         }
         transaction.oncomplete = () => {
           database.close()
-          resolve(validated)
+          resolve(imported)
         }
         transaction.onabort = () => {
           database.close()

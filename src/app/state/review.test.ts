@@ -14,7 +14,9 @@ import {
   createWorkoutLogScreenProps,
   createWorkoutReviewState,
   getDirtyWorkoutReviewIds,
+  hasUnsavedWeeklyReview,
   mergeSavedWorkoutReviewLogs,
+  rebaseWorkoutReviewState,
   reduceInlineWorkoutReviewState,
   reduceWorkoutReviewState,
   setWorkoutReviewEffortRating,
@@ -212,7 +214,73 @@ test('typed helpers create structured logs and preserve older history entries', 
   assert.equal(allLogs.length, 3)
   assert.equal(allLogs.filter(log => log.id === 'run-log-old').length, 1)
   assert.equal(allLogs.filter(log => log.id === 'run-log-latest').length, 1)
-  assert.equal(allLogs.find(log => log.workoutId === 'strength-lift')?.id, 'log-strength-lift')
+  assert.equal(allLogs.find(log => log.workoutId === 'strength-lift')?.id, `log-${state.weekPlan.id.length}-${state.weekPlan.id}-strength-lift`)
+})
+
+test('new review logs have bounded week/workout identity while existing IDs remain unchanged', () => {
+  const week = createWeekPlan()
+  const anotherWeek = parseWeekPlan({ ...week, id: 'another-week', workouts: week.workouts.map(workout => ({ ...workout, weekPlanId: 'another-week' })) })
+  const first = createWorkoutReviewState({ weekPlan: week })
+  const second = createWorkoutReviewState({ weekPlan: anotherWeek })
+  assert.notEqual(first.workouts[0]!.draft.logId, second.workouts[0]!.draft.logId)
+  const legacy = parseWorkoutLog({
+    version: 1, id: 'log-run-easy', athleteId: week.athleteId, weekPlanId: week.id,
+    workoutId: week.workouts[0]!.id, loggedOn: week.workouts[0]!.scheduledDate, outcome: 'partial', steps: [], notes: 'Legacy log',
+  })
+  const hydrated = createWorkoutReviewState({ weekPlan: week, workoutLogs: [legacy] })
+  assert.equal(hydrated.workouts[0]!.draft.logId, legacy.id)
+  const longId = 'w'.repeat(80)
+  const longWeek = parseWeekPlan({ ...week, id: longId, workouts: week.workouts.map(workout => ({ ...workout, weekPlanId: longId, id: `${workout.id}${'x'.repeat(60)}` })) })
+  for (const workout of createWorkoutReviewState({ weekPlan: longWeek }).workouts) assert.ok(workout.draft.logId.length <= 80)
+})
+
+test('weekly review fields and custom metric values survive persistence and hydration', () => {
+  let state = createWorkoutReviewState({ weekPlan: createWeekPlan() })
+  const fields = { weekLabel: 'Race preparation', reflection: 'Good consistency', energy: '4', recovery: '3', wins: 'No missed runs', blockers: 'Travel', nextFocus: 'Recover', coachNotes: 'Keep easy days easy' }
+  for (const [field, value] of Object.entries(fields)) {
+    state = reduceWorkoutReviewState(state, { type: 'setWeeklyReviewField', field: field as keyof typeof fields, value })
+  }
+  state = reduceWorkoutReviewState(state, { type: 'setWeeklyMetricField', metricId: 'total-workouts', field: 'planned', value: '6 sessions' })
+  assert.equal(hasUnsavedWeeklyReview(state), true)
+  const payload = buildWorkoutReviewPayload(state)
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.weekPlan.review)), payload.review)
+  const restored = createWorkoutReviewState({ weekPlan: payload.weekPlan, workoutLogs: payload.workoutLogs })
+  assert.deepEqual(restored.weeklyReview.draft, fields)
+  assert.deepEqual(buildWorkoutReviewPayload(restored).review, payload.review)
+  assert.equal(hasUnsavedWeeklyReview(restored), false)
+})
+
+test('new logs use planned load conventions and old logs retain explicit or unknown conventions', () => {
+  const base = createWeekPlan()
+  const weekPlan = parseWeekPlan({
+    ...base,
+    workouts: base.workouts.map(workout => ({
+      ...workout,
+      main: workout.main.map(step => ({ ...step, target: { ...step.target, loadBasis: 'per_implement', repBasis: 'per_side' } })),
+    })),
+  })
+  const workout = weekPlan.workouts[1]!
+  let fresh = createWorkoutReviewState({ weekPlan })
+  fresh = reduceInlineWorkoutReviewState(fresh, { type: 'setWorkoutStepResultField', workoutId: workout.id, stepId: workout.main[0]!.id, field: 'actualResult', value: 'loadKg: 20\nreps: 5' })
+  const log = buildWorkoutReviewLog(fresh, workout.id)
+  const step = log.steps.find(step => step.stepId === workout.main[0]!.id)!
+  assert.equal(step.loadBasis, 'per_implement')
+  assert.equal(step.repBasis, 'per_side')
+  for (const existing of [
+    { ...step, loadBasis: 'total' as const, repBasis: 'total' as const },
+    { stepId: step.stepId, loadKg: 20, completedReps: 5 },
+  ]) {
+    let restored = createWorkoutReviewState({ weekPlan, workoutLogs: [{ ...log, steps: [existing] }] })
+    restored = reduceWorkoutReviewState(restored, { type: 'setWorkoutNotes', workoutId: workout.id, value: 'Edited note' })
+    const recorded = createWorkoutLogScreenProps(restored, workout.id).recordedSteps?.find(step => step.stepId === existing.stepId)
+    assert.ok(recorded)
+    assert.equal(recorded.loadBasis, 'loadBasis' in existing ? existing.loadBasis : undefined)
+    assert.equal(recorded.repBasis, 'repBasis' in existing ? existing.repBasis : undefined)
+    const rebuilt = buildWorkoutReviewLog(restored, workout.id).steps.find(step => step.stepId === existing.stepId)!
+    assert.equal(rebuilt.loadBasis, 'loadBasis' in existing ? existing.loadBasis : undefined)
+    assert.equal(rebuilt.repBasis, 'repBasis' in existing ? existing.repBasis : undefined)
+    assert.equal(rebuilt.loadKg, 20)
+  }
 })
 
 test('screen adapters expose controlled callbacks for workout and weekly review screens', () => {
@@ -253,6 +321,7 @@ test('workout screen adapters reuse supplied board validation and retain three-a
     const defaultProps = createWorkoutLogScreenProps(state, workout.workout.id, dispatch)
     assert.deepEqual(props.messages, defaultProps.messages)
     assert.strictEqual(props.stepResults, workout.draft.stepResults)
+    assert.strictEqual(props.recordedSteps, workout.logHistory[0]?.steps)
     props.onNotesChange('Cached validation still dispatches.')
     assert.deepEqual(dispatched, { type: 'setWorkoutNotes', workoutId: workout.workout.id, value: 'Cached validation still dispatches.' })
   }
@@ -706,9 +775,10 @@ test('weekly metric field overrides and custom rows survive live counts and in-f
   assert.equal(payload.review.metrics.find(metric => metric.id === 'partial-workouts')?.completed, '0')
   assert.deepEqual(payload.review.metrics.find(metric => metric.id === 'completed-workouts'), {
     id: 'completed-workouts', label: 'Completed workouts', completed: '1', note: 'Count only finished workouts.',
+    overriddenFields: ['planned', 'note'],
   })
   assert.equal(payload.review.metrics.find(metric => metric.id === 'total-workouts')?.planned, '5')
-  assert.deepEqual(payload.review.metrics.find(metric => metric.id === customMetric.id), customMetric)
+  assert.deepEqual(payload.review.metrics.find(metric => metric.id === customMetric.id), { ...customMetric, overriddenFields: [] })
   assert.equal(payload.review.nextFocus, 'Weekly feedback entered during save.')
   assert.match(payload.previousWeek.summary ?? '', /Partial workouts \| planned 3 \| completed 0/)
   assert.match(payload.previousWeek.summary ?? '', /Completed workouts \| completed 1 \| note Count only finished workouts\./)
@@ -716,6 +786,82 @@ test('weekly metric field overrides and custom rows survive live counts and in-f
   const invalid = reduceWorkoutReviewState(merged, { type: 'setWeeklyMetricField', metricId: 'partial-workouts', field: 'completed', value: 'x'.repeat(121) })
   assert.ok(validateWorkoutReviewState(invalid).weeklyReviewIssues.some(issue => issue.field === 'partial-workouts.completed'))
   assert.throws(() => buildWorkoutReviewPayload(invalid), /120 characters or fewer/)
+})
+
+test('persisted automatic metrics refresh after hydration, inline logging, saved logs, and deletion', () => {
+  const initial = createWorkoutReviewState({ weekPlan: createWeekPlan() })
+  const persisted = buildWorkoutReviewPayload(initial)
+  assert.ok(persisted.review.metrics.every(metric => metric.overriddenFields?.length === 0))
+  let reloaded = createWorkoutReviewState({ weekPlan: persisted.weekPlan })
+  reloaded = reduceInlineWorkoutReviewState(reloaded, { type: 'setWorkoutNotes', workoutId: 'run-easy', value: 'Started running' })
+  assert.equal(reloaded.weeklyReview.metrics.find(metric => metric.id === 'partial-workouts')?.completed, '1')
+  const savedLogs = buildWorkoutReviewLogs(reloaded)
+  const hydratedWithNewLog = createWorkoutReviewState({ weekPlan: persisted.weekPlan, workoutLogs: savedLogs })
+  assert.equal(hydratedWithNewLog.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.completed, '1')
+  assert.equal(hydratedWithNewLog.weeklyReview.metrics.find(metric => metric.id === 'unlogged-workouts')?.completed, '1')
+  assert.deepEqual(hydratedWithNewLog.weeklyReview.editedMetricFields?.['total-workouts'], [])
+  const remainingWeek = parseWeekPlan({
+    ...persisted.weekPlan, workouts: persisted.weekPlan.workouts.filter(workout => workout.id !== 'run-easy'),
+  })
+  const rebased = rebaseWorkoutReviewState(hydratedWithNewLog, remainingWeek, [])
+  const reloadedAfterDeletion = createWorkoutReviewState({ weekPlan: remainingWeek })
+  for (const state of [rebased, reloadedAfterDeletion]) {
+    const total = state.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')!
+    assert.equal(total.planned, '1')
+    assert.equal(total.completed, '0')
+    assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'partial-workouts')?.completed, '0')
+    assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'unlogged-workouts')?.completed, '1')
+  }
+})
+
+test('explicit metric overrides including blank and equal-to-automatic values survive reload and deletion', () => {
+  let state = createWorkoutReviewState({ weekPlan: createWeekPlan() })
+  state = reduceWorkoutReviewState(state, { type: 'setWeeklyMetricField', metricId: 'partial-workouts', field: 'completed', value: '0' })
+  assert.equal(hasUnsavedWeeklyReview(state), true)
+  state = reduceWorkoutReviewState(state, { type: 'setWeeklyMetricField', metricId: 'completed-workouts', field: 'planned', value: '' })
+  state = reduceWorkoutReviewState(state, { type: 'setWeeklyMetricField', metricId: 'total-workouts', field: 'planned', value: '5' })
+  state = reduceWorkoutReviewState(state, { type: 'setWeeklyMetricField', metricId: 'total-workouts', field: 'note', value: 'My chosen target' })
+  const saved = buildWorkoutReviewPayload(state)
+  assert.deepEqual(saved.review.metrics.find(metric => metric.id === 'partial-workouts')?.overriddenFields, ['completed'])
+  state = createWorkoutReviewState({ weekPlan: parseWeekPlan(JSON.parse(JSON.stringify(saved.weekPlan))) })
+  assert.equal(hasUnsavedWeeklyReview(state), false)
+  state = reduceInlineWorkoutReviewState(state, { type: 'setWorkoutNotes', workoutId: 'run-easy', value: 'Run is underway' })
+  assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'partial-workouts')?.completed, '0')
+  assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')?.completed, '1')
+  assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'completed-workouts')?.planned, '')
+  const remainingWeek = parseWeekPlan({ ...state.weekPlan, workouts: state.weekPlan.workouts.filter(workout => workout.id !== 'run-easy') })
+  state = rebaseWorkoutReviewState(state, remainingWeek, [])
+  const total = state.weeklyReview.metrics.find(metric => metric.id === 'total-workouts')!
+  assert.equal(total.planned, '5')
+  assert.equal(total.completed, '0')
+  assert.equal(total.note, 'My chosen target')
+  assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'partial-workouts')?.completed, '0')
+  assert.equal(state.weeklyReview.metrics.find(metric => metric.id === 'completed-workouts')?.planned, '')
+  assert.deepEqual(buildWorkoutReviewPayload(state).review.metrics.find(metric => metric.id === 'total-workouts')?.overriddenFields, ['planned', 'note'])
+})
+
+test('legacy metrics without provenance conservatively retain their stored values and notes', () => {
+  const weekPlan = parseWeekPlan({
+    ...createWeekPlan(),
+    review: {
+      reflection: 'Legacy review',
+      metrics: [
+        { id: 'total-workouts', label: 'Total workouts', planned: 'My target', completed: '0', note: 'Intent is unknown' },
+        { id: 'partial-workouts', label: 'Partial workouts', planned: '2', completed: '0' },
+        { id: 'custom-distance', label: 'Distance', planned: '20 km', completed: '12 km' },
+      ],
+    },
+  })
+  let state = createWorkoutReviewState({ weekPlan })
+  state = reduceInlineWorkoutReviewState(state, { type: 'setWorkoutNotes', workoutId: 'run-easy', value: 'New actual log' })
+  const payload = buildWorkoutReviewPayload(state)
+  assert.equal(payload.summary.partial, 1)
+  assert.equal(payload.review.metrics[0]?.planned, 'My target')
+  assert.equal(payload.review.metrics[0]?.completed, '0')
+  assert.equal(payload.review.metrics[0]?.note, 'Intent is unknown')
+  assert.equal(payload.review.metrics[1]?.completed, '0')
+  assert.equal(payload.review.metrics[2]?.planned, '20 km')
+  assert.ok(payload.review.metrics.every(metric => JSON.stringify(metric.overriddenFields) === JSON.stringify(['planned', 'completed', 'note'])))
 })
 
 test('inline edits and saved merges reject missing workouts and inconsistent saved logs', () => {
