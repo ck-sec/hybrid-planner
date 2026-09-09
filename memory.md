@@ -1,11 +1,26 @@
 # Hybrid Coach: project memory
 
-Last updated: 2026-09-08.
+Last updated: 2026-09-09.
+
+## Current reset
+
+On 2026-09-09 the user requested removal of the entire app for a ground-up
+redesign, while preserving the marketing site. They chose a simple "being rebuilt"
+page for existing app links. The old UI, engine, storage and AI implementation,
+app-only tests, dependencies and engine decision documents have been removed.
+The marketing site remains, with a notice that its product details describe the
+previous version. The replacement page does not access training data. A small
+retirement worker at the old URL clears only the old scoped asset caches.
+
+The notes below describe the retired product and its historical decisions, not
+requirements for the new implementation. No replacement architecture has been
+selected. Old source and decision documents remain available in Git history.
 
 This captures the product decisions and preferences established in the conversation,
 not a verbatim transcript. Later decisions supersede earlier experiments. Consult
-[README.md](README.md), the decision records and current code for implementation
-details; the release snapshot below is historical, not a live deployment check.
+[README.md](README.md) for the current checkout. References below to removed
+source and decision records refer to Git history, not live files or a deployment
+check.
 
 ## Project identity and purpose
 
@@ -491,3 +506,21 @@ not mean the app currently generates a complete coaching programme for every spo
   training records, hosting settings and secrets were not changed by publication.
   This receipt identifies the application release; documentation-only follow-ups
   can advance `main` without changing its application bundle.
+
+## September 9 browser-local planner rebuild
+
+- The planner is now a lightweight browser-local workspace for manual planning
+  and external-AI copy/paste planning. Direct AI API integration remains future work.
+- Guided setup uses four visual screens: goal, weekly routine, explicit editable
+  equipment presets, and review. Club training is optional and only needs day/time.
+- Approving an AI preview saves the week and opens the planner. Main exercises
+  have visible prescription cards, actual weight/sets/reps, and comments carried
+  into the next-week brief. Warm-up and cool-down show instructions only; previously
+  recorded feedback is retained.
+- The new workspace uses IndexedDB. The retired offline service worker removes
+  only its old asset caches and unregisters; it does not delete training records.
+  Older planner data is not automatically migrated into the new workspace.
+- Release validation on 2026-09-09 passed all 137 tests with zero failures/skips,
+  lint, and the TypeScript/Vite production build. Prior local browser checks covered
+  import approval, recorded versus planned weights, reload, moving sessions, and
+  next-week feedback. Publication uses the existing Git-integrated Pages project.

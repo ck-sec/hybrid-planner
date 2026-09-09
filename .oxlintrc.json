@@ -1,46 +1,4 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  },
-  "overrides": [
-    {
-      "files": ["engine/**/*.ts"],
-      "rules": {
-        "no-restricted-imports": ["error", {
-          "patterns": [
-            {
-              "group": ["**/src", "**/src/**", "src", "src/**", "@/**", "~/**"],
-              "message": "The engine must never depend on the application."
-            }
-          ]
-        }],
-        "no-restricted-properties": ["error",
-          { "object": "Math", "property": "random", "message": "Pass deterministic inputs instead of randomness." },
-          { "object": "Date", "property": "now", "message": "The engine must not read the clock." }
-        ]
-      }
-    },
-    {
-      "files": ["engine/**/*.ts"],
-      "excludeFiles": ["engine/**/*.test.ts"],
-      "rules": {
-        "no-restricted-globals": ["error", "Date", "fetch", "window", "document", "localStorage", "indexedDB", "process"],
-        "no-restricted-imports": ["error", {
-          "patterns": [
-            {
-              "group": ["**/src", "**/src/**", "src", "src/**", "@/**", "~/**"],
-              "message": "The engine must never depend on the application."
-            },
-            {
-              "regex": "^[^.]",
-              "message": "Production engine code has zero dependencies, including Node and browser APIs."
-            }
-          ]
-        }]
-      }
-    }
-  ]
+  "plugins": ["typescript", "oxc"]
 }

@@ -1,0 +1,53 @@
+.feature-screen {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.feature-screen__header,
+.feature-screen__footer,
+.feature-card,
+.feature-preview,
+.feature-summary,
+.feature-messages,
+.feature-issues {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.feature-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.feature-field,
+.feature-toggle-list,
+.guided-onboarding__schedule-group,
+.guided-onboarding__club-card,
+.workout-editor__step-card,
+.workout-log__step-card,
+.weekly-review__metric-card {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.feature-field__input,
+.feature-toggle-list__input {
+  font: inherit;
+}
+
+.guided-onboarding__step-list,
+.guided-onboarding__club-list,
+.workout-editor__step-list,
+.workout-log__step-list,
+.weekly-review__metric-list,
+.settings-backup__reset-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.feature-definition-list {
+  display: grid;
+  gap: 0.5rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
