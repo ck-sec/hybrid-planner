@@ -524,3 +524,25 @@ not mean the app currently generates a complete coaching programme for every spo
   lint, and the TypeScript/Vite production build. Prior local browser checks covered
   import approval, recorded versus planned weights, reload, moving sessions, and
   next-week feedback. Publication uses the existing Git-integrated Pages project.
+- Application commit
+  [`493289d`](https://github.com/ck-sec/hybrid-planner/commit/493289df5886700a977a463c536dd0838e88fbe6)
+  passed [preview CI](https://github.com/ck-sec/hybrid-planner/actions/runs/34352290364)
+  and [production CI](https://github.com/ck-sec/hybrid-planner/actions/runs/34352604633).
+  The verified release branch was fast-forwarded to `main` without a force push.
+- [Hosted preview](https://ef9b2aaa.hybrid-planner.pages.dev/app/) checks covered
+  all four setup steps, explicit import approval, nine visible exercise cards,
+  six instruction-only warm-up/cool-down cards, and actual weight `57.5 kg` plus
+  a comment surviving save and reload. The mobile layout had no horizontal overflow.
+- Cloudflare Pages production deployment
+  [`b9132cb5`](https://b9132cb5.hybrid-planner.pages.dev) succeeded on
+  **2026-09-09 at 12:43:24 UTC** for that application commit.
+  Verified HTTP 200 on [the public site](https://hybridcoach.ai/),
+  [the planner](https://hybridcoach.ai/app/), both application bundles, and `sw.js`.
+  The custom domain serves the tested HTML and worker content (normalizing Windows
+  line endings) and byte-identical JS/CSS. JavaScript SHA-256:
+  `30e9234ff9b4f07a8f01d6d33bdec478466628f49c1073be64c23ba3d6c59203`.
+- The production browser rendered the new overview. A preview-only worker
+  retirement test removed the scoped old asset cache, preserved an unrelated
+  cache and IndexedDB, and unregistered itself. Production `sw.js` is served
+  with `Cache-Control: no-cache`. No real user training records were cleared.
+  Documentation-only follow-ups may advance `main` without changing these bundles.
